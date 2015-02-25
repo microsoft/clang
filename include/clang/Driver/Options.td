@@ -394,10 +394,6 @@ def fasm_blocks : Flag<["-"], "fasm-blocks">, Group<f_Group>, Flags<[CC1Option]>
 def fno_asm_blocks : Flag<["-"], "fno-asm-blocks">, Group<f_Group>;
 
 def fassume_sane_operator_new : Flag<["-"], "fassume-sane-operator-new">, Group<f_Group>;
-def fno_sized_deallocation: Flag<["-"], "fno-sized-deallocation">, Group<f_Group>,
-  HelpText<"Disable sized deallocation functions">, Flags<[CC1Option]>;
-def fdefine_sized_deallocation: Flag<["-"], "fdefine-sized-deallocation">, Group<f_Group>,
-  HelpText<"Allow compiler-generated definition of sized deallocation functions">, Flags<[CC1Option]>;
 def fastcp : Flag<["-"], "fastcp">, Group<f_Group>;
 def fastf : Flag<["-"], "fastf">, Group<f_Group>;
 def fast : Flag<["-"], "fast">, Group<f_Group>;
@@ -705,6 +701,9 @@ def fmodules_implicit_maps :
 def fno_modules_implicit_maps :
   Flag <["-"], "fno-modules-implicit-maps">,
   Group<f_Group>, Flags<[DriverOption, CC1Option]>;
+def fno_implicit_modules :
+  Flag <["-"], "fno-implicit-modules">,
+  Group<f_Group>, Flags<[DriverOption, CC1Option]>;
 def fretain_comments_from_system_headers : Flag<["-"], "fretain-comments-from-system-headers">, Group<f_Group>, Flags<[CC1Option]>;
 
 def fmudflapth : Flag<["-"], "fmudflapth">, Group<f_Group>;
@@ -764,6 +763,8 @@ def fno_module_maps : Flag <["-"], "fno-module-maps">, Group<f_Group>,
 def fno_modules_decluse : Flag <["-"], "fno-modules-decluse">, Group<f_Group>,
   Flags<[DriverOption]>;
 def fno_modules_strict_decluse : Flag <["-"], "fno-strict-modules-decluse">, Group<f_Group>,
+  Flags<[DriverOption]>;
+def fimplicit_modules : Flag <["-"], "fimplicit-modules">, Group<f_Group>,
   Flags<[DriverOption]>;
 def fno_ms_extensions : Flag<["-"], "fno-ms-extensions">, Group<f_Group>;
 def fno_ms_compatibility : Flag<["-"], "fno-ms-compatibility">, Group<f_Group>;
@@ -999,6 +1000,14 @@ def fdata_sections : Flag <["-"], "fdata-sections">, Group<f_Group>,
  Flags<[CC1Option]>, HelpText<"Place each data in its own section (ELF Only)">;
 def fno_data_sections : Flag <["-"], "fno-data-sections">, Group<f_Group>,
   Flags<[CC1Option]>;
+
+def funique_section_names : Flag <["-"], "funique-section-names">,
+  Group<f_Group>, Flags<[CC1Option]>,
+  HelpText<"Use unique names for text and data sections (ELF Only)">;
+def fno_unique_section_names : Flag <["-"], "fno-unique-section-names">,
+  Group<f_Group>, Flags<[CC1Option]>;
+
+
 def fdebug_types_section: Flag <["-"], "fdebug-types-section">, Group<f_Group>,
   Flags<[CC1Option]>, HelpText<"Place debug types in their own section (ELF Only)">;
 def fno_debug_types_section: Flag<["-"], "fno-debug-types-section">, Group<f_Group>,
@@ -1361,6 +1370,12 @@ def mips32 : Flag<["-"], "mips32">,
 def mips32r2 : Flag<["-"], "mips32r2">,
   Alias<march_EQ>, AliasArgs<["mips32r2"]>,
   HelpText<"Equivalent to -march=mips32r2">, Flags<[HelpHidden]>;
+def mips32r3 : Flag<["-"], "mips32r3">,
+  Alias<march_EQ>, AliasArgs<["mips32r3"]>,
+  HelpText<"Equivalent to -march=mips32r3">, Flags<[HelpHidden]>;
+def mips32r5 : Flag<["-"], "mips32r5">,
+  Alias<march_EQ>, AliasArgs<["mips32r5"]>,
+  HelpText<"Equivalent to -march=mips32r5">, Flags<[HelpHidden]>;
 def mips32r6 : Flag<["-"], "mips32r6">,
   Alias<march_EQ>, AliasArgs<["mips32r6"]>,
   HelpText<"Equivalent to -march=mips32r6">, Flags<[HelpHidden]>;
@@ -1370,6 +1385,12 @@ def mips64 : Flag<["-"], "mips64">,
 def mips64r2 : Flag<["-"], "mips64r2">,
   Alias<march_EQ>, AliasArgs<["mips64r2"]>,
   HelpText<"Equivalent to -march=mips64r2">, Flags<[HelpHidden]>;
+def mips64r3 : Flag<["-"], "mips64r3">,
+  Alias<march_EQ>, AliasArgs<["mips64r3"]>,
+  HelpText<"Equivalent to -march=mips64r3">, Flags<[HelpHidden]>;
+def mips64r5 : Flag<["-"], "mips64r5">,
+  Alias<march_EQ>, AliasArgs<["mips64r5"]>,
+  HelpText<"Equivalent to -march=mips64r5">, Flags<[HelpHidden]>;
 def mips64r6 : Flag<["-"], "mips64r6">,
   Alias<march_EQ>, AliasArgs<["mips64r6"]>,
   HelpText<"Equivalent to -march=mips64r6">, Flags<[HelpHidden]>;

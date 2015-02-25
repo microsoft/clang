@@ -351,13 +351,13 @@ static bool isIntOrBool(Expr *Exp) {
 // Check to see if the type is a smart pointer of some kind.  We assume
 // it's a smart pointer if it defines both operator-> and operator*.
 static bool threadSafetyCheckIsSmartPointer(Sema &S, const RecordType* RT) {
-  DeclContextLookupConstResult Res1 = RT->getDecl()->lookup(
-    S.Context.DeclarationNames.getCXXOperatorName(OO_Star));
+  DeclContextLookupResult Res1 = RT->getDecl()->lookup(
+      S.Context.DeclarationNames.getCXXOperatorName(OO_Star));
   if (Res1.empty())
     return false;
 
-  DeclContextLookupConstResult Res2 = RT->getDecl()->lookup(
-    S.Context.DeclarationNames.getCXXOperatorName(OO_Arrow));
+  DeclContextLookupResult Res2 = RT->getDecl()->lookup(
+      S.Context.DeclarationNames.getCXXOperatorName(OO_Arrow));
   if (Res2.empty())
     return false;
 
@@ -2494,6 +2494,7 @@ static FormatAttrKind getFormatAttrKind(StringRef Format) {
     .Cases("cmn_err", "vcmn_err", "zcmn_err", SupportedFormat)
     .Case("kprintf", SupportedFormat) // OpenBSD.
     .Case("freebsd_kprintf", SupportedFormat) // FreeBSD.
+    .Case("os_trace", SupportedFormat)
 
     .Cases("gcc_diag", "gcc_cdiag", "gcc_cxxdiag", "gcc_tdiag", IgnoredFormat)
     .Default(InvalidFormat);

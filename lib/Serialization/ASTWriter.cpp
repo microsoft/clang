@@ -3699,7 +3699,7 @@ void ASTWriter::AddUpdatedDeclContext(const DeclContext *DC) {
     // Ensure we emit all the visible declarations.
     visitLocalLookupResults(DC, DC->NeedToReconcileExternalVisibleStorage,
                             [&](DeclarationName Name,
-                                DeclContext::lookup_const_result Result) {
+                                DeclContext::lookup_result Result) {
       for (auto *Decl : Result)
         GetDeclRef(getDeclForLocalLookup(getLangOpts(), Decl));
     });
@@ -3756,16 +3756,14 @@ ASTWriter::GenerateNameLookupTable(const DeclContext *DC,
   // Add the constructors.
   if (!ConstructorDecls.empty()) {
     Generator.insert(ConstructorName,
-                     DeclContext::lookup_result(ConstructorDecls.begin(),
-                                                ConstructorDecls.end()),
+                     DeclContext::lookup_result(ConstructorDecls),
                      Trait);
   }
 
   // Add the conversion functions.
   if (!ConversionDecls.empty()) {
     Generator.insert(ConversionName,
-                     DeclContext::lookup_result(ConversionDecls.begin(),
-                                                ConversionDecls.end()),
+                     DeclContext::lookup_result(ConversionDecls),
                      Trait);
   }
 
@@ -4266,23 +4264,6 @@ void ASTWriter::WriteASTCore(Sema &SemaRef,
     }
     for (unsigned I = 0, N = BuiltinNames.size(); I != N; ++I)
       getIdentifierRef(&Table.get(BuiltinNames[I]));
-  }
-
-  // If there are any out-of-date identifiers, bring them up to date.
-  if (ExternalPreprocessorSource *ExtSource = PP.getExternalSource()) {
-    // Find out-of-date identifiers.
-    SmallVector<IdentifierInfo *, 4> OutOfDate;
-    for (IdentifierTable::iterator ID = PP.getIdentifierTable().begin(),
-                                IDEnd = PP.getIdentifierTable().end();
-         ID != IDEnd; ++ID) {
-      if (ID->second->isOutOfDate())
-        OutOfDate.push_back(ID->second);
-    }
-
-    // Update the out-of-date identifiers.
-    for (unsigned I = 0, N = OutOfDate.size(); I != N; ++I) {
-      ExtSource->updateOutOfDateIdentifier(*OutOfDate[I]);
-    }
   }
 
   // If we saw any DeclContext updates before we started writing the AST file,

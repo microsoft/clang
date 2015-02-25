@@ -1288,6 +1288,9 @@ bool CompilerInstance::loadModuleFile(StringRef FileName) {
     bool needsImportVisitation() const override { return true; }
 
     void visitImport(StringRef FileName) override {
+      if (!CI.ExplicitlyLoadedModuleFiles.insert(FileName).second)
+        return;
+
       ModuleFileStack.push_back(FileName);
       if (ASTReader::readASTFileControlBlock(FileName, CI.getFileManager(),
                                              *this)) {
@@ -1378,6 +1381,12 @@ CompilerInstance::loadModule(SourceLocation ImportLoc,
 
     auto Override = ModuleFileOverrides.find(ModuleName);
     bool Explicit = Override != ModuleFileOverrides.end();
+    if (!Explicit && !getLangOpts().ImplicitModules) {
+      getDiagnostics().Report(ModuleNameLoc, diag::err_module_build_disabled)
+          << ModuleName;
+      ModuleBuildFailed = true;
+      return ModuleLoadResult();
+    }
 
     std::string ModuleFileName =
         Explicit ? Override->second

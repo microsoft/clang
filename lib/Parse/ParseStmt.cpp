@@ -408,12 +408,6 @@ StmtResult Parser::ParseExprStatement() {
   return Actions.ActOnExprStmt(Expr);
 }
 
-StmtResult Parser::ParseSEHTryBlock() {
-  assert(Tok.is(tok::kw___try) && "Expected '__try'");
-  SourceLocation Loc = ConsumeToken();
-  return ParseSEHTryBlockCommon(Loc);
-}
-
 /// ParseSEHTryBlockCommon
 ///
 /// seh-try-block:
@@ -423,8 +417,11 @@ StmtResult Parser::ParseSEHTryBlock() {
 ///   seh-except-block
 ///   seh-finally-block
 ///
-StmtResult Parser::ParseSEHTryBlockCommon(SourceLocation TryLoc) {
-  if(Tok.isNot(tok::l_brace))
+StmtResult Parser::ParseSEHTryBlock() {
+  assert(Tok.is(tok::kw___try) && "Expected '__try'");
+  SourceLocation TryLoc = ConsumeToken();
+
+  if (Tok.isNot(tok::l_brace))
     return StmtError(Diag(Tok, diag::err_expected) << tok::l_brace);
 
   StmtResult TryBlock(ParseCompoundStatement(/*isStmtExpr=*/false,
@@ -441,7 +438,7 @@ StmtResult Parser::ParseSEHTryBlockCommon(SourceLocation TryLoc) {
     SourceLocation Loc = ConsumeToken();
     Handler = ParseSEHFinallyBlock(Loc);
   } else {
-    return StmtError(Diag(Tok,diag::err_seh_expected_handler));
+    return StmtError(Diag(Tok, diag::err_seh_expected_handler));
   }
 
   if(Handler.isInvalid())
@@ -494,6 +491,9 @@ StmtResult Parser::ParseSEHExceptBlock(SourceLocation ExceptLoc) {
   if (ExpectAndConsume(tok::r_paren))
     return StmtError();
 
+  if (Tok.isNot(tok::l_brace))
+    return StmtError(Diag(Tok, diag::err_expected) << tok::l_brace);
+
   StmtResult Block(ParseCompoundStatement());
 
   if(Block.isInvalid())
@@ -511,6 +511,9 @@ StmtResult Parser::ParseSEHFinallyBlock(SourceLocation FinallyBlock) {
   PoisonIdentifierRAIIObject raii(Ident__abnormal_termination, false),
     raii2(Ident___abnormal_termination, false),
     raii3(Ident_AbnormalTermination, false);
+
+  if (Tok.isNot(tok::l_brace))
+    return StmtError(Diag(Tok, diag::err_expected) << tok::l_brace);
 
   StmtResult Block(ParseCompoundStatement());
   if(Block.isInvalid())

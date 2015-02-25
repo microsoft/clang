@@ -518,6 +518,10 @@ def fno_deprecated_macro : Flag<["-"], "fno-deprecated-macro">,
   HelpText<"Undefines the __DEPRECATED macro">;
 def fsized_deallocation : Flag<["-"], "fsized-deallocation">,
   HelpText<"Enable C++14 sized global deallocation functions">;
+def fno_sized_deallocation: Flag<["-"], "fno-sized-deallocation">,
+  HelpText<"Disable sized deallocation functions">;
+def fdefine_sized_deallocation: Flag<["-"], "fdefine-sized-deallocation">,
+  HelpText<"Allow compiler-generated definition of sized deallocation functions">;
 def fobjc_subscripting_legacy_runtime : Flag<["-"], "fobjc-subscripting-legacy-runtime">,
   HelpText<"Allow Objective-C array and dictionary subscripting in legacy runtime">;
 def vtordisp_mode_EQ : Joined<["-"], "vtordisp-mode=">,
@@ -604,6 +608,9 @@ def cl_denorms_are_zero : Flag<["-"], "cl-denorms-are-zero">,
 
 def fcuda_is_device : Flag<["-"], "fcuda-is-device">,
   HelpText<"Generate code for CUDA device">;
+def fcuda_allow_host_calls_from_host_device : Flag<["-"],
+    "fcuda-allow-host-calls-from-host-device">,
+  HelpText<"Allow host device functions to call host functions">;
 
 } // let Flags = [CC1Option]
 

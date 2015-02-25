@@ -9752,6 +9752,8 @@ TEST_F(FormatTest, TripleAngleBrackets) {
 }
 
 TEST_F(FormatTest, MergeLessLessAtEnd) {
+  verifyFormat("<<");
+  EXPECT_EQ("< < <", format("\\\n<<<"));
   verifyFormat("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                "aaallvm::outs() <<");
   verifyFormat("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"

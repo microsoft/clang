@@ -617,7 +617,7 @@ public:
     do {
       Tokens.push_back(getNextToken());
       tryMergePreviousTokens();
-      if (Tokens.back()->NewlinesBefore > 0)
+      if (Tokens.back()->NewlinesBefore > 0 || Tokens.back()->IsMultiline)
         FirstInLineIndex = Tokens.size() - 1;
     } while (Tokens.back()->Tok.isNot(tok::eof));
     return Tokens;
@@ -638,6 +638,8 @@ private:
       if (tryMergeJSRegexLiteral())
         return;
       if (tryMergeEscapeSequence())
+        return;
+      if (tryMergeTemplateString())
         return;
 
       static tok::TokenKind JSIdentity[] = {tok::equalequal, tok::equal};
@@ -660,33 +662,26 @@ private:
 
   bool tryMergeLessLess() {
     // Merge X,less,less,Y into X,lessless,Y unless X or Y is less.
-    if (Tokens.size() < 4) {
-      // Merge <,<,eof to <<,eof
-      if (Tokens.back()->Tok.isNot(tok::eof))
-        return false;
+    if (Tokens.size() < 3)
+      return false;
 
-      auto &eof = Tokens.back();
-      Tokens.pop_back();
-      bool LessLessMerged;
-      if ((LessLessMerged = tryMergeTokens({tok::less, tok::less})))
-        Tokens.back()->Tok.setKind(tok::lessless);
-      Tokens.push_back(eof);
-      return LessLessMerged;
-    }
+    bool FourthTokenIsLess = false;
+    if (Tokens.size() > 3)
+      FourthTokenIsLess = (Tokens.end() - 4)[0]->is(tok::less);
 
-    auto First = Tokens.end() - 4;
-    if (First[3]->is(tok::less) || First[2]->isNot(tok::less) ||
-        First[1]->isNot(tok::less) || First[0]->is(tok::less))
+    auto First = Tokens.end() - 3;
+    if (First[2]->is(tok::less) || First[1]->isNot(tok::less) ||
+        First[0]->isNot(tok::less) || FourthTokenIsLess)
       return false;
 
     // Only merge if there currently is no whitespace between the two "<".
-    if (First[2]->WhitespaceRange.getBegin() !=
-        First[2]->WhitespaceRange.getEnd())
+    if (First[1]->WhitespaceRange.getBegin() !=
+        First[1]->WhitespaceRange.getEnd())
       return false;
 
-    First[1]->Tok.setKind(tok::lessless);
-    First[1]->TokenText = "<<";
-    First[1]->ColumnWidth += 1;
+    First[0]->Tok.setKind(tok::lessless);
+    First[0]->TokenText = "<<";
+    First[0]->ColumnWidth += 1;
     Tokens.erase(Tokens.end() - 2);
     return true;
   }
@@ -775,6 +770,66 @@ private:
       // There can't be a newline inside a regex literal.
       if (I[0]->NewlinesBefore > 0)
         return false;
+    }
+    return false;
+  }
+
+  bool tryMergeTemplateString() {
+    if (Tokens.size() < 2)
+      return false;
+
+    FormatToken *EndBacktick = Tokens.back();
+    if (!(EndBacktick->is(tok::unknown) && EndBacktick->TokenText == "`"))
+      return false;
+
+    unsigned TokenCount = 0;
+    bool IsMultiline = false;
+    unsigned EndColumnInFirstLine = 0;
+    for (auto I = Tokens.rbegin() + 1, E = Tokens.rend(); I != E; I++) {
+      ++TokenCount;
+      if (I[0]->NewlinesBefore > 0 || I[0]->IsMultiline)
+        IsMultiline = true;
+
+      // If there was a preceding template string, this must be the start of a
+      // template string, not the end.
+      if (I[0]->is(TT_TemplateString))
+        return false;
+
+      if (I[0]->isNot(tok::unknown) || I[0]->TokenText != "`") {
+        // Keep track of the rhs offset of the last token to wrap across lines -
+        // its the rhs offset of the first line of the template string, used to
+        // determine its width.
+        if (I[0]->IsMultiline)
+          EndColumnInFirstLine = I[0]->OriginalColumn + I[0]->ColumnWidth;
+        // If the token has newlines, the token before it (if it exists) is the
+        // rhs end of the previous line.
+        if (I[0]->NewlinesBefore > 0 && (I + 1 != E))
+          EndColumnInFirstLine = I[1]->OriginalColumn + I[1]->ColumnWidth;
+
+        continue;
+      }
+
+      Tokens.resize(Tokens.size() - TokenCount);
+      Tokens.back()->Type = TT_TemplateString;
+      const char *EndOffset = EndBacktick->TokenText.data() + 1;
+      Tokens.back()->TokenText =
+          StringRef(Tokens.back()->TokenText.data(),
+                    EndOffset - Tokens.back()->TokenText.data());
+      if (IsMultiline) {
+        // ColumnWidth is from backtick to last token in line.
+        // LastLineColumnWidth is 0 to backtick.
+        // x = `some content
+        //     until here`;
+        Tokens.back()->ColumnWidth =
+            EndColumnInFirstLine - Tokens.back()->OriginalColumn;
+        Tokens.back()->LastLineColumnWidth = EndBacktick->OriginalColumn;
+        Tokens.back()->IsMultiline = true;
+      } else {
+        // Token simply spans from start to end, +1 for the ` itself.
+        Tokens.back()->ColumnWidth =
+            EndBacktick->OriginalColumn - Tokens.back()->OriginalColumn + 1;
+      }
+      return true;
     }
     return false;
   }
@@ -885,11 +940,13 @@ private:
     FormatTok = new (Allocator.Allocate()) FormatToken;
     FormatTok->Tok = Tok;
     SourceLocation TokLocation =
-        FormatTok->Tok.getLocation().getLocWithOffset(1);
+        FormatTok->Tok.getLocation().getLocWithOffset(Tok.getLength() - 1);
+    FormatTok->Tok.setLocation(TokLocation);
     FormatTok->WhitespaceRange = SourceRange(TokLocation, TokLocation);
     FormatTok->TokenText = TokenText;
     FormatTok->ColumnWidth = 1;
-    FormatTok->OriginalColumn = OriginalColumn;
+    FormatTok->OriginalColumn = OriginalColumn + 1;
+
     return FormatTok;
   }
 
@@ -913,6 +970,8 @@ private:
     // Consume and record whitespace until we find a significant token.
     unsigned WhitespaceLength = TrailingWhitespace;
     while (FormatTok->Tok.is(tok::unknown)) {
+      // FIXME: This miscounts tok:unknown tokens that are not just
+      // whitespace, e.g. a '`' character.
       for (int i = 0, e = FormatTok->TokenText.size(); i != e; ++i) {
         switch (FormatTok->TokenText[i]) {
         case '\n':

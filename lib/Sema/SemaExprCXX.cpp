@@ -2089,6 +2089,15 @@ void Sema::DeclareGlobalAllocationFunction(DeclarationName Name,
       }
     }
   }
+  
+  // If the function is sized operator delete and has not already been
+  // declared, and weak definitions have been disabled, do not declare
+  // it implicitly. Instead, let deallocation function lookup pick up
+  // unsized delete.
+  // FIXME: We should remove this guard once backward compatibility is
+  // no longer an issue
+  if (NumParams == 2 && !getLangOpts().DefineSizedDeallocation)
+    return;
 
   FunctionProtoType::ExtProtoInfo EPI;
 
@@ -2582,6 +2591,8 @@ static ExprResult BuildCXXCastArgument(Sema &S,
     S.CheckConstructorAccess(CastLoc, Constructor,
                              InitializedEntity::InitializeTemporary(Ty),
                              Constructor->getAccess());
+    if (S.DiagnoseUseOfDecl(Method, CastLoc))
+      return ExprError();
 
     ExprResult Result = S.BuildCXXConstructExpr(
         CastLoc, Ty, cast<CXXConstructorDecl>(Method),
@@ -2597,6 +2608,10 @@ static ExprResult BuildCXXCastArgument(Sema &S,
   case CK_UserDefinedConversion: {
     assert(!From->getType()->isPointerType() && "Arg can't have pointer type!");
 
+    S.CheckMemberOperatorAccess(CastLoc, From, /*arg*/ nullptr, FoundDecl);
+    if (S.DiagnoseUseOfDecl(Method, CastLoc))
+      return ExprError();
+
     // Create an implicit call expr that calls it.
     CXXConversionDecl *Conv = cast<CXXConversionDecl>(Method);
     ExprResult Result = S.BuildCXXMemberCallExpr(From, FoundDecl, Conv,
@@ -2607,8 +2622,6 @@ static ExprResult BuildCXXCastArgument(Sema &S,
     Result = ImplicitCastExpr::Create(S.Context, Result.get()->getType(),
                                       CK_UserDefinedConversion, Result.get(),
                                       nullptr, Result.get()->getValueKind());
-
-    S.CheckMemberOperatorAccess(CastLoc, From, /*arg*/ nullptr, FoundDecl);
 
     return S.MaybeBindToTemporary(Result.get());
   }
@@ -2640,7 +2653,7 @@ Sema::PerformImplicitConversion(Expr *From, QualType ToType,
       FunctionDecl *FD = ICS.UserDefined.ConversionFunction;
       CastKind CastKind;
       QualType BeforeToType;
-      assert(FD && "FIXME: aggregate initialization from init list");
+      assert(FD && "no conversion function for user-defined conversion seq");
       if (const CXXConversionDecl *Conv = dyn_cast<CXXConversionDecl>(FD)) {
         CastKind = CK_UserDefinedConversion;
 
@@ -3541,8 +3554,8 @@ static bool EvaluateUnaryTypeTrait(Sema &Self, TypeTrait UTT,
 
       bool FoundConstructor = false;
       unsigned FoundTQs;
-      DeclContext::lookup_const_result R = Self.LookupConstructors(RD);
-      for (DeclContext::lookup_const_iterator Con = R.begin(),
+      DeclContext::lookup_result R = Self.LookupConstructors(RD);
+      for (DeclContext::lookup_iterator Con = R.begin(),
            ConEnd = R.end(); Con != ConEnd; ++Con) {
         // A template constructor is never a copy constructor.
         // FIXME: However, it may actually be selected at the actual overload
@@ -3581,8 +3594,8 @@ static bool EvaluateUnaryTypeTrait(Sema &Self, TypeTrait UTT,
         return true;
 
       bool FoundConstructor = false;
-      DeclContext::lookup_const_result R = Self.LookupConstructors(RD);
-      for (DeclContext::lookup_const_iterator Con = R.begin(),
+      DeclContext::lookup_result R = Self.LookupConstructors(RD);
+      for (DeclContext::lookup_iterator Con = R.begin(),
            ConEnd = R.end(); Con != ConEnd; ++Con) {
         // FIXME: In C++0x, a constructor template can be a default constructor.
         if (isa<FunctionTemplateDecl>(*Con))

@@ -75,8 +75,14 @@ template <class T> struct DominatingPointer<T,false> : InvariantValue<T*> {};
 template <class T> struct DominatingValue<T*> : DominatingPointer<T> {};
 
 enum CleanupKind : unsigned {
+  /// Denotes a cleanup that should run when a scope is exited using exceptional
+  /// control flow (a throw statement leading to stack unwinding, ).
   EHCleanup = 0x1,
+
+  /// Denotes a cleanup that should run when a scope is exited using normal
+  /// control flow (falling off the end of the scope, return, goto, ...).
   NormalCleanup = 0x2,
+
   NormalAndEHCleanup = EHCleanup | NormalCleanup,
 
   InactiveCleanup = 0x4,
@@ -305,8 +311,6 @@ public:
                    StartOfData(nullptr), InnermostNormalCleanup(stable_end()),
                    InnermostEHScope(stable_end()) {}
   ~EHScopeStack() { delete[] StartOfBuffer; }
-
-  // Variadic templates would make this not terrible.
 
   /// Push a lazily-created cleanup on the stack.
   template <class T, class... As> void pushCleanup(CleanupKind Kind, As... A) {
