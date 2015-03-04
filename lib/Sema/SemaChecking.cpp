@@ -184,7 +184,7 @@ static bool SemaBuiltinCallWithStaticChain(Sema &S, CallExpr *BuiltinCall) {
     return true;
   }
 
-  QualType ReturnTy = CE->getCallReturnType();
+  QualType ReturnTy = CE->getCallReturnType(S.Context);
   QualType ArgTys[2] = { ReturnTy, ChainResult.get()->getType() };
   QualType BuiltinTy = S.Context.getFunctionType(
       ReturnTy, ArgTys, FunctionProtoType::ExtProtoInfo());
@@ -885,10 +885,7 @@ bool Sema::CheckX86BuiltinFunctionCall(unsigned BuiltinID, CallExpr *TheCall) {
   case X86::BI__builtin_ia32_vinsertf128_pd256:
   case X86::BI__builtin_ia32_vinsertf128_ps256:
   case X86::BI__builtin_ia32_vinsertf128_si256:
-  case X86::BI__builtin_ia32_insert128i256:
-  case X86::BI__builtin_ia32_blendpd: i = 2, l = 0; u = 1; break;
-  case X86::BI__builtin_ia32_blendps:
-  case X86::BI__builtin_ia32_blendpd256:
+  case X86::BI__builtin_ia32_insert128i256: i = 2, l = 0; u = 1; break;
   case X86::BI__builtin_ia32_sha1rnds4: i = 2, l = 0; u = 3; break;
   case X86::BI__builtin_ia32_vpermil2pd:
   case X86::BI__builtin_ia32_vpermil2pd256:
@@ -2131,7 +2128,7 @@ bool Sema::SemaBuiltinVAStartARM(CallExpr *Call) {
   if (checkBuiltinArgument(*this, Call, 0))
     return true;
 
-  static const struct {
+  const struct {
     unsigned ArgNo;
     QualType Type;
   } ArgumentTypes[] = {
@@ -2378,7 +2375,7 @@ bool Sema::SemaBuiltinAssume(CallExpr *TheCall) {
   if (Arg->isInstantiationDependent()) return false;
 
   if (Arg->HasSideEffects(Context))
-    return Diag(Arg->getLocStart(), diag::warn_assume_side_effects)
+    Diag(Arg->getLocStart(), diag::warn_assume_side_effects)
       << Arg->getSourceRange()
       << cast<FunctionDecl>(TheCall->getCalleeDecl())->getIdentifier();
 
@@ -3152,10 +3149,7 @@ void CheckFormatHandler::EmitFormatDiagnostic(Sema &S, bool InFunctionCall,
   if (InFunctionCall) {
     const Sema::SemaDiagnosticBuilder &D = S.Diag(Loc, PDiag);
     D << StringRange;
-    for (ArrayRef<FixItHint>::iterator I = FixIt.begin(), E = FixIt.end();
-         I != E; ++I) {
-      D << *I;
-    }
+    D << FixIt;
   } else {
     S.Diag(IsStringLocation ? ArgumentExpr->getExprLoc() : Loc, PDiag)
       << ArgumentExpr->getSourceRange();
@@ -3165,10 +3159,7 @@ void CheckFormatHandler::EmitFormatDiagnostic(Sema &S, bool InFunctionCall,
              diag::note_format_string_defined);
 
     Note << StringRange;
-    for (ArrayRef<FixItHint>::iterator I = FixIt.begin(), E = FixIt.end();
-         I != E; ++I) {
-      Note << *I;
-    }
+    Note << FixIt;
   }
 }
 
@@ -3678,8 +3669,11 @@ CheckPrintfHandler::checkFormatExpr(const analyze_printf::PrintfSpecifier &FS,
     ExprTy = TET->getUnderlyingExpr()->getType();
   }
 
-  if (AT.matchesType(S.Context, ExprTy))
+  analyze_printf::ArgType::MatchKind match = AT.matchesType(S.Context, ExprTy);
+
+  if (match == analyze_printf::ArgType::Match) {
     return true;
+  }
 
   // Look through argument promotions for our error message's reported type.
   // This includes the integral and floating promotions, but excludes array
@@ -3857,15 +3851,18 @@ CheckPrintfHandler::checkFormatExpr(const analyze_printf::PrintfSpecifier &FS,
     // arguments here.
     switch (S.isValidVarArgType(ExprTy)) {
     case Sema::VAK_Valid:
-    case Sema::VAK_ValidInCXX11:
-      EmitFormatDiagnostic(
-        S.PDiag(diag::warn_format_conversion_argument_type_mismatch)
-          << AT.getRepresentativeTypeName(S.Context) << ExprTy << IsEnum
-          << CSR
-          << E->getSourceRange(),
-        E->getLocStart(), /*IsStringLocation*/false, CSR);
-      break;
+    case Sema::VAK_ValidInCXX11: {
+      unsigned diag = diag::warn_format_conversion_argument_type_mismatch;
+      if (match == analyze_printf::ArgType::NoMatchPedantic) {
+        diag = diag::warn_format_conversion_argument_type_mismatch_pedantic;
+      }
 
+      EmitFormatDiagnostic(
+          S.PDiag(diag) << AT.getRepresentativeTypeName(S.Context) << ExprTy
+                        << IsEnum << CSR << E->getSourceRange(),
+          E->getLocStart(), /*IsStringLocation*/ false, CSR);
+      break;
+    }
     case Sema::VAK_Undefined:
     case Sema::VAK_MSVCUndefined:
       EmitFormatDiagnostic(
@@ -3997,13 +3994,13 @@ bool CheckScanfHandler::HandleScanfSpecifier(
                            FixItHint::CreateRemoval(R));
     }
   }
-  
+
   if (!FS.consumesDataArgument()) {
     // FIXME: Technically specifying a precision or field width here
     // makes no sense.  Worth issuing a warning at some point.
     return true;
   }
-  
+
   // Consume the argument.
   unsigned argIndex = FS.getArgIndex();
   if (argIndex < NumDataArgs) {
@@ -4012,7 +4009,7 @@ bool CheckScanfHandler::HandleScanfSpecifier(
       // function if we encounter some other error.
     CoveredArgs.set(argIndex);
   }
-  
+
   // Check the length modifier is valid with the given conversion specifier.
   if (!FS.hasValidLengthModifier(S.getASTContext().getTargetInfo()))
     HandleInvalidLengthModifier(FS, CS, startSpecifier, specifierLen,
@@ -4029,47 +4026,57 @@ bool CheckScanfHandler::HandleScanfSpecifier(
   // The remaining checks depend on the data arguments.
   if (HasVAListArg)
     return true;
-  
+
   if (!CheckNumArgs(FS, CS, startSpecifier, specifierLen, argIndex))
     return false;
-  
+
   // Check that the argument type matches the format specifier.
   const Expr *Ex = getDataArg(argIndex);
   if (!Ex)
     return true;
 
   const analyze_format_string::ArgType &AT = FS.getArgType(S.Context);
-  if (AT.isValid() && !AT.matchesType(S.Context, Ex->getType())) {
-    ScanfSpecifier fixedFS = FS;
-    bool success = fixedFS.fixType(Ex->getType(),
-                                   Ex->IgnoreImpCasts()->getType(),
-                                   S.getLangOpts(), S.Context);
 
-    if (success) {
-      // Get the fix string from the fixed format specifier.
-      SmallString<128> buf;
-      llvm::raw_svector_ostream os(buf);
-      fixedFS.toString(os);
+  if (!AT.isValid()) {
+    return true;
+  }
 
-      EmitFormatDiagnostic(
-        S.PDiag(diag::warn_format_conversion_argument_type_mismatch)
-          << AT.getRepresentativeTypeName(S.Context) << Ex->getType() << false
-          << Ex->getSourceRange(),
+  analyze_format_string::ArgType::MatchKind match =
+      AT.matchesType(S.Context, Ex->getType());
+  if (match == analyze_format_string::ArgType::Match) {
+    return true;
+  }
+
+  ScanfSpecifier fixedFS = FS;
+  bool success = fixedFS.fixType(Ex->getType(), Ex->IgnoreImpCasts()->getType(),
+                                 S.getLangOpts(), S.Context);
+
+  unsigned diag = diag::warn_format_conversion_argument_type_mismatch;
+  if (match == analyze_format_string::ArgType::NoMatchPedantic) {
+    diag = diag::warn_format_conversion_argument_type_mismatch_pedantic;
+  }
+
+  if (success) {
+    // Get the fix string from the fixed format specifier.
+    SmallString<128> buf;
+    llvm::raw_svector_ostream os(buf);
+    fixedFS.toString(os);
+
+    EmitFormatDiagnostic(
+        S.PDiag(diag) << AT.getRepresentativeTypeName(S.Context)
+                      << Ex->getType() << false << Ex->getSourceRange(),
         Ex->getLocStart(),
-        /*IsStringLocation*/false,
+        /*IsStringLocation*/ false,
         getSpecifierRange(startSpecifier, specifierLen),
         FixItHint::CreateReplacement(
-          getSpecifierRange(startSpecifier, specifierLen),
-          os.str()));
-    } else {
-      EmitFormatDiagnostic(
-        S.PDiag(diag::warn_format_conversion_argument_type_mismatch)
-          << AT.getRepresentativeTypeName(S.Context) << Ex->getType() << false
-          << Ex->getSourceRange(),
-        Ex->getLocStart(),
-        /*IsStringLocation*/false,
-        getSpecifierRange(startSpecifier, specifierLen));
-    }
+            getSpecifierRange(startSpecifier, specifierLen), os.str()));
+  } else {
+    EmitFormatDiagnostic(S.PDiag(diag)
+                             << AT.getRepresentativeTypeName(S.Context)
+                             << Ex->getType() << false << Ex->getSourceRange(),
+                         Ex->getLocStart(),
+                         /*IsStringLocation*/ false,
+                         getSpecifierRange(startSpecifier, specifierLen));
   }
 
   return true;
@@ -6783,8 +6790,11 @@ void AnalyzeImplicitConversions(Sema &S, Expr *OrigE, SourceLocation CC) {
       E = POE->getResultExpr();
   }
   
-  if (const OpaqueValueExpr *OVE = dyn_cast<OpaqueValueExpr>(E))
-    return AnalyzeImplicitConversions(S, OVE->getSourceExpr(), CC);
+  if (const OpaqueValueExpr *OVE = dyn_cast<OpaqueValueExpr>(E)) {
+    if (OVE->getSourceExpr())
+      AnalyzeImplicitConversions(S, OVE->getSourceExpr(), CC);
+    return;
+  }
   
   // Skip past explicit casts.
   if (isa<ExplicitCastExpr>(E)) {
@@ -6866,7 +6876,7 @@ static bool CheckForReference(Sema &SemaRef, const Expr *E,
     if (!M->getMemberDecl()->getType()->isReferenceType())
       return false;
   } else if (const CallExpr *Call = dyn_cast<CallExpr>(E)) {
-    if (!Call->getCallReturnType()->isReferenceType())
+    if (!Call->getCallReturnType(SemaRef.Context)->isReferenceType())
       return false;
     FD = Call->getDirectCallee();
   } else {

@@ -8011,28 +8011,8 @@ bool Sema::CheckFunctionDeclaration(Scope *S, FunctionDecl *NewFD,
       // This needs to happen first so that 'inline' propagates.
       NewFD->setPreviousDeclaration(cast<FunctionDecl>(OldDecl));
 
-      if (isa<CXXMethodDecl>(NewFD)) {
-        // A valid redeclaration of a C++ method must be out-of-line,
-        // but (unfortunately) it's not necessarily a definition
-        // because of templates, which means that the previous
-        // declaration is not necessarily from the class definition.
-
-        // For just setting the access, that doesn't matter.
-        CXXMethodDecl *oldMethod = cast<CXXMethodDecl>(OldDecl);
-        NewFD->setAccess(oldMethod->getAccess());
-
-        // Update the key-function state if necessary for this ABI.
-        if (NewFD->isInlined() &&
-            !Context.getTargetInfo().getCXXABI().canKeyFunctionBeInline()) {
-          // setNonKeyFunction needs to work with the original
-          // declaration from the class definition, and isVirtual() is
-          // just faster in that case, so map back to that now.
-          oldMethod = cast<CXXMethodDecl>(oldMethod->getFirstDecl());
-          if (oldMethod->isVirtual()) {
-            Context.setNonKeyFunction(oldMethod);
-          }
-        }
-      }
+      if (isa<CXXMethodDecl>(NewFD))
+        NewFD->setAccess(OldDecl->getAccess());
     }
   }
 
@@ -8602,8 +8582,13 @@ namespace {
         diag = diag::warn_uninit_self_reference_in_reference_init;
       } else if (cast<VarDecl>(OrigDecl)->isStaticLocal()) {
         diag = diag::warn_static_self_reference_in_init;
-      } else {
+      } else if (isa<TranslationUnitDecl>(OrigDecl->getDeclContext()) ||
+                 isa<NamespaceDecl>(OrigDecl->getDeclContext()) ||
+                 DRE->getDecl()->getType()->isRecordType()) {
         diag = diag::warn_uninit_self_reference_in_init;
+      } else {
+        // Local variables will be handled by the CFG analysis.
+        return;
       }
 
       S.DiagRuntimeBehavior(DRE->getLocStart(), DRE,
@@ -10559,7 +10544,31 @@ Decl *Sema::ActOnFinishFunctionBody(Decl *dcl, Stmt *Body,
           !FD->isDependentContext())
         computeNRVO(Body, getCurFunction());
     }
-    
+
+    if (auto *MD = dyn_cast<CXXMethodDecl>(FD)) {
+      const CXXMethodDecl *KeyFunction;
+      if (MD->isOutOfLine() && (MD = MD->getCanonicalDecl()) &&
+          MD->isVirtual() &&
+          (KeyFunction = Context.getCurrentKeyFunction(MD->getParent())) &&
+          MD == KeyFunction->getCanonicalDecl()) {
+        // Update the key-function state if necessary for this ABI.
+        if (FD->isInlined() &&
+            !Context.getTargetInfo().getCXXABI().canKeyFunctionBeInline()) {
+          Context.setNonKeyFunction(MD);
+
+          // If the newly-chosen key function is already defined, then we
+          // need to mark the vtable as used retroactively.
+          KeyFunction = Context.getCurrentKeyFunction(MD->getParent());
+          const FunctionDecl *Definition;
+          if (KeyFunction && KeyFunction->isDefined(Definition))
+            MarkVTableUsed(Definition->getLocation(), MD->getParent(), true);
+        } else {
+          // We just defined they key function; mark the vtable as used.
+          MarkVTableUsed(FD->getLocation(), MD->getParent(), true);
+        }
+      }
+    }
+
     assert((FD == getCurFunctionDecl() || getCurLambda()->CallOperator == FD) &&
            "Function parsing confused");
   } else if (ObjCMethodDecl *MD = dyn_cast_or_null<ObjCMethodDecl>(dcl)) {

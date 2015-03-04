@@ -336,20 +336,34 @@ bool Decl::isReferenced() const {
 static AvailabilityResult CheckAvailability(ASTContext &Context,
                                             const AvailabilityAttr *A,
                                             std::string *Message) {
-  StringRef TargetPlatform = Context.getTargetInfo().getPlatformName();
-  StringRef PrettyPlatformName
-    = AvailabilityAttr::getPrettyPlatformName(TargetPlatform);
-  if (PrettyPlatformName.empty())
-    PrettyPlatformName = TargetPlatform;
+  VersionTuple TargetMinVersion =
+    Context.getTargetInfo().getPlatformMinVersion();
 
-  VersionTuple TargetMinVersion = Context.getTargetInfo().getPlatformMinVersion();
   if (TargetMinVersion.empty())
     return AR_Available;
 
+  // Check if this is an App Extension "platform", and if so chop off
+  // the suffix for matching with the actual platform.
+  StringRef ActualPlatform = A->getPlatform()->getName();
+  StringRef RealizedPlatform = ActualPlatform;
+  if (Context.getLangOpts().AppExt) {
+    size_t suffix = RealizedPlatform.rfind("_app_extension");
+    if (suffix != StringRef::npos)
+      RealizedPlatform = RealizedPlatform.slice(0, suffix);
+  }
+
+  StringRef TargetPlatform = Context.getTargetInfo().getPlatformName();
+
   // Match the platform name.
-  if (A->getPlatform()->getName() != TargetPlatform)
+  if (RealizedPlatform != TargetPlatform)
     return AR_Available;
-  
+
+  StringRef PrettyPlatformName
+    = AvailabilityAttr::getPrettyPlatformName(ActualPlatform);
+
+  if (PrettyPlatformName.empty())
+    PrettyPlatformName = ActualPlatform;
+
   std::string HintMessage;
   if (!A->getMessage().empty()) {
     HintMessage = " - ";
@@ -1308,12 +1322,16 @@ DeclContext::lookup(DeclarationName Name) const {
   if (PrimaryContext != this)
     return PrimaryContext->lookup(Name);
 
-  // If this is a namespace, ensure that any later redeclarations of it have
-  // been loaded, since they may add names to the result of this lookup.
-  if (auto *ND = dyn_cast<NamespaceDecl>(this))
-    (void)ND->getMostRecentDecl();
+  // If we have an external source, ensure that any later redeclarations of this
+  // context have been loaded, since they may add names to the result of this
+  // lookup (or add external visible storage).
+  ExternalASTSource *Source = getParentASTContext().getExternalSource();
+  if (Source)
+    (void)cast<Decl>(this)->getMostRecentDecl();
 
   if (hasExternalVisibleStorage()) {
+    assert(Source && "external visible storage but no external source?");
+
     if (NeedToReconcileExternalVisibleStorage)
       reconcileExternalVisibleStorage();
 
@@ -1332,7 +1350,6 @@ DeclContext::lookup(DeclarationName Name) const {
     if (!R.second && !R.first->second.hasExternalDecls())
       return R.first->second.getLookupResult();
 
-    ExternalASTSource *Source = getParentASTContext().getExternalSource();
     if (Source->FindExternalVisibleDeclsByName(this, Name) || !R.second) {
       if (StoredDeclsMap *Map = LookupPtr.getPointer()) {
         StoredDeclsMap::iterator I = Map->find(Name);

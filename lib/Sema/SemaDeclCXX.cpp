@@ -4875,9 +4875,6 @@ void Sema::CheckCompletedCXXClass(CXXRecordDecl *Record) {
     }
   }
 
-  if (Record->isDynamicClass() && !Record->isDependentType())
-    DynamicClasses.push_back(Record);
-
   if (Record->getIdentifier()) {
     // C++ [class.mem]p13:
     //   If T is the name of a class, then each of the following shall have a 
@@ -11936,7 +11933,7 @@ VarDecl *Sema::BuildExceptionDeclaration(Scope *S,
       //
       // We just pretend to initialize the object with itself, then make sure
       // it can be destroyed later.
-      QualType initType = ExDeclType;
+      QualType initType = Context.getExceptionObjectType(ExDeclType);
 
       InitializedEntity entity =
         InitializedEntity::InitializeVariable(ExDecl);

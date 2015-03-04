@@ -20,35 +20,6 @@
 using namespace clang;
 using namespace CodeGen;
 
-namespace {
-/// \brief RAII for emitting code of CapturedStmt without function outlining.
-class InlinedOpenMPRegion {
-  CodeGenFunction &CGF;
-  CodeGenFunction::CGCapturedStmtInfo *PrevCapturedStmtInfo;
-  const Decl *StoredCurCodeDecl;
-
-  /// \brief A class to emit CapturedStmt construct as inlined statement without
-  /// generating a function for outlined code.
-  class CGInlinedOpenMPRegionInfo : public CodeGenFunction::CGCapturedStmtInfo {
-  public:
-    CGInlinedOpenMPRegionInfo() : CGCapturedStmtInfo() {}
-  };
-
-public:
-  InlinedOpenMPRegion(CodeGenFunction &CGF, const Stmt *S)
-      : CGF(CGF), PrevCapturedStmtInfo(CGF.CapturedStmtInfo),
-        StoredCurCodeDecl(CGF.CurCodeDecl) {
-    CGF.CurCodeDecl = cast<CapturedStmt>(S)->getCapturedDecl();
-    CGF.CapturedStmtInfo = new CGInlinedOpenMPRegionInfo();
-  }
-  ~InlinedOpenMPRegion() {
-    delete CGF.CapturedStmtInfo;
-    CGF.CapturedStmtInfo = PrevCapturedStmtInfo;
-    CGF.CurCodeDecl = StoredCurCodeDecl;
-  }
-};
-} // namespace
-
 //===----------------------------------------------------------------------===//
 //                              OpenMP Directive Emission
 //===----------------------------------------------------------------------===//
@@ -249,17 +220,17 @@ static void EmitOMPParallelCall(CodeGenFunction &CGF,
     auto NumThreadsClause = cast<OMPNumThreadsClause>(C);
     auto NumThreads = CGF.EmitScalarExpr(NumThreadsClause->getNumThreads(),
                                          /*IgnoreResultAssign*/ true);
-    CGF.CGM.getOpenMPRuntime().EmitOMPNumThreadsClause(
+    CGF.CGM.getOpenMPRuntime().emitNumThreadsClause(
         CGF, NumThreads, NumThreadsClause->getLocStart());
   }
-  CGF.CGM.getOpenMPRuntime().EmitOMPParallelCall(CGF, S.getLocStart(),
-                                                 OutlinedFn, CapturedStruct);
+  CGF.CGM.getOpenMPRuntime().emitParallelCall(CGF, S.getLocStart(), OutlinedFn,
+                                              CapturedStruct);
 }
 
 void CodeGenFunction::EmitOMPParallelDirective(const OMPParallelDirective &S) {
   auto CS = cast<CapturedStmt>(S.getAssociatedStmt());
   auto CapturedStruct = GenerateCapturedStmtArgument(*CS);
-  auto OutlinedFn = CGM.getOpenMPRuntime().EmitOpenMPOutlinedFunction(
+  auto OutlinedFn = CGM.getOpenMPRuntime().emitOutlinedFunction(
       S, *CS->getCapturedDecl()->param_begin());
   if (auto C = S.getSingleClause(/*K*/ OMPC_if)) {
     auto Cond = cast<OMPIfClause>(C)->getCondition();
@@ -267,8 +238,8 @@ void CodeGenFunction::EmitOMPParallelDirective(const OMPParallelDirective &S) {
       if (ThenBlock)
         EmitOMPParallelCall(*this, S, OutlinedFn, CapturedStruct);
       else
-        CGM.getOpenMPRuntime().EmitOMPSerialCall(*this, S.getLocStart(),
-                                                 OutlinedFn, CapturedStruct);
+        CGM.getOpenMPRuntime().emitSerialCall(*this, S.getLocStart(),
+                                              OutlinedFn, CapturedStruct);
     });
   } else
     EmitOMPParallelCall(*this, S, OutlinedFn, CapturedStruct);
@@ -446,7 +417,7 @@ void CodeGenFunction::EmitOMPSimdDirective(const OMPSimdDirective &S) {
     }
   }
 
-  InlinedOpenMPRegion Region(*this, S.getAssociatedStmt());
+  InlinedOpenMPRegionRAII Region(*this, S);
   RunCleanupsScope DirectiveScope(*this);
 
   CGDebugInfo *DI = getDebugInfo();
@@ -531,8 +502,8 @@ void CodeGenFunction::EmitOMPForOuterLoop(OpenMPScheduleClauseKind ScheduleKind,
   const unsigned IVSize = getContext().getTypeSize(IVExpr->getType());
   const bool IVSigned = IVExpr->getType()->hasSignedIntegerRepresentation();
 
-  RT.EmitOMPForInit(*this, S.getLocStart(), ScheduleKind, IVSize, IVSigned, IL,
-                    LB, UB, ST, Chunk);
+  RT.emitForInit(*this, S.getLocStart(), ScheduleKind, IVSize, IVSigned, IL, LB,
+                 UB, ST, Chunk);
   auto LoopExit = getJumpDestInCurrentScope("omp.dispatch.end");
 
   // Start the loop with a block that tests the condition.
@@ -580,7 +551,7 @@ void CodeGenFunction::EmitOMPForOuterLoop(OpenMPScheduleClauseKind ScheduleKind,
   EmitBlock(LoopExit.getBlock());
 
   // Tell the runtime we are done.
-  RT.EmitOMPForFinish(*this, S.getLocStart(), ScheduleKind);
+  RT.emitForFinish(*this, S.getLocStart(), ScheduleKind);
 }
 
 /// \brief Emit a helper variable and return corresponding lvalue.
@@ -653,9 +624,9 @@ void CodeGenFunction::EmitOMPWorksharingLoop(const OMPLoopDirective &S) {
         // chunks that are approximately equal in size, and at most one chunk is
         // distributed to each thread. Note that the size of the chunks is
         // unspecified in this case.
-        RT.EmitOMPForInit(*this, S.getLocStart(), ScheduleKind, IVSize, IVSigned,
-                          IL.getAddress(), LB.getAddress(), UB.getAddress(),
-                          ST.getAddress());
+        RT.emitForInit(*this, S.getLocStart(), ScheduleKind, IVSize, IVSigned,
+                       IL.getAddress(), LB.getAddress(), UB.getAddress(),
+                       ST.getAddress());
         // UB = min(UB, GlobalUB);
         EmitIgnoredExpr(S.getEnsureUpperBound());
         // IV = LB;
@@ -663,7 +634,7 @@ void CodeGenFunction::EmitOMPWorksharingLoop(const OMPLoopDirective &S) {
         // while (idx <= UB) { BODY; ++idx; }
         EmitOMPInnerLoop(S, LoopScope);
         // Tell the runtime we are done.
-        RT.EmitOMPForFinish(*this, S.getLocStart(), ScheduleKind);
+        RT.emitForFinish(*this, S.getLocStart(), ScheduleKind);
       } else {
         // Emit the outer loop, which requests its work chunk [LB..UB] from
         // runtime and runs the inner loop to process it.
@@ -679,7 +650,7 @@ void CodeGenFunction::EmitOMPWorksharingLoop(const OMPLoopDirective &S) {
 }
 
 void CodeGenFunction::EmitOMPForDirective(const OMPForDirective &S) {
-  InlinedOpenMPRegion Region(*this, S.getAssociatedStmt());
+  InlinedOpenMPRegionRAII Region(*this, S);
   RunCleanupsScope DirectiveScope(*this);
 
   CGDebugInfo *DI = getDebugInfo();
@@ -689,8 +660,8 @@ void CodeGenFunction::EmitOMPForDirective(const OMPForDirective &S) {
   EmitOMPWorksharingLoop(S);
 
   // Emit an implicit barrier at the end.
-  CGM.getOpenMPRuntime().EmitOMPBarrierCall(*this, S.getLocStart(),
-                                            /*IsExplicit*/ false);
+  CGM.getOpenMPRuntime().emitBarrierCall(*this, S.getLocStart(),
+                                         /*IsExplicit*/ false);
   if (DI)
     DI->EmitLexicalBlockEnd(Builder, S.getSourceRange().getEnd());
 }
@@ -708,8 +679,8 @@ void CodeGenFunction::EmitOMPSectionDirective(const OMPSectionDirective &) {
 }
 
 void CodeGenFunction::EmitOMPSingleDirective(const OMPSingleDirective &S) {
-  CGM.getOpenMPRuntime().EmitOMPSingleRegion(*this, [&]() -> void {
-    InlinedOpenMPRegion Region(*this, S.getAssociatedStmt());
+  CGM.getOpenMPRuntime().emitSingleRegion(*this, [&]() -> void {
+    InlinedOpenMPRegionRAII Region(*this, S);
     RunCleanupsScope Scope(*this);
     EmitStmt(cast<CapturedStmt>(S.getAssociatedStmt())->getCapturedStmt());
     EnsureInsertPoint();
@@ -717,8 +688,8 @@ void CodeGenFunction::EmitOMPSingleDirective(const OMPSingleDirective &S) {
 }
 
 void CodeGenFunction::EmitOMPMasterDirective(const OMPMasterDirective &S) {
-  CGM.getOpenMPRuntime().EmitOMPMasterRegion(*this, [&]() -> void {
-    InlinedOpenMPRegion Region(*this, S.getAssociatedStmt());
+  CGM.getOpenMPRuntime().emitMasterRegion(*this, [&]() -> void {
+    InlinedOpenMPRegionRAII Region(*this, S);
     RunCleanupsScope Scope(*this);
     EmitStmt(cast<CapturedStmt>(S.getAssociatedStmt())->getCapturedStmt());
     EnsureInsertPoint();
@@ -726,14 +697,13 @@ void CodeGenFunction::EmitOMPMasterDirective(const OMPMasterDirective &S) {
 }
 
 void CodeGenFunction::EmitOMPCriticalDirective(const OMPCriticalDirective &S) {
-  CGM.getOpenMPRuntime().EmitOMPCriticalRegion(
+  CGM.getOpenMPRuntime().emitCriticalRegion(
       *this, S.getDirectiveName().getAsString(), [&]() -> void {
-    InlinedOpenMPRegion Region(*this, S.getAssociatedStmt());
-    RunCleanupsScope Scope(*this);
-    EmitStmt(
-        cast<CapturedStmt>(S.getAssociatedStmt())->getCapturedStmt());
-    EnsureInsertPoint();
-  }, S.getLocStart());
+        InlinedOpenMPRegionRAII Region(*this, S);
+        RunCleanupsScope Scope(*this);
+        EmitStmt(cast<CapturedStmt>(S.getAssociatedStmt())->getCapturedStmt());
+        EnsureInsertPoint();
+      }, S.getLocStart());
 }
 
 void
@@ -757,11 +727,11 @@ void CodeGenFunction::EmitOMPTaskDirective(const OMPTaskDirective &) {
 
 void CodeGenFunction::EmitOMPTaskyieldDirective(
     const OMPTaskyieldDirective &S) {
-  CGM.getOpenMPRuntime().EmitOMPTaskyieldCall(*this, S.getLocStart());
+  CGM.getOpenMPRuntime().emitTaskyieldCall(*this, S.getLocStart());
 }
 
 void CodeGenFunction::EmitOMPBarrierDirective(const OMPBarrierDirective &S) {
-  CGM.getOpenMPRuntime().EmitOMPBarrierCall(*this, S.getLocStart());
+  CGM.getOpenMPRuntime().emitBarrierCall(*this, S.getLocStart());
 }
 
 void CodeGenFunction::EmitOMPTaskwaitDirective(const OMPTaskwaitDirective &) {
@@ -769,16 +739,14 @@ void CodeGenFunction::EmitOMPTaskwaitDirective(const OMPTaskwaitDirective &) {
 }
 
 void CodeGenFunction::EmitOMPFlushDirective(const OMPFlushDirective &S) {
-  CGM.getOpenMPRuntime().EmitOMPFlush(
-      *this, [&]() -> ArrayRef<const Expr *> {
-               if (auto C = S.getSingleClause(/*K*/ OMPC_flush)) {
-                 auto FlushClause = cast<OMPFlushClause>(C);
-                 return llvm::makeArrayRef(FlushClause->varlist_begin(),
-                                           FlushClause->varlist_end());
-               }
-               return llvm::None;
-             }(),
-      S.getLocStart());
+  CGM.getOpenMPRuntime().emitFlush(*this, [&]() -> ArrayRef<const Expr *> {
+    if (auto C = S.getSingleClause(/*K*/ OMPC_flush)) {
+      auto FlushClause = cast<OMPFlushClause>(C);
+      return llvm::makeArrayRef(FlushClause->varlist_begin(),
+                                FlushClause->varlist_end());
+    }
+    return llvm::None;
+  }(), S.getLocStart());
 }
 
 void CodeGenFunction::EmitOMPOrderedDirective(const OMPOrderedDirective &) {
@@ -833,13 +801,14 @@ static void EmitOMPAtomicReadExpr(CodeGenFunction &CGF, bool IsSeqCst,
                    ? CGF.EmitLoadOfLValue(XLValue, Loc)
                    : CGF.EmitAtomicLoad(XLValue, Loc,
                                         IsSeqCst ? llvm::SequentiallyConsistent
-                                                 : llvm::Monotonic);
+                                                 : llvm::Monotonic,
+                                        XLValue.isVolatile());
   // OpenMP, 2.12.6, atomic Construct
   // Any atomic construct with a seq_cst clause forces the atomically
   // performed operation to include an implicit flush operation without a
   // list.
   if (IsSeqCst)
-    CGF.CGM.getOpenMPRuntime().EmitOMPFlush(CGF, llvm::None, Loc);
+    CGF.CGM.getOpenMPRuntime().emitFlush(CGF, llvm::None, Loc);
   switch (CGF.getEvaluationKind(V->getType())) {
   case TEK_Scalar:
     CGF.EmitStoreOfScalar(
@@ -855,14 +824,38 @@ static void EmitOMPAtomicReadExpr(CodeGenFunction &CGF, bool IsSeqCst,
   }
 }
 
+static void EmitOMPAtomicWriteExpr(CodeGenFunction &CGF, bool IsSeqCst,
+                                   const Expr *X, const Expr *E,
+                                   SourceLocation Loc) {
+  // x = expr;
+  assert(X->isLValue() && "X of 'omp atomic write' is not lvalue");
+  LValue XLValue = CGF.EmitLValue(X);
+  RValue ExprRValue = CGF.EmitAnyExpr(E);
+  if (XLValue.isGlobalReg())
+    CGF.EmitStoreThroughGlobalRegLValue(ExprRValue, XLValue);
+  else
+    CGF.EmitAtomicStore(ExprRValue, XLValue,
+                        IsSeqCst ? llvm::SequentiallyConsistent
+                                 : llvm::Monotonic,
+                        XLValue.isVolatile(), /*IsInit=*/false);
+  // OpenMP, 2.12.6, atomic Construct
+  // Any atomic construct with a seq_cst clause forces the atomically
+  // performed operation to include an implicit flush operation without a
+  // list.
+  if (IsSeqCst)
+    CGF.CGM.getOpenMPRuntime().emitFlush(CGF, llvm::None, Loc);
+}
+
 static void EmitOMPAtomicExpr(CodeGenFunction &CGF, OpenMPClauseKind Kind,
                               bool IsSeqCst, const Expr *X, const Expr *V,
-                              const Expr *, SourceLocation Loc) {
+                              const Expr *E, SourceLocation Loc) {
   switch (Kind) {
   case OMPC_read:
     EmitOMPAtomicReadExpr(CGF, IsSeqCst, X, V, Loc);
     break;
   case OMPC_write:
+    EmitOMPAtomicWriteExpr(CGF, IsSeqCst, X, E, Loc);
+    break;
   case OMPC_update:
   case OMPC_capture:
     llvm_unreachable("CodeGen for 'omp atomic clause' is not supported yet.");

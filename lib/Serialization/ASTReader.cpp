@@ -3099,11 +3099,6 @@ ASTReader::ReadASTBlock(ModuleFile &F, unsigned ClientLoadCapabilities) {
       }
       break;
 
-    case DYNAMIC_CLASSES:
-      for (unsigned I = 0, N = Record.size(); I != N; ++I)
-        DynamicClasses.push_back(getGlobalDeclID(F, Record[I]));
-      break;
-
     case PENDING_IMPLICIT_INSTANTIATIONS:
       if (PendingInstantiations.size() % 2 != 0) {
         Error("Invalid existing PendingInstantiations");
@@ -7312,16 +7307,6 @@ void ASTReader::ReadExtVectorDecls(SmallVectorImpl<TypedefNameDecl *> &Decls) {
   ExtVectorDecls.clear();
 }
 
-void ASTReader::ReadDynamicClasses(SmallVectorImpl<CXXRecordDecl *> &Decls) {
-  for (unsigned I = 0, N = DynamicClasses.size(); I != N; ++I) {
-    CXXRecordDecl *D
-      = dyn_cast_or_null<CXXRecordDecl>(GetDecl(DynamicClasses[I]));
-    if (D)
-      Decls.push_back(D);
-  }
-  DynamicClasses.clear();
-}
-
 void ASTReader::ReadUnusedLocalTypedefNameCandidates(
     llvm::SmallSetVector<const TypedefNameDecl *, 4> &Decls) {
   for (unsigned I = 0, N = UnusedLocalTypedefNameCandidates.size(); I != N;
@@ -8317,10 +8302,9 @@ void ASTReader::finishPendingActions() {
     PendingIncompleteDeclChains.clear();
 
     // Load pending declaration chains.
-    for (unsigned I = 0; I != PendingDeclChains.size(); ++I) {
+    for (unsigned I = 0; I != PendingDeclChains.size(); ++I)
       loadPendingDeclChain(PendingDeclChains[I]);
-      PendingDeclChainsKnown.erase(PendingDeclChains[I]);
-    }
+    PendingDeclChainsKnown.clear();
     PendingDeclChains.clear();
 
     // Make the most recent of the top-level declarations visible.

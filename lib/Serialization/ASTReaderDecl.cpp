@@ -66,7 +66,12 @@ namespace clang {
     serialization::DeclID ReadDeclID(const RecordData &R, unsigned &I) {
       return Reader.ReadDeclID(F, R, I);
     }
-    
+
+    void ReadDeclIDList(SmallVectorImpl<DeclID> &IDs) {
+      for (unsigned I = 0, Size = Record[Idx++]; I != Size; ++I)
+        IDs.push_back(ReadDeclID(Record, Idx));
+    }
+
     Decl *ReadDecl(const RecordData &R, unsigned &I) {
       return Reader.ReadDecl(F, R, I);
     }
@@ -222,6 +227,11 @@ namespace clang {
           RawLocation(RawLocation), Record(Record), Idx(Idx),
           TypeIDForTypeDecl(0), NamedDeclForTagDecl(0),
           TypedefNameForLinkage(nullptr), HasPendingBody(false) {}
+
+    template <typename DeclT>
+    static Decl *getMostRecentDeclImpl(Redeclarable<DeclT> *D);
+    static Decl *getMostRecentDeclImpl(...);
+    static Decl *getMostRecentDecl(Decl *D);
 
     template <typename DeclT>
     static void attachPreviousDeclImpl(ASTReader &Reader,
@@ -398,7 +408,6 @@ void ASTDeclReader::Visit(Decl *D) {
     // FunctionDecl's body was written last after all other Stmts/Exprs.
     // We only read it if FD doesn't already have a body (e.g., from another
     // module).
-    // FIXME: Also consider = default and = delete.
     // FIXME: Can we diagnose ODR violations somehow?
     if (Record[Idx++]) {
       Reader.PendingBodies[FD] = GetCurrentCursorOffset();
@@ -1393,8 +1402,6 @@ void ASTDeclReader::MergeDefinitionData(
   }
 
   // FIXME: Move this out into a .def file?
-  // FIXME: Issue a diagnostic on a mismatched MATCH_FIELD, rather than
-  // asserting; this can happen in the case of an ODR violation.
   bool DetectedOdrViolation = false;
 #define OR_FIELD(Field) DD.Field |= MergeDD.Field;
 #define MATCH_FIELD(Field) \
@@ -1609,7 +1616,8 @@ void ASTDeclReader::VisitCXXConstructorDecl(CXXConstructorDecl *D) {
   VisitCXXMethodDecl(D);
 
   if (auto *CD = ReadDeclAs<CXXConstructorDecl>(Record, Idx))
-    D->setInheritedConstructor(CD);
+    if (D->isCanonicalDecl())
+      D->setInheritedConstructor(CD);
   D->IsExplicitSpecified = Record[Idx++];
   // FIXME: We should defer loading this until we need the constructor's body.
   std::tie(D->CtorInitializers, D->NumCtorInitializers) =
@@ -1723,36 +1731,34 @@ ASTDeclReader::VisitRedeclarableTemplateDecl(RedeclarableTemplateDecl *D) {
   return Redecl;
 }
 
+static DeclID *newDeclIDList(ASTContext &Context, DeclID *Old,
+                             SmallVectorImpl<DeclID> &IDs) {
+  assert(!IDs.empty() && "no IDs to add to list");
+  if (Old) {
+    IDs.insert(IDs.end(), Old + 1, Old + 1 + Old[0]);
+    std::sort(IDs.begin(), IDs.end());
+    IDs.erase(std::unique(IDs.begin(), IDs.end()), IDs.end());
+  }
+
+  auto *Result = new (Context) DeclID[1 + IDs.size()];
+  *Result = IDs.size();
+  std::copy(IDs.begin(), IDs.end(), Result + 1);
+  return Result;
+}
+
 void ASTDeclReader::VisitClassTemplateDecl(ClassTemplateDecl *D) {
   RedeclarableResult Redecl = VisitRedeclarableTemplateDecl(D);
 
   if (ThisDeclID == Redecl.getFirstID()) {
     // This ClassTemplateDecl owns a CommonPtr; read it to keep track of all of
     // the specializations.
-    SmallVector<serialization::DeclID, 2> SpecIDs;
-    SpecIDs.push_back(0);
-    
-    // Specializations.
-    unsigned Size = Record[Idx++];
-    SpecIDs[0] += Size;
-    for (unsigned I = 0; I != Size; ++I)
-      SpecIDs.push_back(ReadDeclID(Record, Idx));
+    SmallVector<serialization::DeclID, 32> SpecIDs;
+    ReadDeclIDList(SpecIDs);
 
-    // Partial specializations.
-    Size = Record[Idx++];
-    SpecIDs[0] += Size;
-    for (unsigned I = 0; I != Size; ++I)
-      SpecIDs.push_back(ReadDeclID(Record, Idx));
-
-    ClassTemplateDecl::Common *CommonPtr = D->getCommonPtr();
-    if (SpecIDs[0]) {
-      typedef serialization::DeclID DeclID;
-      
-      // FIXME: Append specializations!
-      CommonPtr->LazySpecializations
-        = new (Reader.getContext()) DeclID [SpecIDs.size()];
-      memcpy(CommonPtr->LazySpecializations, SpecIDs.data(), 
-             SpecIDs.size() * sizeof(DeclID));
+    if (!SpecIDs.empty()) {
+      auto *CommonPtr = D->getCommonPtr();
+      CommonPtr->LazySpecializations = newDeclIDList(
+          Reader.getContext(), CommonPtr->LazySpecializations, SpecIDs);
     }
   }
 
@@ -1774,30 +1780,13 @@ void ASTDeclReader::VisitVarTemplateDecl(VarTemplateDecl *D) {
   if (ThisDeclID == Redecl.getFirstID()) {
     // This VarTemplateDecl owns a CommonPtr; read it to keep track of all of
     // the specializations.
-    SmallVector<serialization::DeclID, 2> SpecIDs;
-    SpecIDs.push_back(0);
+    SmallVector<serialization::DeclID, 32> SpecIDs;
+    ReadDeclIDList(SpecIDs);
 
-    // Specializations.
-    unsigned Size = Record[Idx++];
-    SpecIDs[0] += Size;
-    for (unsigned I = 0; I != Size; ++I)
-      SpecIDs.push_back(ReadDeclID(Record, Idx));
-
-    // Partial specializations.
-    Size = Record[Idx++];
-    SpecIDs[0] += Size;
-    for (unsigned I = 0; I != Size; ++I)
-      SpecIDs.push_back(ReadDeclID(Record, Idx));
-
-    VarTemplateDecl::Common *CommonPtr = D->getCommonPtr();
-    if (SpecIDs[0]) {
-      typedef serialization::DeclID DeclID;
-
-      // FIXME: Append specializations!
-      CommonPtr->LazySpecializations =
-          new (Reader.getContext()) DeclID[SpecIDs.size()];
-      memcpy(CommonPtr->LazySpecializations, SpecIDs.data(),
-             SpecIDs.size() * sizeof(DeclID));
+    if (!SpecIDs.empty()) {
+      auto *CommonPtr = D->getCommonPtr();
+      CommonPtr->LazySpecializations = newDeclIDList(
+          Reader.getContext(), CommonPtr->LazySpecializations, SpecIDs);
     }
   }
 }
@@ -1909,17 +1898,13 @@ void ASTDeclReader::VisitFunctionTemplateDecl(FunctionTemplateDecl *D) {
 
   if (ThisDeclID == Redecl.getFirstID()) {
     // This FunctionTemplateDecl owns a CommonPtr; read it.
+    SmallVector<serialization::DeclID, 32> SpecIDs;
+    ReadDeclIDList(SpecIDs);
 
-    // Read the function specialization declaration IDs. The specializations
-    // themselves will be loaded if they're needed.
-    if (unsigned NumSpecs = Record[Idx++]) {
-      // FIXME: Append specializations!
-      FunctionTemplateDecl::Common *CommonPtr = D->getCommonPtr();
-      CommonPtr->LazySpecializations = new (Reader.getContext())
-          serialization::DeclID[NumSpecs + 1];
-      CommonPtr->LazySpecializations[0] = NumSpecs;
-      for (unsigned I = 0; I != NumSpecs; ++I)
-        CommonPtr->LazySpecializations[I + 1] = ReadDeclID(Record, Idx);
+    if (!SpecIDs.empty()) {
+      auto *CommonPtr = D->getCommonPtr();
+      CommonPtr->LazySpecializations = newDeclIDList(
+          Reader.getContext(), CommonPtr->LazySpecializations, SpecIDs);
     }
   }
 }
@@ -2803,6 +2788,27 @@ ASTDeclReader::FindExistingResult ASTDeclReader::findExisting(NamedDecl *D) {
 }
 
 template<typename DeclT>
+Decl *ASTDeclReader::getMostRecentDeclImpl(Redeclarable<DeclT> *D) {
+  return D->RedeclLink.getLatestNotUpdated();
+}
+Decl *ASTDeclReader::getMostRecentDeclImpl(...) {
+  llvm_unreachable("getMostRecentDecl on non-redeclarable declaration");
+}
+
+Decl *ASTDeclReader::getMostRecentDecl(Decl *D) {
+  assert(D);
+
+  switch (D->getKind()) {
+#define ABSTRACT_DECL(TYPE)
+#define DECL(TYPE, BASE)                               \
+  case Decl::TYPE:                                     \
+    return getMostRecentDeclImpl(cast<TYPE##Decl>(D));
+#include "clang/AST/DeclNodes.inc"
+  }
+  llvm_unreachable("unknown decl kind");
+}
+
+template<typename DeclT>
 void ASTDeclReader::attachPreviousDeclImpl(ASTReader &Reader,
                                            Redeclarable<DeclT> *D,
                                            Decl *Previous) {
@@ -3379,9 +3385,14 @@ void ASTReader::loadPendingDeclChain(serialization::GlobalDeclID ID) {
   ArrayRef<Decl *> Chain = Visitor.getChain();
   if (Chain.empty())
     return;
-    
+
   // Hook up the chains.
-  Decl *MostRecent = CanonDecl->getMostRecentDecl();
+  //
+  // FIXME: We have three different dispatches on decl kind here; maybe
+  // we should instead generate one loop per kind and dispatch up-front?
+  Decl *MostRecent = ASTDeclReader::getMostRecentDecl(CanonDecl);
+  if (!MostRecent)
+    MostRecent = CanonDecl;
   for (unsigned I = 0, N = Chain.size(); I != N; ++I) {
     if (Chain[I] == CanonDecl)
       continue;
@@ -3389,8 +3400,7 @@ void ASTReader::loadPendingDeclChain(serialization::GlobalDeclID ID) {
     ASTDeclReader::attachPreviousDecl(*this, Chain[I], MostRecent);
     MostRecent = Chain[I];
   }
-  
-  ASTDeclReader::attachLatestDecl(CanonDecl, MostRecent);  
+  ASTDeclReader::attachLatestDecl(CanonDecl, MostRecent);
 }
 
 namespace {

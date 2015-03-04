@@ -647,11 +647,19 @@ CGDebugInfo::getOrCreateRecordFwdDecl(const RecordType *Ty,
   unsigned Line = getLineNumber(RD->getLocation());
   StringRef RDName = getClassName(RD);
 
+  uint64_t Size = 0;
+  uint64_t Align = 0;
+
+  const RecordDecl *D = RD->getDefinition();
+  if (D && D->isCompleteDefinition()) {
+    Size = CGM.getContext().getTypeSize(Ty);
+    Align = CGM.getContext().getTypeAlign(Ty);
+  }
 
   // Create the type.
   SmallString<256> FullName = getUniqueTagTypeName(Ty, CGM, TheCU);
   llvm::DICompositeType RetTy = DBuilder.createReplaceableCompositeType(
-      getTagForRecord(RD), RDName, Ctx, DefUnit, Line, 0, 0, 0,
+      getTagForRecord(RD), RDName, Ctx, DefUnit, Line, 0, Size, Align,
       llvm::DIDescriptor::FlagFwdDecl, FullName);
   ReplaceMap.emplace_back(
       std::piecewise_construct, std::make_tuple(Ty),
@@ -2376,9 +2384,17 @@ void CGDebugInfo::collectVarDeclProps(const VarDecl *VD, llvm::DIFile &Unit,
   // FIXME: Generalize this for even non-member global variables where the
   // declaration and definition may have different lexical decl contexts, once
   // we have support for emitting declarations of (non-member) global variables.
-  VDContext = getContextDescriptor(
-      dyn_cast<Decl>(VD->isStaticDataMember() ? VD->getLexicalDeclContext()
-                                              : VD->getDeclContext()));
+  const DeclContext *DC = VD->isStaticDataMember() ? VD->getLexicalDeclContext()
+                                                   : VD->getDeclContext();
+  // When a record type contains an in-line initialization of a static data
+  // member, and the record type is marked as __declspec(dllexport), an implicit
+  // definition of the member will be created in the record context.  DWARF
+  // doesn't seem to have a nice way to describe this in a form that consumers
+  // are likely to understand, so fake the "normal" situation of a definition
+  // outside the class by putting it in the global scope.
+  if (DC->isRecord())
+    DC = CGM.getContext().getTranslationUnitDecl();
+  VDContext = getContextDescriptor(dyn_cast<Decl>(DC));
 }
 
 llvm::DISubprogram
@@ -3171,6 +3187,7 @@ llvm::DIDerivedType
 CGDebugInfo::getOrCreateStaticDataMemberDeclarationOrNull(const VarDecl *D) {
   if (!D->isStaticDataMember())
     return llvm::DIDerivedType();
+
   auto MI = StaticDataMemberCache.find(D->getCanonicalDecl());
   if (MI != StaticDataMemberCache.end()) {
     assert(MI->second && "Static data member declaration should still exist");
@@ -3321,11 +3338,11 @@ void CGDebugInfo::EmitUsingDecl(const UsingDecl &UD) {
 llvm::DIImportedEntity
 CGDebugInfo::EmitNamespaceAlias(const NamespaceAliasDecl &NA) {
   if (CGM.getCodeGenOpts().getDebugInfo() < CodeGenOptions::LimitedDebugInfo)
-    return llvm::DIImportedEntity(nullptr);
+    return llvm::DIImportedEntity();
   auto &VH = NamespaceAliasCache[&NA];
   if (VH)
     return llvm::DIImportedEntity(cast<llvm::MDNode>(VH));
-  llvm::DIImportedEntity R(nullptr);
+  llvm::DIImportedEntity R;
   if (const NamespaceAliasDecl *Underlying =
           dyn_cast<NamespaceAliasDecl>(NA.getAliasedNamespace()))
     // This could cache & dedup here rather than relying on metadata deduping.

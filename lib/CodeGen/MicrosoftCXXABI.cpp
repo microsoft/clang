@@ -17,12 +17,15 @@
 #include "CGCXXABI.h"
 #include "CGVTables.h"
 #include "CodeGenModule.h"
+#include "TargetInfo.h"
 #include "clang/AST/Decl.h"
 #include "clang/AST/DeclCXX.h"
+#include "clang/AST/StmtCXX.h"
 #include "clang/AST/VTableBuilder.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/IR/CallSite.h"
+#include "llvm/IR/Intrinsics.h"
 
 using namespace clang;
 using namespace CodeGen;
@@ -71,6 +74,8 @@ public:
                                const CXXDestructorDecl *Dtor) override;
 
   void emitRethrow(CodeGenFunction &CGF, bool isNoReturn) override;
+
+  void emitBeginCatch(CodeGenFunction &CGF, const CXXCatchStmt *C) override;
 
   llvm::GlobalVariable *getMSCompleteObjectLocator(const CXXRecordDecl *RD,
                                                    const VPtrInfo *Info);
@@ -467,6 +472,10 @@ private:
     return GetVBaseOffsetFromVBPtr(CGF, Base, VBPOffset, VBTOffset, VBPtr);
   }
 
+  std::pair<llvm::Value *, llvm::Value *>
+  performBaseAdjustment(CodeGenFunction &CGF, llvm::Value *Value,
+                        QualType SrcRecordTy);
+
   /// \brief Performs a full virtual base adjustment.  Used to dereference
   /// pointers to members of virtual bases.
   llvm::Value *AdjustVirtualBase(CodeGenFunction &CGF, const Expr *E,
@@ -691,31 +700,61 @@ void MicrosoftCXXABI::emitRethrow(CodeGenFunction &CGF, bool isNoReturn) {
     CGF.EmitRuntimeCallOrInvoke(Fn, Args);
 }
 
-/// \brief Gets the offset to the virtual base that contains the vfptr for
-/// MS-ABI polymorphic types.
-static llvm::Value *getPolymorphicOffset(CodeGenFunction &CGF,
-                                         const CXXRecordDecl *RD,
-                                         llvm::Value *Value) {
-  const ASTContext &Context = RD->getASTContext();
-  for (const CXXBaseSpecifier &Base : RD->vbases())
-    if (Context.getASTRecordLayout(Base.getType()->getAsCXXRecordDecl())
-            .hasExtendableVFPtr())
-      return CGF.CGM.getCXXABI().GetVirtualBaseClassOffset(
-          CGF, Value, RD, Base.getType()->getAsCXXRecordDecl());
-  llvm_unreachable("One of our vbases should be polymorphic.");
+namespace {
+struct CallEndCatchMSVC : EHScopeStack::Cleanup {
+  CallEndCatchMSVC() {}
+  void Emit(CodeGenFunction &CGF, Flags flags) override {
+    CGF.EmitNounwindRuntimeCall(
+        CGF.CGM.getIntrinsic(llvm::Intrinsic::eh_endcatch));
+  }
+};
 }
 
-static std::pair<llvm::Value *, llvm::Value *>
-performBaseAdjustment(CodeGenFunction &CGF, llvm::Value *Value,
-                      QualType SrcRecordTy) {
+void MicrosoftCXXABI::emitBeginCatch(CodeGenFunction &CGF,
+                                     const CXXCatchStmt *S) {
+  // In the MS ABI, the runtime handles the copy, and the catch handler is
+  // responsible for destruction.
+  VarDecl *CatchParam = S->getExceptionDecl();
+  llvm::Value *Exn = CGF.getExceptionFromSlot();
+  llvm::Function *BeginCatch =
+      CGF.CGM.getIntrinsic(llvm::Intrinsic::eh_begincatch);
+
+  if (!CatchParam) {
+    llvm::Value *Args[2] = {Exn, llvm::Constant::getNullValue(CGF.Int8PtrTy)};
+    CGF.EmitNounwindRuntimeCall(BeginCatch, Args);
+    CGF.EHStack.pushCleanup<CallEndCatchMSVC>(NormalAndEHCleanup);
+    return;
+  }
+
+  CodeGenFunction::AutoVarEmission var = CGF.EmitAutoVarAlloca(*CatchParam);
+  llvm::Value *ParamAddr =
+      CGF.Builder.CreateBitCast(var.getObjectAddress(CGF), CGF.Int8PtrTy);
+  llvm::Value *Args[2] = {Exn, ParamAddr};
+  CGF.EmitNounwindRuntimeCall(BeginCatch, Args);
+  // FIXME: Do we really need exceptional endcatch cleanups?
+  CGF.EHStack.pushCleanup<CallEndCatchMSVC>(NormalAndEHCleanup);
+  CGF.EmitAutoVarCleanups(var);
+}
+
+std::pair<llvm::Value *, llvm::Value *>
+MicrosoftCXXABI::performBaseAdjustment(CodeGenFunction &CGF, llvm::Value *Value,
+                                       QualType SrcRecordTy) {
   Value = CGF.Builder.CreateBitCast(Value, CGF.Int8PtrTy);
   const CXXRecordDecl *SrcDecl = SrcRecordTy->getAsCXXRecordDecl();
+  const ASTContext &Context = CGF.getContext();
 
-  if (CGF.getContext().getASTRecordLayout(SrcDecl).hasExtendableVFPtr())
+  if (Context.getASTRecordLayout(SrcDecl).hasExtendableVFPtr())
     return std::make_pair(Value, llvm::ConstantInt::get(CGF.Int32Ty, 0));
 
   // Perform a base adjustment.
-  llvm::Value *Offset = getPolymorphicOffset(CGF, SrcDecl, Value);
+  const CXXBaseSpecifier *PolymorphicBase = std::find_if(
+      SrcDecl->vbases_begin(), SrcDecl->vbases_end(),
+      [&](const CXXBaseSpecifier &Base) {
+        const CXXRecordDecl *BaseDecl = Base.getType()->getAsCXXRecordDecl();
+        return Context.getASTRecordLayout(BaseDecl).hasExtendableVFPtr();
+      });
+  llvm::Value *Offset = GetVirtualBaseClassOffset(
+      CGF, Value, SrcDecl, PolymorphicBase->getType()->getAsCXXRecordDecl());
   Value = CGF.Builder.CreateInBoundsGEP(Value, Offset);
   Offset = CGF.Builder.CreateTrunc(Offset, CGF.Int32Ty);
   return std::make_pair(Value, Offset);

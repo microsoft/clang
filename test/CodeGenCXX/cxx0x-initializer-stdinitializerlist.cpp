@@ -99,7 +99,7 @@ void fn1(int i) {
   // CHECK-LABEL: define void @_Z3fn1i
   // temporary array
   // CHECK: [[array:%[^ ]+]] = alloca [3 x i32]
-  // CHECK: getelementptr inbounds [3 x i32]* [[array]], i{{32|64}} 0
+  // CHECK: getelementptr inbounds [3 x i32], [3 x i32]* [[array]], i{{32|64}} 0
   // CHECK-NEXT: store i32 1, i32*
   // CHECK-NEXT: getelementptr
   // CHECK-NEXT: store
@@ -108,7 +108,7 @@ void fn1(int i) {
   // CHECK-NEXT: store
   // init the list
   // CHECK-NEXT: getelementptr
-  // CHECK-NEXT: getelementptr inbounds [3 x i32]*
+  // CHECK-NEXT: getelementptr inbounds [3 x i32], [3 x i32]*
   // CHECK-NEXT: store i32*
   // CHECK-NEXT: getelementptr
   // CHECK-NEXT: store i{{32|64}} 3
@@ -372,7 +372,7 @@ namespace partly_constant {
   //
   // Second init list array (non-constant).
   // CHECK: store i32 4, i32* getelementptr inbounds ({{.*}}* @[[PARTLY_CONSTANT_SECOND]], i64 0, i64 0)
-  // CHECK: load i32* @_ZN15partly_constant1kE
+  // CHECK: load i32, i32* @_ZN15partly_constant1kE
   // CHECK: store i32 {{.*}}, i32* getelementptr inbounds ({{.*}}* @[[PARTLY_CONSTANT_SECOND]], i64 0, i64 1)
   //
   // Second init list.

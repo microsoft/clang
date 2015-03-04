@@ -1813,7 +1813,7 @@ EmitBitCastOfLValueToProperType(CodeGenFunction &CGF,
 static LValue EmitThreadPrivateVarDeclLValue(
     CodeGenFunction &CGF, const VarDecl *VD, QualType T, llvm::Value *V,
     llvm::Type *RealVarTy, CharUnits Alignment, SourceLocation Loc) {
-  V = CGF.CGM.getOpenMPRuntime().getOMPAddrOfThreadPrivate(CGF, VD, V, Loc);
+  V = CGF.CGM.getOpenMPRuntime().getAddrOfThreadPrivate(CGF, VD, V, Loc);
   V = EmitBitCastOfLValueToProperType(CGF, V, RealVarTy);
   return CGF.MakeAddrLValue(V, T, Alignment);
 }
@@ -3198,7 +3198,7 @@ LValue CodeGenFunction::EmitCallExprLValue(const CallExpr *E) {
   if (!RV.isScalar())
     return MakeAddrLValue(RV.getAggregateAddr(), E->getType());
 
-  assert(E->getCallReturnType()->isReferenceType() &&
+  assert(E->getCallReturnType(getContext())->isReferenceType() &&
          "Can't have a scalar return unless the return type is a "
          "reference type!");
 

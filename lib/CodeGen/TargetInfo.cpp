@@ -238,7 +238,7 @@ static bool isEmptyRecord(ASTContext &Context, QualType T, bool AllowArrays) {
 /// \return The field declaration for the single non-empty field, if
 /// it exists.
 static const Type *isSingleElementStruct(QualType T, ASTContext &Context) {
-  const RecordType *RT = T->getAsStructureType();
+  const RecordType *RT = T->getAs<RecordType>();
   if (!RT)
     return nullptr;
 
@@ -1507,6 +1507,10 @@ public:
 
   llvm::Value *EmitVAArg(llvm::Value *VAListAddr, QualType Ty,
                          CodeGenFunction &CGF) const override;
+
+  bool has64BitPointers() const {
+    return Has64BitPointers;
+  }
 };
 
 /// WinX86_64ABIInfo - The Windows X86_64 ABI information.
@@ -1592,10 +1596,17 @@ public:
 
   llvm::Constant *
   getUBSanFunctionSignature(CodeGen::CodeGenModule &CGM) const override {
-    unsigned Sig = (0xeb << 0) |  // jmp rel8
-                   (0x0a << 8) |  //           .+0x0c
-                   ('F' << 16) |
-                   ('T' << 24);
+    unsigned Sig;
+    if (getABIInfo().has64BitPointers())
+      Sig = (0xeb << 0) |  // jmp rel8
+            (0x0a << 8) |  //           .+0x0c
+            ('F' << 16) |
+            ('T' << 24);
+    else
+      Sig = (0xeb << 0) |  // jmp rel8
+            (0x06 << 8) |  //           .+0x08
+            ('F' << 16) |
+            ('T' << 24);
     return llvm::ConstantInt::get(CGM.Int32Ty, Sig);
   }
 
@@ -2199,20 +2210,9 @@ llvm::Type *X86_64ABIInfo::GetByteVectorType(QualType Ty) const {
     Ty = QualType(InnerTy, 0);
 
   llvm::Type *IRType = CGT.ConvertType(Ty);
-
-  // If the preferred type is a 16-byte vector, prefer to pass it.
-  if (llvm::VectorType *VT = dyn_cast<llvm::VectorType>(IRType)){
-    llvm::Type *EltTy = VT->getElementType();
-    unsigned BitWidth = VT->getBitWidth();
-    if ((BitWidth >= 128 && BitWidth <= 256) &&
-        (EltTy->isFloatTy() || EltTy->isDoubleTy() ||
-         EltTy->isIntegerTy(8) || EltTy->isIntegerTy(16) ||
-         EltTy->isIntegerTy(32) || EltTy->isIntegerTy(64) ||
-         EltTy->isIntegerTy(128)))
-      return VT;
-  }
-
-  return llvm::VectorType::get(llvm::Type::getDoubleTy(getVMContext()), 2);
+  assert(isa<llvm::VectorType>(IRType) &&
+         "Trying to return a non-vector type in a vector register!");
+  return IRType;
 }
 
 /// BitsContainNoUserData - Return true if the specified [start,end) bit range
@@ -6120,12 +6120,7 @@ private:
 
     // Check if Ty is a usable substitute for the coercion type.
     bool isUsableType(llvm::StructType *Ty) const {
-      if (Ty->getNumElements() != Elems.size())
-        return false;
-      for (unsigned i = 0, e = Elems.size(); i != e; ++i)
-        if (Elems[i] != Ty->getElementType(i))
-          return false;
-      return true;
+      return llvm::makeArrayRef(Elems) == Ty->elements();
     }
 
     // Get the coercion type as a literal struct type.

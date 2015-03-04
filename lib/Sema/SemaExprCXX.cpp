@@ -660,24 +660,10 @@ ExprResult Sema::BuildCXXThrow(SourceLocation OpLoc, Expr *Ex,
 /// CheckCXXThrowOperand - Validate the operand of a throw.
 ExprResult Sema::CheckCXXThrowOperand(SourceLocation ThrowLoc, Expr *E,
                                       bool IsThrownVarInScope) {
-  // C++ [except.throw]p3:
-  //   A throw-expression initializes a temporary object, called the exception
-  //   object, the type of which is determined by removing any top-level
-  //   cv-qualifiers from the static type of the operand of throw and adjusting
-  //   the type from "array of T" or "function returning T" to "pointer to T"
-  //   or "pointer to function returning T", [...]
-  if (E->getType().hasQualifiers())
-    E = ImpCastExprToType(E, E->getType().getUnqualifiedType(), CK_NoOp,
-                          E->getValueKind()).get();
-
-  ExprResult Res = DefaultFunctionArrayConversion(E);
-  if (Res.isInvalid())
-    return ExprError();
-  E = Res.get();
-
+  QualType ExceptionObjectTy = Context.getExceptionObjectType(E->getType());
   //   If the type of the exception would be an incomplete type or a pointer
   //   to an incomplete type other than (cv) void the program is ill-formed.
-  QualType Ty = E->getType();
+  QualType Ty = ExceptionObjectTy;
   bool isPointer = false;
   if (const PointerType* Ptr = Ty->getAs<PointerType>()) {
     Ty = Ptr->getPointeeType();
@@ -690,7 +676,7 @@ ExprResult Sema::CheckCXXThrowOperand(SourceLocation ThrowLoc, Expr *E,
                             E->getSourceRange()))
       return ExprError();
 
-    if (RequireNonAbstractType(ThrowLoc, E->getType(),
+    if (RequireNonAbstractType(ThrowLoc, ExceptionObjectTy,
                                diag::err_throw_abstract_type, E))
       return ExprError();
   }
@@ -714,11 +700,10 @@ ExprResult Sema::CheckCXXThrowOperand(SourceLocation ThrowLoc, Expr *E,
     NRVOVariable = getCopyElisionCandidate(QualType(), E, false);
 
   InitializedEntity Entity =
-      InitializedEntity::InitializeException(ThrowLoc, E->getType(),
+      InitializedEntity::InitializeException(ThrowLoc, ExceptionObjectTy,
                                              /*NRVO=*/NRVOVariable != nullptr);
-  Res = PerformMoveOrCopyInitialization(Entity, NRVOVariable,
-                                        QualType(), E,
-                                        IsThrownVarInScope);
+  ExprResult Res = PerformMoveOrCopyInitialization(
+      Entity, NRVOVariable, QualType(), E, IsThrownVarInScope);
   if (Res.isInvalid())
     return ExprError();
   E = Res.get();
@@ -2090,15 +2075,6 @@ void Sema::DeclareGlobalAllocationFunction(DeclarationName Name,
     }
   }
   
-  // If the function is sized operator delete and has not already been
-  // declared, and weak definitions have been disabled, do not declare
-  // it implicitly. Instead, let deallocation function lookup pick up
-  // unsized delete.
-  // FIXME: We should remove this guard once backward compatibility is
-  // no longer an issue
-  if (NumParams == 2 && !getLangOpts().DefineSizedDeallocation)
-    return;
-
   FunctionProtoType::ExtProtoInfo EPI;
 
   QualType BadAllocType;
@@ -2130,6 +2106,16 @@ void Sema::DeclareGlobalAllocationFunction(DeclarationName Name,
   // Implicit sized deallocation functions always have default visibility.
   Alloc->addAttr(VisibilityAttr::CreateImplicit(Context,
                                                 VisibilityAttr::Default));
+
+  if (NumParams == 2 && !getLangOpts().DefineSizedDeallocation) {
+    assert(getLangOpts().SizedDeallocation &&
+           "Only sized deallocation can have two parameters");
+
+    // This declaration should be emited as extern_weak.
+    assert(Alloc->getLinkageAndVisibility().getLinkage() ==
+           clang::ExternalLinkage);
+    Alloc->addAttr(WeakAttr::CreateImplicit(Context));
+  }
 
   if (AddRestrictAttr)
     Alloc->addAttr(
@@ -5164,7 +5150,7 @@ ExprResult Sema::ActOnDecltypeExpression(Expr *E) {
     if (Call == TopCall)
       continue;
 
-    if (CheckCallReturnType(Call->getCallReturnType(),
+    if (CheckCallReturnType(Call->getCallReturnType(Context),
                             Call->getLocStart(),
                             Call, Call->getDirectCallee()))
       return ExprError();
@@ -5365,20 +5351,6 @@ ExprResult Sema::ActOnStartCXXMemberReference(Scope *S, Expr *Base,
   return Base;
 }
 
-ExprResult Sema::DiagnoseDtorReference(SourceLocation NameLoc,
-                                                   Expr *MemExpr) {
-  SourceLocation ExpectedLParenLoc = PP.getLocForEndOfToken(NameLoc);
-  Diag(MemExpr->getLocStart(), diag::err_dtor_expr_without_call)
-    << isa<CXXPseudoDestructorExpr>(MemExpr)
-    << FixItHint::CreateInsertion(ExpectedLParenLoc, "()");
-
-  return ActOnCallExpr(/*Scope*/ nullptr,
-                       MemExpr,
-                       /*LPLoc*/ ExpectedLParenLoc,
-                       None,
-                       /*RPLoc*/ ExpectedLParenLoc);
-}
-
 static bool CheckArrow(Sema& S, QualType& ObjectType, Expr *&Base, 
                    tok::TokenKind& OpKind, SourceLocation OpLoc) {
   if (Base->hasPlaceholderType()) {
@@ -5419,8 +5391,7 @@ ExprResult Sema::BuildPseudoDestructorExpr(Expr *Base,
                                            TypeSourceInfo *ScopeTypeInfo,
                                            SourceLocation CCLoc,
                                            SourceLocation TildeLoc,
-                                         PseudoDestructorTypeStorage Destructed,
-                                           bool HasTrailingLParen) {
+                                         PseudoDestructorTypeStorage Destructed) {
   TypeSourceInfo *DestructedTypeInfo = Destructed.getTypeSourceInfo();
 
   QualType ObjectType;
@@ -5508,10 +5479,7 @@ ExprResult Sema::BuildPseudoDestructorExpr(Expr *Base,
                                             TildeLoc,
                                             Destructed);
 
-  if (HasTrailingLParen)
-    return Result;
-
-  return DiagnoseDtorReference(Destructed.getLocation(), Result);
+  return Result;
 }
 
 ExprResult Sema::ActOnPseudoDestructorExpr(Scope *S, Expr *Base,
@@ -5521,8 +5489,7 @@ ExprResult Sema::ActOnPseudoDestructorExpr(Scope *S, Expr *Base,
                                            UnqualifiedId &FirstTypeName,
                                            SourceLocation CCLoc,
                                            SourceLocation TildeLoc,
-                                           UnqualifiedId &SecondTypeName,
-                                           bool HasTrailingLParen) {
+                                           UnqualifiedId &SecondTypeName) {
   assert((FirstTypeName.getKind() == UnqualifiedId::IK_TemplateId ||
           FirstTypeName.getKind() == UnqualifiedId::IK_Identifier) &&
          "Invalid first type name in pseudo-destructor");
@@ -5649,15 +5616,14 @@ ExprResult Sema::ActOnPseudoDestructorExpr(Scope *S, Expr *Base,
 
   return BuildPseudoDestructorExpr(Base, OpLoc, OpKind, SS,
                                    ScopeTypeInfo, CCLoc, TildeLoc,
-                                   Destructed, HasTrailingLParen);
+                                   Destructed);
 }
 
 ExprResult Sema::ActOnPseudoDestructorExpr(Scope *S, Expr *Base,
                                            SourceLocation OpLoc,
                                            tok::TokenKind OpKind,
                                            SourceLocation TildeLoc, 
-                                           const DeclSpec& DS,
-                                           bool HasTrailingLParen) {
+                                           const DeclSpec& DS) {
   QualType ObjectType;
   if (CheckArrow(*this, ObjectType, Base, OpKind, OpLoc))
     return ExprError();
@@ -5673,7 +5639,7 @@ ExprResult Sema::ActOnPseudoDestructorExpr(Scope *S, Expr *Base,
 
   return BuildPseudoDestructorExpr(Base, OpLoc, OpKind, CXXScopeSpec(),
                                    nullptr, SourceLocation(), TildeLoc,
-                                   Destructed, HasTrailingLParen);
+                                   Destructed);
 }
 
 ExprResult Sema::BuildCXXMemberCallExpr(Expr *E, NamedDecl *FoundDecl,

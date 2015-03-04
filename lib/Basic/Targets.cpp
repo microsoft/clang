@@ -25,7 +25,6 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/ADT/Triple.h"
-#include "llvm/IR/Type.h"
 #include "llvm/MC/MCSectionMachO.h"
 #include "llvm/Support/ErrorHandling.h"
 #include <algorithm>
@@ -364,8 +363,13 @@ protected:
     DefineStd(Builder, "linux", Opts);
     Builder.defineMacro("__gnu_linux__");
     Builder.defineMacro("__ELF__");
-    if (Triple.getEnvironment() == llvm::Triple::Android)
+    if (Triple.getEnvironment() == llvm::Triple::Android) {
       Builder.defineMacro("__ANDROID__", "1");
+      unsigned Maj, Min, Rev;
+      Triple.getOSVersion(Maj, Min, Rev);
+      this->PlatformName = "android";
+      this->PlatformMinVersion = VersionTuple(Maj, Min, Rev);
+    }
     if (Opts.POSIXThreads)
       Builder.defineMacro("_REENTRANT");
     if (Opts.CPlusPlus)
@@ -472,6 +476,17 @@ protected:
     Builder.defineMacro("__ELF__");
     if (Opts.POSIXThreads)
       Builder.defineMacro("_REENTRANT");
+
+    switch (Triple.getArch()) {
+    default:
+      break;
+    case llvm::Triple::arm:
+    case llvm::Triple::armeb:
+    case llvm::Triple::thumb:
+    case llvm::Triple::thumbeb:
+      Builder.defineMacro("__ARM_DWARF_EH__");
+      break;
+    }
   }
 public:
   BitrigTargetInfo(const llvm::Triple &Triple) : OSTargetInfo<Target>(Triple) {
@@ -1646,6 +1661,8 @@ public:
   void getTargetDefines(const LangOptions &Opts,
                         MacroBuilder &Builder) const override {
     Builder.defineMacro("__R600__");
+    if (GPU >= GK_SOUTHERN_ISLANDS && Opts.OpenCL)
+      Builder.defineMacro("cl_khr_fp64");
   }
 
   BuiltinVaListKind getBuiltinVaListKind() const override {
@@ -3627,19 +3644,31 @@ public:
     IntPtrType = SignedLongLong;
     this->UserLabelPrefix = "";
   }
+
   void getTargetDefines(const LangOptions &Opts,
                                 MacroBuilder &Builder) const override {
     WindowsTargetInfo<X86_64TargetInfo>::getTargetDefines(Opts, Builder);
     Builder.defineMacro("_WIN64");
   }
+
   BuiltinVaListKind getBuiltinVaListKind() const override {
     return TargetInfo::CharPtrBuiltinVaList;
   }
+
   CallingConvCheckResult checkCallingConvention(CallingConv CC) const override {
-    return (CC == CC_C ||
-            CC == CC_X86VectorCall ||
-            CC == CC_IntelOclBicc ||
-            CC == CC_X86_64SysV) ? CCCR_OK : CCCR_Warning;
+    switch (CC) {
+    case CC_X86StdCall:
+    case CC_X86ThisCall:
+    case CC_X86FastCall:
+      return CCCR_Ignore;
+    case CC_C:
+    case CC_X86VectorCall:
+    case CC_IntelOclBicc:
+    case CC_X86_64SysV:
+      return CCCR_OK;
+    default:
+      return CCCR_Warning;
+    }
   }
 };
 } // end anonymous namespace
@@ -3814,8 +3843,9 @@ class ARMTargetInfo : public TargetInfo {
     DoubleAlign = LongLongAlign = LongDoubleAlign = SuitableAlign = 64;
     const llvm::Triple &T = getTriple();
 
-    // size_t is unsigned long on MachO-derived environments and NetBSD.
-    if (T.isOSBinFormatMachO() || T.getOS() == llvm::Triple::NetBSD)
+    // size_t is unsigned long on MachO-derived environments, NetBSD and Bitrig.
+    if (T.isOSBinFormatMachO() || T.getOS() == llvm::Triple::NetBSD ||
+        T.getOS() == llvm::Triple::Bitrig)
       SizeType = UnsignedLong;
     else
       SizeType = UnsignedInt;
@@ -5673,6 +5703,10 @@ public:
 
   bool isFP64Default() const {
     return CPU == "mips32r6" || ABI == "n32" || ABI == "n64" || ABI == "64";
+  }
+
+  bool isNan2008() const override {
+    return IsNan2008;
   }
 
   StringRef getABI() const override { return ABI; }

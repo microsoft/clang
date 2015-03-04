@@ -998,7 +998,9 @@ are listed below.
       greater or equal to the promoted bit-width of the left hand side
       or less than zero, or where the left hand side is negative. For a
       signed left shift, also checks for signed overflow in C, and for
-      unsigned overflow in C++.
+      unsigned overflow in C++. You can use ``-fsanitize=shift-base`` or
+      ``-fsanitize=shift-exponent`` to check only left-hand side or
+      right-hand side of shift operation, respectively.
    -  ``-fsanitize=signed-integer-overflow``: Signed integer overflow,
       including all the checks added by ``-ftrapv``, and checking for
       overflow in signed division (``INT_MIN / -1``).
@@ -1030,10 +1032,11 @@ are listed below.
       uninitialized bits came from. Slows down execution by additional
       1.5x-2x.
 
-      Possible values for level are 0 (off), 1 (default), 2. Level 2 adds more
-      sections to MemorySanitizer reports describing the order of memory stores
-      the uninitialized value went through. Beware, this mode may use a lot of
-      extra memory.
+      Possible values for level are 0 (off), 1, 2 (default). Level 2
+      adds more sections to MemorySanitizer reports describing the
+      order of memory stores the uninitialized value went
+      through. This mode may use extra memory in programs that copy
+      uninitialized memory a lot.
 
    Extra features of UndefinedBehaviorSanitizer:
 

@@ -433,12 +433,12 @@ def fborland_extensions : Flag<["-"], "fborland-extensions">, Group<f_Group>, Fl
 def fbuiltin : Flag<["-"], "fbuiltin">, Group<f_Group>;
 def fcaret_diagnostics : Flag<["-"], "fcaret-diagnostics">, Group<f_Group>;
 def fclasspath_EQ : Joined<["-"], "fclasspath=">, Group<f_Group>;
-def fcolor_diagnostics : Flag<["-"], "fcolor-diagnostics">, Group<f_Group>, Flags<[CC1Option]>,
-  HelpText<"Use colors in diagnostics">;
+def fcolor_diagnostics : Flag<["-"], "fcolor-diagnostics">, Group<f_Group>,
+  Flags<[CoreOption, CC1Option]>, HelpText<"Use colors in diagnostics">;
 def fdiagnostics_color : Flag<["-"], "fdiagnostics-color">, Group<f_Group>;
 def fdiagnostics_color_EQ : Joined<["-"], "fdiagnostics-color=">, Group<f_Group>;
-def fansi_escape_codes : Flag<["-"], "fansi-escape-codes">, Group<f_Group>, Flags<[CC1Option]>,
-  HelpText<"Use ANSI escape codes for diagnostics">;
+def fansi_escape_codes : Flag<["-"], "fansi-escape-codes">, Group<f_Group>,
+  Flags<[CoreOption, CC1Option]>, HelpText<"Use ANSI escape codes for diagnostics">;
 def fcomment_block_commands : CommaJoined<["-"], "fcomment-block-commands=">, Group<f_clang_Group>, Flags<[CC1Option]>,
   HelpText<"Treat each comma separated argument in <arg> as a documentation comment block command">,
   MetaVarName<"<arg>">;
@@ -595,6 +595,10 @@ def frewrite_map_file : Separate<["-"], "frewrite-map-file">,
 def frewrite_map_file_EQ : Joined<["-"], "frewrite-map-file=">,
                            Group<f_Group>,
                            Flags<[DriverOption]>;
+
+def fuse_line_directives : Flag<["-"], "fuse-line-directives">, Group<f_Group>,
+  Flags<[CC1Option]>;
+def fno_use_line_directives : Flag<["-"], "fno-use-line-directives">, Group<f_Group>;
 
 def ffreestanding : Flag<["-"], "ffreestanding">, Group<f_Group>, Flags<[CC1Option]>,
   HelpText<"Assert that the compilation takes place in a freestanding environment">;
@@ -815,6 +819,11 @@ def fobjc_atdefs : Flag<["-"], "fobjc-atdefs">, Group<clang_ignored_f_Group>;
 def fobjc_call_cxx_cdtors : Flag<["-"], "fobjc-call-cxx-cdtors">, Group<clang_ignored_f_Group>;
 def fobjc_exceptions: Flag<["-"], "fobjc-exceptions">, Group<f_Group>,
   HelpText<"Enable Objective-C exceptions">, Flags<[CC1Option]>;
+def fapplication_extension : Flag<["-"], "fapplication-extension">,
+  Group<f_Group>, Flags<[CC1Option]>,
+  HelpText<"Restrict code to those available for App Extensions">;
+def fno_application_extension : Flag<["-"], "fno-application-extension">,
+  Group<f_Group>;
 
 def fobjc_gc_only : Flag<["-"], "fobjc-gc-only">, Group<f_Group>, Flags<[CC1Option]>,
   HelpText<"Use GC exclusively for Objective-C related memory management">;
