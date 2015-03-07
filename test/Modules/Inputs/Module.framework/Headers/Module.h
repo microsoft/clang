@@ -31,4 +31,7 @@ typedef	struct __sFILE {
 
 extern FILE *myFile;
 
+#define SOME_MACRO_ATTR_GETTING_UNDEFINED __attribute__((objc_method_family(none)))
+#undef SOME_MACRO_ATTR_GETTING_UNDEFINED
+
 #endif // MODULE_H

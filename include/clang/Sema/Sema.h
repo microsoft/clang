@@ -683,11 +683,26 @@ public:
   /// \brief The declaration of the Objective-C NSArray class.
   ObjCInterfaceDecl *NSArrayDecl;
 
+  /// \brief Pointer to NSMutableArray type (NSMutableArray *).
+  QualType NSMutableArrayPointer;
+
   /// \brief The declaration of the arrayWithObjects:count: method.
   ObjCMethodDecl *ArrayWithObjectsMethod;
 
   /// \brief The declaration of the Objective-C NSDictionary class.
   ObjCInterfaceDecl *NSDictionaryDecl;
+
+  /// \brief Pointer to NSMutableDictionary type (NSMutableDictionary *).
+  QualType NSMutableDictionaryPointer;
+
+  /// \brief Pointer to NSMutableSet type (NSMutableSet *).
+  QualType NSMutableSetPointer;
+
+  /// \brief Pointer to NSCountedSet type (NSCountedSet *).
+  QualType NSCountedSetPointer;
+
+  /// \brief Pointer to NSMutableOrderedSet type (NSMutableOrderedSet *).
+  QualType NSMutableOrderedSetPointer;
 
   /// \brief The declaration of the dictionaryWithObjects:forKeys:count: method.
   ObjCMethodDecl *DictionaryWithObjectsMethod;
@@ -2807,6 +2822,7 @@ public:
   bool checkStringLiteralArgumentAttr(const AttributeList &Attr,
                                       unsigned ArgNum, StringRef &Str,
                                       SourceLocation *ArgLocation = nullptr);
+  bool checkSectionName(SourceLocation LiteralLoc, StringRef Str);
   bool checkMSInheritanceAttrOnDefinition(
       CXXRecordDecl *RD, SourceRange Range, bool BestCase,
       MSInheritanceAttr::Spelling SemanticSpelling);
@@ -8644,6 +8660,10 @@ private:
   /// \brief Check if the given expression contains 'break' or 'continue'
   /// statement that produces control flow different from GCC.
   void CheckBreakContinueBinding(Expr *E);
+
+  /// \brief Check whether receiver is mutable ObjC container which
+  /// attempts to add itself into the container
+  void CheckObjCCircularContainer(ObjCMessageExpr *Message);
 
 public:
   /// \brief Register a magic integral constant to be used as a type tag.
