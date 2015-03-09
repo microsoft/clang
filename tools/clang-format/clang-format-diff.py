@@ -107,8 +107,8 @@ def main():
 
     if not args.i:
       with open(filename) as f:
-        code = f.readlines()
-      formatted_code = io.StringIO(stdout.decode()).readlines()
+        code = f.read().split()
+      formatted_code = io.StringIO(stdout.decode()).read().split()
       diff = difflib.unified_diff(code, formatted_code,
                                   filename, filename,
                                   '(before formatting)', '(after formatting)')
