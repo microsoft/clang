@@ -383,6 +383,7 @@ private:
   ImportDecl *LastLocalImport;
   
   TranslationUnitDecl *TUDecl;
+  mutable ExternCContextDecl *ExternCContext;
 
   /// \brief The associated SourceManager object.a
   SourceManager &SourceMgr;
@@ -782,6 +783,7 @@ public:
 
   TranslationUnitDecl *getTranslationUnitDecl() const { return TUDecl; }
 
+  ExternCContextDecl *getExternCContextDecl() const;
 
   // Builtin Types.
   CanQualType VoidTy;
@@ -2192,6 +2194,12 @@ public:
   /// \returns true if the function/var must be CodeGen'ed/deserialized even if
   /// it is not used.
   bool DeclMustBeEmitted(const Decl *D);
+
+  const CXXConstructorDecl *
+  getCopyConstructorForExceptionObject(CXXRecordDecl *RD);
+
+  void addCopyConstructorForExceptionObject(CXXRecordDecl *RD,
+                                            CXXConstructorDecl *CD);
 
   void setManglingNumber(const NamedDecl *ND, unsigned Number);
   unsigned getManglingNumber(const NamedDecl *ND) const;

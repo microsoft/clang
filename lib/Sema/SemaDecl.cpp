@@ -4864,27 +4864,13 @@ Sema::RegisterLocallyScopedExternCDecl(NamedDecl *ND, Scope *S) {
     return;
 
   // Note that we have a locally-scoped external with this name.
-  // FIXME: There can be multiple such declarations if they are functions marked
-  // __attribute__((overloadable)) declared in function scope in C.
-  LocallyScopedExternCDecls[ND->getDeclName()] = ND;
+  Context.getExternCContextDecl()->makeDeclVisibleInContext(ND);
 }
 
 NamedDecl *Sema::findLocallyScopedExternCDecl(DeclarationName Name) {
-  if (ExternalSource) {
-    // Load locally-scoped external decls from the external source.
-    // FIXME: This is inefficient. Maybe add a DeclContext for extern "C" decls?
-    SmallVector<NamedDecl *, 4> Decls;
-    ExternalSource->ReadLocallyScopedExternCDecls(Decls);
-    for (unsigned I = 0, N = Decls.size(); I != N; ++I) {
-      llvm::DenseMap<DeclarationName, NamedDecl *>::iterator Pos
-        = LocallyScopedExternCDecls.find(Decls[I]->getDeclName());
-      if (Pos == LocallyScopedExternCDecls.end())
-        LocallyScopedExternCDecls[Decls[I]->getDeclName()] = Decls[I];
-    }
-  }
-
-  NamedDecl *D = LocallyScopedExternCDecls.lookup(Name);
-  return D ? D->getMostRecentDecl() : nullptr;
+  // FIXME: We can have multiple results via __attribute__((overloadable)).
+  auto Result = Context.getExternCContextDecl()->lookup(Name);
+  return Result.empty() ? nullptr : *Result.begin();
 }
 
 /// \brief Diagnose function specifiers on a declaration of an identifier that
@@ -10356,9 +10342,9 @@ Decl *Sema::ActOnStartOfFunctionDef(Scope *FnBodyScope, Decl *D) {
          I != E; ++I) {
       NamedDecl *D = *I;
 
-      // Some of these decls (like enums) may have been pinned to the translation unit
-      // for lack of a real context earlier. If so, remove from the translation unit
-      // and reattach to the current context.
+      // Some of these decls (like enums) may have been pinned to the
+      // translation unit for lack of a real context earlier. If so, remove
+      // from the translation unit and reattach to the current context.
       if (D->getLexicalDeclContext() == Context.getTranslationUnitDecl()) {
         // Is the decl actually in the context?
         for (const auto *DI : Context.getTranslationUnitDecl()->decls()) {
@@ -10620,7 +10606,8 @@ Decl *Sema::ActOnFinishFunctionBody(Decl *dcl, Stmt *Body,
     if (getCurFunction()->ObjCWarnForNoInitDelegation) {
       // Don't issue this warning for unavaialable inits.
       if (!MD->isUnavailable())
-        Diag(MD->getLocation(), diag::warn_objc_secondary_init_missing_init_call);
+        Diag(MD->getLocation(),
+             diag::warn_objc_secondary_init_missing_init_call);
       getCurFunction()->ObjCWarnForNoInitDelegation = false;
     }
   } else {
@@ -10682,8 +10669,9 @@ Decl *Sema::ActOnFinishFunctionBody(Decl *dcl, Stmt *Body,
       }
     }
 
-    assert(ExprCleanupObjects.size() == ExprEvalContexts.back().NumCleanupObjects
-           && "Leftover temporaries in function");
+    assert(ExprCleanupObjects.size() ==
+               ExprEvalContexts.back().NumCleanupObjects &&
+           "Leftover temporaries in function");
     assert(!ExprNeedsCleanups && "Unaccounted cleanups in function");
     assert(MaybeODRUseExprs.empty() &&
            "Leftover expressions for odr-use checking");

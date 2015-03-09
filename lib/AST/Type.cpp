@@ -170,15 +170,7 @@ DependentSizedExtVectorType::Profile(llvm::FoldingSetNodeID &ID,
 
 VectorType::VectorType(QualType vecType, unsigned nElements, QualType canonType,
                        VectorKind vecKind)
-  : Type(Vector, canonType, vecType->isDependentType(),
-         vecType->isInstantiationDependentType(),
-         vecType->isVariablyModifiedType(),
-         vecType->containsUnexpandedParameterPack()),
-    ElementType(vecType) 
-{
-  VectorTypeBits.VecKind = vecKind;
-  VectorTypeBits.NumElements = nElements;
-}
+    : VectorType(Vector, vecType, nElements, canonType, vecKind) {}
 
 VectorType::VectorType(TypeClass tc, QualType vecType, unsigned nElements,
                        QualType canonType, VectorKind vecKind)
@@ -1721,7 +1713,7 @@ bool FunctionProtoType::isNothrow(const ASTContext &Ctx,
   if (EST == EST_DynamicNone || EST == EST_BasicNoexcept)
     return true;
 
-  if (EST == EST_Dynamic && ResultIfDependent == true) {
+  if (EST == EST_Dynamic && ResultIfDependent) {
     // A dynamic exception specification is throwing unless every exception
     // type is an (unexpanded) pack expansion type.
     for (unsigned I = 0, N = NumExceptions; I != N; ++I)

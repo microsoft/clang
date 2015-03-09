@@ -1790,6 +1790,9 @@ TEST(Matcher, MatchesOverridingMethod) {
        methodDecl(isOverride())));
   EXPECT_TRUE(notMatches("class X { int f(); int f(int); }; ",
        methodDecl(isOverride())));
+  EXPECT_TRUE(
+      matches("template <typename Base> struct Y : Base { void f() override;};",
+              methodDecl(isOverride(), hasName("::Y::f"))));
 }
 
 TEST(Matcher, ConstructorCall) {
@@ -2538,10 +2541,9 @@ TEST(AstMatcherPMacro, Works) {
       HasClassB, new VerifyIdIsBoundTo<Decl>("b")));
 }
 
-AST_POLYMORPHIC_MATCHER_P(
-    polymorphicHas,
-    AST_POLYMORPHIC_SUPPORTED_TYPES_2(Decl, Stmt),
-    internal::Matcher<Decl>, AMatcher) {
+AST_POLYMORPHIC_MATCHER_P(polymorphicHas,
+                          AST_POLYMORPHIC_SUPPORTED_TYPES(Decl, Stmt),
+                          internal::Matcher<Decl>, AMatcher) {
   return Finder->matchesChildOf(
       Node, AMatcher, Builder,
       ASTMatchFinder::TK_IgnoreImplicitCastsAndParentheses,
