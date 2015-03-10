@@ -1620,7 +1620,12 @@ void ASTDeclReader::VisitCXXConstructorDecl(CXXConstructorDecl *D) {
 void ASTDeclReader::VisitCXXDestructorDecl(CXXDestructorDecl *D) {
   VisitCXXMethodDecl(D);
 
-  D->OperatorDelete = ReadDeclAs<FunctionDecl>(Record, Idx);
+  if (auto *OperatorDelete = ReadDeclAs<FunctionDecl>(Record, Idx)) {
+    auto *Canon = cast<CXXDestructorDecl>(D->getCanonicalDecl());
+    // FIXME: Check consistency if we have an old and new operator delete.
+    if (!Canon->OperatorDelete)
+      Canon->OperatorDelete = OperatorDelete;
+  }
 }
 
 void ASTDeclReader::VisitCXXConversionDecl(CXXConversionDecl *D) {
@@ -2109,6 +2114,10 @@ void ASTDeclReader::mergeRedeclarable(Redeclarable<T> *DBase,
   if (!Reader.getContext().getLangOpts().Modules)
     return;
 
+  // If we're not the canonical declaration, we don't need to merge.
+  if (!DBase->isFirstDecl())
+    return;
+
   if (auto *Existing = Redecl.getKnownMergeTarget())
     // We already know of an existing declaration we should merge with.
     mergeRedeclarable(D, cast<T>(Existing), Redecl, TemplatePatternID);
@@ -2177,7 +2186,8 @@ void ASTDeclReader::mergeRedeclarable(Redeclarable<T> *DBase, T *Existing,
   T *ExistingCanon = Existing->getCanonicalDecl();
   T *DCanon = D->getCanonicalDecl();
   if (ExistingCanon != DCanon) {
-    assert(DCanon->getGlobalID() == Redecl.getFirstID());
+    assert(DCanon->getGlobalID() == Redecl.getFirstID() &&
+           "already merged this declaration");
 
     // Have our redeclaration link point back at the canonical declaration
     // of the existing declaration, so that this declaration has the
@@ -2828,14 +2838,23 @@ void ASTDeclReader::attachPreviousDeclImpl(ASTReader &Reader,
 
   // If this declaration has an unresolved exception specification but the
   // previous declaration had a resolved one, resolve the exception
-  // specification now.
+  // specification now. If this declaration has a resolved exception
+  // specification but the previous declarations did not, apply our exception
+  // specification to all prior ones now.
   auto *FPT = FD->getType()->getAs<FunctionProtoType>();
   auto *PrevFPT = PrevFD->getType()->getAs<FunctionProtoType>();
-  if (FPT && PrevFPT &&
-      isUnresolvedExceptionSpec(FPT->getExceptionSpecType()) &&
-      !isUnresolvedExceptionSpec(PrevFPT->getExceptionSpecType())) {
-    Reader.Context.adjustExceptionSpec(
-        FD, PrevFPT->getExtProtoInfo().ExceptionSpec);
+  if (FPT && PrevFPT) {
+    bool WasUnresolved = isUnresolvedExceptionSpec(FPT->getExceptionSpecType());
+    bool IsUnresolved = isUnresolvedExceptionSpec(PrevFPT->getExceptionSpecType());
+    if (WasUnresolved && !IsUnresolved) {
+      Reader.Context.adjustExceptionSpec(
+          FD, PrevFPT->getExtProtoInfo().ExceptionSpec);
+    } else if (!WasUnresolved && IsUnresolved) {
+      FunctionProtoType::ExtProtoInfo EPI = FPT->getExtProtoInfo();
+      for (FunctionDecl *PrevFDToUpdate = PrevFD; PrevFDToUpdate;
+           PrevFDToUpdate = PrevFDToUpdate->getPreviousDecl())
+         Reader.Context.adjustExceptionSpec(PrevFDToUpdate, EPI.ExceptionSpec);
+    }
   }
 }
 }
@@ -3621,10 +3640,6 @@ void ASTDeclReader::UpdateDecl(Decl *D, ModuleFile &ModuleFile,
       if (auto *CD = dyn_cast<CXXConstructorDecl>(FD))
         std::tie(CD->CtorInitializers, CD->NumCtorInitializers) =
             Reader.ReadCXXCtorInitializers(ModuleFile, Record, Idx);
-      if (auto *DD = dyn_cast<CXXDestructorDecl>(FD))
-        // FIXME: Check consistency.
-        DD->setOperatorDelete(Reader.ReadDeclAs<FunctionDecl>(ModuleFile,
-                                                              Record, Idx));
       // Store the offset of the body so we can lazily load it later.
       Reader.PendingBodies[FD] = GetCurrentCursorOffset();
       HasPendingBody = true;
@@ -3688,6 +3703,17 @@ void ASTDeclReader::UpdateDecl(Decl *D, ModuleFile &ModuleFile,
         Reader.ReadAttributes(F, Attrs, Record, Idx);
         D->setAttrsImpl(Attrs, Reader.getContext());
       }
+      break;
+    }
+
+    case UPD_CXX_RESOLVED_DTOR_DELETE: {
+      // Set the 'operator delete' directly to avoid emitting another update
+      // record.
+      auto *Del = Reader.ReadDeclAs<FunctionDecl>(ModuleFile, Record, Idx);
+      auto *First = cast<CXXDestructorDecl>(D->getCanonicalDecl());
+      // FIXME: Check consistency if we have an old and new operator delete.
+      if (!First->OperatorDelete)
+        First->OperatorDelete = Del;
       break;
     }
 

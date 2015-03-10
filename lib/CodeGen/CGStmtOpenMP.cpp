@@ -23,6 +23,20 @@ using namespace CodeGen;
 //===----------------------------------------------------------------------===//
 //                              OpenMP Directive Emission
 //===----------------------------------------------------------------------===//
+namespace {
+/// \brief RAII for inlined OpenMP regions (like 'omp for', 'omp simd', 'omp
+/// critical' etc.). Helps to generate proper debug info and provides correct
+/// code generation for such constructs.
+class InlinedOpenMPRegionScopeRAII {
+  InlinedOpenMPRegionRAII Region;
+  CodeGenFunction::LexicalScope DirectiveScope;
+
+public:
+  InlinedOpenMPRegionScopeRAII(CodeGenFunction &CGF,
+                               const OMPExecutableDirective &D)
+      : Region(CGF, D), DirectiveScope(CGF, D.getSourceRange()) {}
+};
+} // namespace
 
 /// \brief Emits code for OpenMP 'if' clause using specified \a CodeGen
 /// function. Here is the logic:
@@ -417,12 +431,7 @@ void CodeGenFunction::EmitOMPSimdDirective(const OMPSimdDirective &S) {
     }
   }
 
-  InlinedOpenMPRegionRAII Region(*this, S);
-  RunCleanupsScope DirectiveScope(*this);
-
-  CGDebugInfo *DI = getDebugInfo();
-  if (DI)
-    DI->EmitLexicalBlockStart(Builder, S.getSourceRange().getBegin());
+  InlinedOpenMPRegionScopeRAII Region(*this, S);
 
   // Emit the loop iteration variable.
   const Expr *IVExpr = S.getIterationVariable();
@@ -466,9 +475,6 @@ void CodeGenFunction::EmitOMPSimdDirective(const OMPSimdDirective &S) {
     }
     EmitOMPSimdFinal(S);
   }
-
-  if (DI)
-    DI->EmitLexicalBlockEnd(Builder, S.getSourceRange().getEnd());
 }
 
 void CodeGenFunction::EmitOMPForOuterLoop(OpenMPScheduleClauseKind ScheduleKind,
@@ -650,20 +656,13 @@ void CodeGenFunction::EmitOMPWorksharingLoop(const OMPLoopDirective &S) {
 }
 
 void CodeGenFunction::EmitOMPForDirective(const OMPForDirective &S) {
-  InlinedOpenMPRegionRAII Region(*this, S);
-  RunCleanupsScope DirectiveScope(*this);
-
-  CGDebugInfo *DI = getDebugInfo();
-  if (DI)
-    DI->EmitLexicalBlockStart(Builder, S.getSourceRange().getBegin());
+  InlinedOpenMPRegionScopeRAII Region(*this, S);
 
   EmitOMPWorksharingLoop(S);
 
   // Emit an implicit barrier at the end.
   CGM.getOpenMPRuntime().emitBarrierCall(*this, S.getLocStart(),
                                          /*IsExplicit*/ false);
-  if (DI)
-    DI->EmitLexicalBlockEnd(Builder, S.getSourceRange().getEnd());
 }
 
 void CodeGenFunction::EmitOMPForSimdDirective(const OMPForSimdDirective &) {
@@ -680,8 +679,7 @@ void CodeGenFunction::EmitOMPSectionDirective(const OMPSectionDirective &) {
 
 void CodeGenFunction::EmitOMPSingleDirective(const OMPSingleDirective &S) {
   CGM.getOpenMPRuntime().emitSingleRegion(*this, [&]() -> void {
-    InlinedOpenMPRegionRAII Region(*this, S);
-    RunCleanupsScope Scope(*this);
+    InlinedOpenMPRegionScopeRAII Region(*this, S);
     EmitStmt(cast<CapturedStmt>(S.getAssociatedStmt())->getCapturedStmt());
     EnsureInsertPoint();
   }, S.getLocStart());
@@ -689,8 +687,7 @@ void CodeGenFunction::EmitOMPSingleDirective(const OMPSingleDirective &S) {
 
 void CodeGenFunction::EmitOMPMasterDirective(const OMPMasterDirective &S) {
   CGM.getOpenMPRuntime().emitMasterRegion(*this, [&]() -> void {
-    InlinedOpenMPRegionRAII Region(*this, S);
-    RunCleanupsScope Scope(*this);
+    InlinedOpenMPRegionScopeRAII Region(*this, S);
     EmitStmt(cast<CapturedStmt>(S.getAssociatedStmt())->getCapturedStmt());
     EnsureInsertPoint();
   }, S.getLocStart());
@@ -699,8 +696,7 @@ void CodeGenFunction::EmitOMPMasterDirective(const OMPMasterDirective &S) {
 void CodeGenFunction::EmitOMPCriticalDirective(const OMPCriticalDirective &S) {
   CGM.getOpenMPRuntime().emitCriticalRegion(
       *this, S.getDirectiveName().getAsString(), [&]() -> void {
-        InlinedOpenMPRegionRAII Region(*this, S);
-        RunCleanupsScope Scope(*this);
+        InlinedOpenMPRegionScopeRAII Region(*this, S);
         EmitStmt(cast<CapturedStmt>(S.getAssociatedStmt())->getCapturedStmt());
         EnsureInsertPoint();
       }, S.getLocStart());
@@ -721,8 +717,35 @@ void CodeGenFunction::EmitOMPParallelSectionsDirective(
   llvm_unreachable("CodeGen for 'omp parallel sections' is not supported yet.");
 }
 
-void CodeGenFunction::EmitOMPTaskDirective(const OMPTaskDirective &) {
-  llvm_unreachable("CodeGen for 'omp task' is not supported yet.");
+void CodeGenFunction::EmitOMPTaskDirective(const OMPTaskDirective &S) {
+  // Emit outlined function for task construct.
+  auto CS = cast<CapturedStmt>(S.getAssociatedStmt());
+  auto CapturedStruct = GenerateCapturedStmtArgument(*CS);
+  auto *I = CS->getCapturedDecl()->param_begin();
+  // The first function argument for tasks is a thread id, the second one is a
+  // part id (0 for tied tasks, >=0 for untied task).
+  auto OutlinedFn =
+      CGM.getOpenMPRuntime().emitTaskOutlinedFunction(S, *I, *std::next(I));
+  // Check if we should emit tied or untied task.
+  bool Tied = !S.getSingleClause(OMPC_untied);
+  // Check if the task is final
+  llvm::PointerIntPair<llvm::Value *, 1, bool> Final;
+  if (auto *Clause = S.getSingleClause(OMPC_final)) {
+    // If the condition constant folds and can be elided, try to avoid emitting
+    // the condition and the dead arm of the if/else.
+    auto *Cond = cast<OMPFinalClause>(Clause)->getCondition();
+    bool CondConstant;
+    if (ConstantFoldsToSimpleInteger(Cond, CondConstant))
+      Final.setInt(CondConstant);
+    else
+      Final.setPointer(EvaluateExprAsBool(Cond));
+  } else {
+    // By default the task is not final.
+    Final.setInt(/*IntVal=*/false);
+  }
+  auto SharedsTy = getContext().getRecordType(CS->getCapturedRecordDecl());
+  CGM.getOpenMPRuntime().emitTaskCall(*this, S.getLocStart(), Tied, Final,
+                                      OutlinedFn, SharedsTy, CapturedStruct);
 }
 
 void CodeGenFunction::EmitOMPTaskyieldDirective(
@@ -898,6 +921,7 @@ void CodeGenFunction::EmitOMPAtomicDirective(const OMPAtomicDirective &S) {
       break;
     }
   }
+  InlinedOpenMPRegionScopeRAII Region(*this, S);
   EmitOMPAtomicExpr(*this, Kind, IsSeqCst, S.getX(), S.getV(), S.getExpr(),
                     S.getLocStart());
 }
