@@ -28,6 +28,7 @@
 
 using namespace llvm;
 
+namespace {
 class FlattenedSpelling {
   std::string V, N, NS;
   bool K;
@@ -53,8 +54,10 @@ public:
   const std::string &nameSpace() const { return NS; }
   bool knownToGCC() const { return K; }
 };
+} // namespace
 
-std::vector<FlattenedSpelling> GetFlattenedSpellings(const Record &Attr) {
+static std::vector<FlattenedSpelling>
+GetFlattenedSpellings(const Record &Attr) {
   std::vector<Record *> Spellings = Attr.getValueAsListOfDefs("Spellings");
   std::vector<FlattenedSpelling> Ret;
 
@@ -1162,7 +1165,7 @@ writePrettyPrintFunction(Record &R,
 
     OS <<
       "  case " << I << " : {\n"
-      "    OS << \"" + Prefix.str() + Spelling.str();
+      "    OS << \"" << Prefix << Spelling;
 
     if (Variety == "Pragma") {
       OS << " \";\n";
@@ -1190,7 +1193,7 @@ writePrettyPrintFunction(Record &R,
 
     if (!Args.empty())
       OS << ")";
-    OS << Suffix.str() + "\";\n";
+    OS << Suffix + "\";\n";
 
     OS <<
       "    break;\n"
@@ -1297,7 +1300,11 @@ CreateSemanticSpellings(const std::vector<FlattenedSpelling> &Spellings,
     Uniques.insert(EnumName);
     if (I != Spellings.begin())
       Ret += ",\n";
-    Ret += "    " + EnumName;
+    // Duplicate spellings are not considered part of the semantic spelling
+    // enumeration, but the spelling index and semantic spelling values are
+    // meant to be equivalent, so we must specify a concrete value for each
+    // enumerator.
+    Ret += "    " + EnumName + " = " + llvm::utostr(Idx);
   }
   Ret += "\n  };\n\n";
   return Ret;
