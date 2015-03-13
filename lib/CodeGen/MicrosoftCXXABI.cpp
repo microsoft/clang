@@ -3296,7 +3296,8 @@ MicrosoftCXXABI::getAddrOfCXXCopyCtorClosure(const CXXConstructorDecl *CD) {
   CodeGenFunction::RunCleanupsScope Cleanups(CGF);
 
   const auto *FPT = CD->getType()->castAs<FunctionProtoType>();
-  ConstExprIterator ArgBegin(ArgVec.data()), ArgEnd(&*ArgVec.end());
+  ConstExprIterator ArgBegin(ArgVec.data()),
+      ArgEnd(ArgVec.data() + ArgVec.size());
   CGF.EmitCallArgs(Args, FPT, ArgBegin, ArgEnd, CD, 1);
 
   // Insert any ABI-specific implicit constructor arguments.
@@ -3487,6 +3488,17 @@ llvm::GlobalVariable *MicrosoftCXXABI::getCatchableTypeArray(QualType T) {
   // All pointers are convertible to pointer-to-void so ensure that it is in the
   // CatchableTypeArray.
   if (IsPointer)
+    CatchableTypes.insert(getCatchableType(getContext().VoidPtrTy));
+
+  // C++14 [except.handle]p3:
+  //   A handler is a match for an exception object of type E if [...]
+  //     - the handler is of type cv T or const T& where T is a pointer or
+  //       pointer to member type and E is std::nullptr_t.
+  //
+  // We cannot possibly list all possible pointer types here, making this
+  // implementation incompatible with the standard.  However, MSVC includes an
+  // entry for pointer-to-void in this case.  Let's do the same.
+  if (T->isNullPtrType())
     CatchableTypes.insert(getCatchableType(getContext().VoidPtrTy));
 
   uint32_t NumEntries = CatchableTypes.size();
