@@ -208,9 +208,11 @@ ModuleMap::findHeaderInUmbrellaDirs(const FileEntry *File,
 // Returns true if RequestingModule directly uses RequestedModule.
 static bool directlyUses(const Module *RequestingModule,
                          const Module *RequestedModule) {
-  return std::find(RequestingModule->DirectUses.begin(),
-                   RequestingModule->DirectUses.end(),
-                   RequestedModule) != RequestingModule->DirectUses.end();
+  for (const Module* DirectUse : RequestingModule->DirectUses) {
+    if (RequestedModule->isSubModuleOf(DirectUse))
+      return true;
+  }
+  return false;
 }
 
 static bool violatesPrivateInclude(Module *RequestingModule,
@@ -263,7 +265,8 @@ void ModuleMap::diagnoseHeaderInclusion(Module *RequestingModule,
   if (Known != Headers.end()) {
     for (const KnownHeader &Header : Known->second) {
       // If 'File' is part of 'RequestingModule' we can definitely include it.
-      if (Header.getModule() == RequestingModule)
+      if (Header.getModule() &&
+          Header.getModule()->isSubModuleOf(RequestingModule))
         return;
 
       // Remember private headers for later printing of a diagnostic.
