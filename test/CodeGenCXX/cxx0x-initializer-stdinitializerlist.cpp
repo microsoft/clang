@@ -487,6 +487,7 @@ namespace B19773010 {
   template <class T1, class T2> struct pair {
     T1 first;
     T2 second;
+    constexpr pair() : first(), second() {}
     constexpr pair(T1 a, T2 b) : first(a), second(b) {}
   };
 
@@ -504,5 +505,13 @@ namespace B19773010 {
     // CHECK: store %"struct.B19773010::pair"* getelementptr inbounds ([1 x %"struct.B19773010::pair"], [1 x %"struct.B19773010::pair"]* bitcast ([1 x { i8*, i32 }]* @_ZGRZN9B197730102f2EvE1p_ to [1 x %"struct.B19773010::pair"]*), i64 0, i64 0), %"struct.B19773010::pair"** getelementptr inbounds ([2 x %"class.std::initializer_list.10"], [2 x %"class.std::initializer_list.10"]* @_ZZN9B197730102f2EvE1p, i64 0, i64 1, i32 0), align 8
     static std::initializer_list<pair<const char *, E>> a, p[2] =
         {a, {{"", ENUM_CONSTANT}}};
+  }
+
+  void PR22940_helper(const pair<void*, int>&) { }
+  void PR22940() {
+    // CHECK-LABEL: @_ZN9B197730107PR22940Ev
+    // CHECK-NOT: call {{.*}} @_ZN9B197730104pairIPviEC{{.}}Ev(
+    // CHECK: call {{.*}} @_ZN9B1977301014PR22940_helperERKNS_4pairIPviEE(
+    PR22940_helper(pair<void*, int>());
   }
 }

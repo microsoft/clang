@@ -2864,6 +2864,8 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   else
     CmdArgs.push_back(Args.MakeArgString(getToolChain().getThreadModel()));
 
+  Args.AddLastArg(CmdArgs, options::OPT_fveclib);
+
   if (!Args.hasFlag(options::OPT_fmerge_all_constants,
                     options::OPT_fno_merge_all_constants))
     CmdArgs.push_back("-fno-merge-all-constants");
@@ -5561,8 +5563,9 @@ const char *arm::getLLVMArchSuffixForARM(StringRef CPU) {
     .Cases("arm9e",  "arm926ej-s",  "arm946e-s", "v5e")
     .Cases("arm966e-s",  "arm968e-s",  "arm10e", "v5e")
     .Cases("arm1020e",  "arm1022e",  "xscale", "iwmmxt", "v5e")
-    .Cases("arm1136j-s",  "arm1136jf-s",  "arm1176jz-s", "v6")
-    .Cases("arm1176jzf-s",  "mpcorenovfp",  "mpcore", "v6")
+    .Cases("arm1136j-s",  "arm1136jf-s", "v6")
+    .Cases("arm1176jz-s", "arm1176jzf-s", "v6k")
+    .Cases("mpcorenovfp",  "mpcore", "v6k")
     .Cases("arm1156t2-s",  "arm1156t2f-s", "v6t2")
     .Cases("cortex-a5", "cortex-a7", "cortex-a8", "v7")
     .Cases("cortex-a9", "cortex-a12", "cortex-a15", "cortex-a17", "krait", "v7")
@@ -5583,7 +5586,7 @@ void arm::appendEBLinkFlags(const ArgList &Args, ArgStringList &CmdArgs, const l
   StringRef Suffix = getLLVMArchSuffixForARM(getARMCPUForMArch(Args, Triple));
   const char *LinkFlag = llvm::StringSwitch<const char *>(Suffix)
     .Cases("v4", "v4t", "v5", "v5e", nullptr)
-    .Cases("v6", "v6t2", nullptr)
+    .Cases("v6", "v6k", "v6t2", nullptr)
     .Default("--be8");
 
   if (LinkFlag)
@@ -6134,6 +6137,16 @@ void darwin::Link::ConstructJob(Compilation &C, const JobAction &JA,
          ie = Args.filtered_end(); it != ie; ++it)
     CmdArgs.push_back(Args.MakeArgString(std::string("-F") +
                                          (*it)->getValue()));
+
+  if (!Args.hasArg(options::OPT_nostdlib) &&
+      !Args.hasArg(options::OPT_nodefaultlibs)) {
+    if (Arg *A = Args.getLastArg(options::OPT_fveclib)) {
+      if (A->getValue() == StringRef("Accelerate")) {
+        CmdArgs.push_back("-framework");
+        CmdArgs.push_back("Accelerate");
+      }
+    }
+  }
 
   const char *Exec =
     Args.MakeArgString(getToolChain().GetLinkerPath());

@@ -45,7 +45,7 @@ public:
       : CGCXXABI(CGM), BaseClassDescriptorType(nullptr),
         ClassHierarchyDescriptorType(nullptr),
         CompleteObjectLocatorType(nullptr), CatchableTypeType(nullptr),
-        ThrowInfoType(nullptr) {}
+        ThrowInfoType(nullptr), HandlerMapEntryType(nullptr) {}
 
   bool HasThisReturn(GlobalDecl GD) const override;
   bool hasMostDerivedReturn(GlobalDecl GD) const override;
@@ -83,7 +83,9 @@ public:
   llvm::GlobalVariable *getMSCompleteObjectLocator(const CXXRecordDecl *RD,
                                                    const VPtrInfo *Info);
 
-  llvm::Constant *getAddrOfRTTIDescriptor(QualType Ty, bool ForEH) override;
+  llvm::Constant *getAddrOfRTTIDescriptor(QualType Ty) override;
+  llvm::Constant *
+  getAddrOfCXXHandlerMapEntry(QualType Ty, QualType CatchHandlerType) override;
 
   bool shouldTypeidBeNullChecked(bool IsDeref, QualType SrcRecordTy) override;
   void EmitBadTypeidCall(CodeGenFunction &CGF) override;
@@ -571,6 +573,18 @@ public:
 
   void emitCXXStructor(const CXXMethodDecl *MD, StructorType Type) override;
 
+  llvm::StructType *getHandlerMapEntryType() {
+    if (!HandlerMapEntryType) {
+      llvm::Type *FieldTypes[] = {
+        CGM.IntTy,                           // Flags
+        getImageRelativeType(CGM.Int8PtrTy), // TypeDescriptor
+      };
+      HandlerMapEntryType = llvm::StructType::create(
+          CGM.getLLVMContext(), FieldTypes, "eh.HandlerMapEntry");
+    }
+    return HandlerMapEntryType;
+  }
+
   llvm::StructType *getCatchableTypeType() {
     if (CatchableTypeType)
       return CatchableTypeType;
@@ -684,6 +698,7 @@ private:
   llvm::StructType *CatchableTypeType;
   llvm::DenseMap<uint32_t, llvm::StructType *> CatchableTypeArrayTypeMap;
   llvm::StructType *ThrowInfoType;
+  llvm::StructType *HandlerMapEntryType;
 };
 
 }
@@ -3094,8 +3109,7 @@ MSRTTIBuilder::getBaseClassDescriptor(const MSRTTIClass &Class) {
   // Initialize the BaseClassDescriptor.
   llvm::Constant *Fields[] = {
       ABI.getImageRelativeConstant(
-          ABI.getAddrOfRTTIDescriptor(Context.getTypeDeclType(Class.RD),
-                                      /*ForEH=*/false)),
+          ABI.getAddrOfRTTIDescriptor(Context.getTypeDeclType(Class.RD))),
       llvm::ConstantInt::get(CGM.IntTy, Class.NumBases),
       llvm::ConstantInt::get(CGM.IntTy, Class.OffsetInVBase),
       llvm::ConstantInt::get(CGM.IntTy, VBPtrOffset),
@@ -3186,23 +3200,56 @@ static QualType decomposeTypeForEH(ASTContext &Context, QualType T,
   return T;
 }
 
+llvm::Constant *
+MicrosoftCXXABI::getAddrOfCXXHandlerMapEntry(QualType Type,
+                                             QualType CatchHandlerType) {
+  // TypeDescriptors for exceptions never have qualified pointer types,
+  // qualifiers are stored seperately in order to support qualification
+  // conversions.
+  bool IsConst, IsVolatile;
+  Type = decomposeTypeForEH(getContext(), Type, IsConst, IsVolatile);
+
+  bool IsReference = CatchHandlerType->isReferenceType();
+
+  SmallString<256> MangledName;
+  {
+    llvm::raw_svector_ostream Out(MangledName);
+    getMangleContext().mangleCXXHandlerMapEntry(Type, IsConst, IsVolatile,
+                                                IsReference, Out);
+  }
+
+  if (llvm::GlobalVariable *GV = CGM.getModule().getNamedGlobal(MangledName))
+    return llvm::ConstantExpr::getBitCast(GV, CGM.Int8PtrTy);
+
+  uint32_t Flags = 0;
+  if (IsConst)
+    Flags |= 1;
+  if (IsVolatile)
+    Flags |= 2;
+  if (IsReference)
+    Flags |= 8;
+
+  llvm::Constant *Fields[] = {
+      llvm::ConstantInt::get(CGM.IntTy, Flags),                // Flags
+      getImageRelativeConstant(getAddrOfRTTIDescriptor(Type)), // TypeDescriptor
+  };
+  llvm::StructType *HandlerMapEntryType = getHandlerMapEntryType();
+  auto *Var = new llvm::GlobalVariable(
+      CGM.getModule(), HandlerMapEntryType, /*Constant=*/true,
+      llvm::GlobalValue::PrivateLinkage,
+      llvm::ConstantStruct::get(HandlerMapEntryType, Fields),
+      StringRef(MangledName));
+  Var->setUnnamedAddr(true);
+  Var->setSection("llvm.metadata");
+  return Var;
+}
+
 /// \brief Gets a TypeDescriptor.  Returns a llvm::Constant * rather than a
 /// llvm::GlobalVariable * because different type descriptors have different
 /// types, and need to be abstracted.  They are abstracting by casting the
 /// address to an Int8PtrTy.
-llvm::Constant *MicrosoftCXXABI::getAddrOfRTTIDescriptor(QualType Type,
-                                                         bool ForEH) {
-  // TypeDescriptors for exceptions never has qualified pointer types,
-  // qualifiers are stored seperately in order to support qualification
-  // conversions.
-  if (ForEH) {
-    // FIXME: This is only a 50% solution, we need to actually do something with
-    // these qualifiers.
-    bool IsConst, IsVolatile;
-    Type = decomposeTypeForEH(getContext(), Type, IsConst, IsVolatile);
-  }
-
-  SmallString<256> MangledName, TypeInfoString;
+llvm::Constant *MicrosoftCXXABI::getAddrOfRTTIDescriptor(QualType Type) {
+  SmallString<256> MangledName;
   {
     llvm::raw_svector_ostream Out(MangledName);
     getMangleContext().mangleCXXRTTI(Type, Out);
@@ -3213,6 +3260,7 @@ llvm::Constant *MicrosoftCXXABI::getAddrOfRTTIDescriptor(QualType Type,
     return llvm::ConstantExpr::getBitCast(GV, CGM.Int8PtrTy);
 
   // Compute the fields for the TypeDescriptor.
+  SmallString<256> TypeInfoString;
   {
     llvm::raw_svector_ostream Out(TypeInfoString);
     getMangleContext().mangleCXXRTTIName(Type, Out);
@@ -3309,6 +3357,8 @@ MicrosoftCXXABI::getAddrOfCXXCtorClosure(const CXXConstructorDecl *CD,
   QualType RecordTy = getContext().getRecordType(RD);
   llvm::Function *ThunkFn = llvm::Function::Create(
       ThunkTy, getLinkageForRTTI(RecordTy), ThunkName.str(), &CGM.getModule());
+  ThunkFn->setCallingConv(static_cast<llvm::CallingConv::ID>(
+      FnInfo.getEffectiveCallingConvention()));
   bool IsCopy = CT == Ctor_CopyingClosure;
 
   // Start codegen.
@@ -3361,8 +3411,11 @@ MicrosoftCXXABI::getAddrOfCXXCtorClosure(const CXXConstructorDecl *CD,
 
   // Add the rest of the default arguments.
   std::vector<Stmt *> ArgVec;
-  for (unsigned I = IsCopy ? 1 : 0, E = CD->getNumParams(); I != E; ++I)
-    ArgVec.push_back(getContext().getDefaultArgExprForConstructor(CD, I));
+  for (unsigned I = IsCopy ? 1 : 0, E = CD->getNumParams(); I != E; ++I) {
+    Stmt *DefaultArg = getContext().getDefaultArgExprForConstructor(CD, I);
+    assert(DefaultArg && "sema forgot to instantiate default args");
+    ArgVec.push_back(DefaultArg);
+  }
 
   CodeGenFunction::RunCleanupsScope Cleanups(CGF);
 
@@ -3417,8 +3470,7 @@ llvm::Constant *MicrosoftCXXABI::getCatchableType(QualType T,
 
   // The TypeDescriptor is used by the runtime to determine if a catch handler
   // is appropriate for the exception object.
-  llvm::Constant *TD =
-      getImageRelativeConstant(getAddrOfRTTIDescriptor(T, /*ForEH=*/true));
+  llvm::Constant *TD = getImageRelativeConstant(getAddrOfRTTIDescriptor(T));
 
   // The runtime is responsible for calling the copy constructor if the
   // exception is caught by value.

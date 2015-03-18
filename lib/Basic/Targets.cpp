@@ -3452,7 +3452,7 @@ public:
       : WindowsTargetInfo<X86_32TargetInfo>(Triple) {
     WCharType = UnsignedShort;
     DoubleAlign = LongLongAlign = 64;
-    DescriptionString = "e-m:w-p:32:32-i64:64-f80:32-n8:16:32-S32";
+    DescriptionString = "e-m:x-p:32:32-i64:64-f80:32-n8:16:32-S32";
   }
   void getTargetDefines(const LangOptions &Opts,
                         MacroBuilder &Builder) const override {
@@ -3533,7 +3533,7 @@ public:
     TLSSupported = false;
     WCharType = UnsignedShort;
     DoubleAlign = LongLongAlign = 64;
-    DescriptionString = "e-m:w-p:32:32-i64:64-f80:32-n8:16:32-S32";
+    DescriptionString = "e-m:x-p:32:32-i64:64-f80:32-n8:16:32-S32";
   }
   void getTargetDefines(const LangOptions &Opts,
                         MacroBuilder &Builder) const override {
@@ -3629,6 +3629,8 @@ class X86_64TargetInfo : public X86TargetInfo {
 public:
   X86_64TargetInfo(const llvm::Triple &Triple) : X86TargetInfo(Triple) {
     const bool IsX32 = getTriple().getEnvironment() == llvm::Triple::GNUX32;
+    bool IsWinCOFF =
+        getTriple().isOSWindows() && getTriple().isOSBinFormatCOFF();
     LongWidth = LongAlign = PointerWidth = PointerAlign = IsX32 ? 32 : 64;
     LongDoubleWidth = 128;
     LongDoubleAlign = 128;
@@ -3643,9 +3645,10 @@ public:
     RegParmMax = 6;
 
     // Pointers are 32-bit in x32.
-    DescriptionString = (IsX32)
-                            ? "e-m:e-p:32:32-i64:64-f80:128-n8:16:32:64-S128"
-                            : "e-m:e-i64:64-f80:128-n8:16:32:64-S128";
+    DescriptionString = IsX32 ? "e-m:e-p:32:32-i64:64-f80:128-n8:16:32:64-S128"
+                              : IsWinCOFF
+                                    ? "e-m:w-i64:64-f80:128-n8:16:32:64-S128"
+                                    : "e-m:e-i64:64-f80:128-n8:16:32:64-S128";
 
     // Use fpret only for long double.
     RealTypeUsesObjCFPRet = (1 << TargetInfo::LongDouble);
@@ -3930,10 +3933,9 @@ class ARMTargetInfo : public TargetInfo {
           BigEndian ? "E-m:o-p:32:32-i64:64-v128:64:128-a:0:32-n32-S64"
                     : "e-m:o-p:32:32-i64:64-v128:64:128-a:0:32-n32-S64";
     } else if (T.isOSWindows()) {
-      // FIXME: this is invalid for WindowsCE
       assert(!BigEndian && "Windows on ARM does not support big endian");
       DescriptionString = "e"
-                          "-m:e"
+                          "-m:w"
                           "-p:32:32"
                           "-i64:64"
                           "-v128:64:128"
@@ -4215,8 +4217,9 @@ public:
         .Cases("arm10e", "arm1020e", "arm1022e", "5TE")
         .Cases("xscale", "iwmmxt", "5TE")
         .Case("arm1136j-s", "6J")
-        .Cases("arm1176jz-s", "arm1176jzf-s", "6ZK")
-        .Cases("arm1136jf-s", "mpcorenovfp", "mpcore", "6K")
+        .Case("arm1136jf-s", "6")
+        .Cases("mpcorenovfp", "mpcore", "6K")
+        .Cases("arm1176jz-s", "arm1176jzf-s", "6K")
         .Cases("arm1156t2-s", "arm1156t2f-s", "6T2")
         .Cases("cortex-a5", "cortex-a7", "cortex-a8", "7A")
         .Cases("cortex-a9", "cortex-a12", "cortex-a15", "cortex-a17", "krait",
