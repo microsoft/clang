@@ -7911,7 +7911,7 @@ static GVALinkage basicGVALinkageForFunction(const ASTContext &Context,
   // Functions specified with extern and inline in -fms-compatibility mode
   // forcibly get emitted.  While the body of the function cannot be later
   // replaced, the function definition cannot be discarded.
-  if (FD->getMostRecentDecl()->isMSExternInline())
+  if (FD->isMSExternInline())
     return GVA_StrongODR;
 
   return GVA_DiscardableODR;
@@ -7946,7 +7946,7 @@ static GVALinkage basicGVALinkageForVariable(const ASTContext &Context,
     while (LexicalContext && !isa<FunctionDecl>(LexicalContext))
       LexicalContext = LexicalContext->getLexicalParent();
 
-    // Let the static local variable inherit it's linkage from the nearest
+    // Let the static local variable inherit its linkage from the nearest
     // enclosing function.
     if (LexicalContext)
       StaticLocalLinkage =

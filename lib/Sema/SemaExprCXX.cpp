@@ -2168,7 +2168,7 @@ void Sema::DeclareGlobalAllocationFunction(DeclarationName Name,
       }
     }
   }
-  
+
   FunctionProtoType::ExtProtoInfo EPI;
 
   QualType BadAllocType;
@@ -2200,16 +2200,6 @@ void Sema::DeclareGlobalAllocationFunction(DeclarationName Name,
   // Implicit sized deallocation functions always have default visibility.
   Alloc->addAttr(VisibilityAttr::CreateImplicit(Context,
                                                 VisibilityAttr::Default));
-
-  if (NumParams == 2 && !getLangOpts().DefineSizedDeallocation) {
-    assert(getLangOpts().SizedDeallocation &&
-           "Only sized deallocation can have two parameters");
-
-    // This declaration should be emited as extern_weak.
-    assert(Alloc->getLinkageAndVisibility().getLinkage() ==
-           clang::ExternalLinkage);
-    Alloc->addAttr(WeakAttr::CreateImplicit(Context));
-  }
 
   if (AddRestrictAttr)
     Alloc->addAttr(

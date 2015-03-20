@@ -324,8 +324,9 @@ void Clang::AddPreprocessingOptions(Compilation &C,
     if (A->getOption().matches(options::OPT_M) ||
         A->getOption().matches(options::OPT_MD))
       CmdArgs.push_back("-sys-header-deps");
-
-    if (isa<PrecompileJobAction>(JA))
+    if ((isa<PrecompileJobAction>(JA) &&
+         !Args.hasArg(options::OPT_fno_module_file_deps)) ||
+        Args.hasArg(options::OPT_fmodule_file_deps))
       CmdArgs.push_back("-module-file-deps");
   }
 
@@ -4248,6 +4249,12 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   if (!Args.hasFlag(options::OPT_fassume_sane_operator_new,
                     options::OPT_fno_assume_sane_operator_new))
     CmdArgs.push_back("-fno-assume-sane-operator-new");
+
+  // -fsized-deallocation is off by default, as it is an ABI-breaking change for
+  // most platforms.
+  if (Args.hasFlag(options::OPT_fsized_deallocation,
+                   options::OPT_fno_sized_deallocation, false))
+    CmdArgs.push_back("-fsized-deallocation");
 
   // -fconstant-cfstrings is default, and may be subject to argument translation
   // on Darwin.
