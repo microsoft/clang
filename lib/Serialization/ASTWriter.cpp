@@ -3731,7 +3731,9 @@ void ASTWriter::AddUpdatedDeclContext(const DeclContext *DC) {
 uint32_t
 ASTWriter::GenerateNameLookupTable(const DeclContext *DC,
                                    llvm::SmallVectorImpl<char> &LookupTable) {
-  assert(!DC->LookupPtr.getInt() && "must call buildLookups first");
+  assert(!DC->HasLazyLocalLexicalLookups &&
+         !DC->HasLazyExternalLexicalLookups &&
+         "must call buildLookups first");
 
   llvm::OnDiskChainedHashTableGenerator<ASTDeclContextNameLookupTrait>
       Generator;
