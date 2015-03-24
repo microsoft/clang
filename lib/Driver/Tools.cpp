@@ -1563,8 +1563,7 @@ static void AddGoldPlugin(const ToolChain &ToolChain, const ArgList &Args,
     CmdArgs.push_back(Args.MakeArgString(Twine("-plugin-opt=mcpu=") + CPU));
 }
 
-static void getX86TargetFeatures(const Driver & D,
-                                 const llvm::Triple &Triple,
+static void getX86TargetFeatures(const Driver &D, const llvm::Triple &Triple,
                                  const ArgList &Args,
                                  std::vector<const char *> &Features) {
   if (Triple.getArchName() == "x86_64h") {
@@ -1578,7 +1577,7 @@ static void getX86TargetFeatures(const Driver & D,
     Features.push_back("-fsgsbase");
   }
 
-  // Add features to comply with gcc on Android
+  // Add features to be compatible with gcc for Android.
   if (Triple.getEnvironment() == llvm::Triple::Android) {
     if (Triple.getArch() == llvm::Triple::x86_64) {
       Features.push_back("+sse4.2");
@@ -1587,7 +1586,7 @@ static void getX86TargetFeatures(const Driver & D,
       Features.push_back("+ssse3");
   }
 
-  // Set features according to the -arch flag on MSVC
+  // Set features according to the -arch flag on MSVC.
   if (Arg *A = Args.getLastArg(options::OPT__SLASH_arch)) {
     StringRef Arch = A->getValue();
     bool ArchUsed = false;
@@ -2284,13 +2283,16 @@ collectSanitizerRuntimes(const ToolChain &TC, const ArgList &Args,
     StaticRuntimes.push_back("tsan");
   // WARNING: UBSan should always go last.
   if (SanArgs.needsUbsanRt()) {
-    // If UBSan is not combined with another sanitizer, we need to pull in
-    // sanitizer_common explicitly.
-    if (StaticRuntimes.empty())
-      HelperStaticRuntimes.push_back("san");
-    StaticRuntimes.push_back("ubsan");
-    if (SanArgs.linkCXXRuntimes())
-      StaticRuntimes.push_back("ubsan_cxx");
+    // Check if UBSan is combined with another sanitizers.
+    if (StaticRuntimes.empty()) {
+      StaticRuntimes.push_back("ubsan_standalone");
+      if (SanArgs.linkCXXRuntimes())
+        StaticRuntimes.push_back("ubsan_standalone_cxx");
+    } else {
+      StaticRuntimes.push_back("ubsan");
+      if (SanArgs.linkCXXRuntimes())
+        StaticRuntimes.push_back("ubsan_cxx");
+    }
   }
 }
 
@@ -7259,47 +7261,64 @@ void gnutools::Assemble::ConstructJob(Compilation &C, const JobAction &JA,
   ArgStringList CmdArgs;
   bool NeedsKPIC = false;
 
+  switch (getToolChain().getArch()) {
+  default:
+    break;
   // Add --32/--64 to make sure we get the format we want.
   // This is incomplete
-  if (getToolChain().getArch() == llvm::Triple::x86) {
+  case llvm::Triple::x86:
     CmdArgs.push_back("--32");
-  } else if (getToolChain().getArch() == llvm::Triple::x86_64) {
+    break;
+  case llvm::Triple::x86_64:
     if (getToolChain().getTriple().getEnvironment() == llvm::Triple::GNUX32)
       CmdArgs.push_back("--x32");
     else
       CmdArgs.push_back("--64");
-  } else if (getToolChain().getArch() == llvm::Triple::ppc) {
+    break;
+  case llvm::Triple::ppc:
     CmdArgs.push_back("-a32");
     CmdArgs.push_back("-mppc");
     CmdArgs.push_back("-many");
-  } else if (getToolChain().getArch() == llvm::Triple::ppc64) {
+    break;
+  case llvm::Triple::ppc64:
     CmdArgs.push_back("-a64");
     CmdArgs.push_back("-mppc64");
     CmdArgs.push_back("-many");
-  } else if (getToolChain().getArch() == llvm::Triple::ppc64le) {
+    break;
+  case llvm::Triple::ppc64le:
     CmdArgs.push_back("-a64");
     CmdArgs.push_back("-mppc64");
     CmdArgs.push_back("-many");
     CmdArgs.push_back("-mlittle-endian");
-  } else if (getToolChain().getArch() == llvm::Triple::sparc) {
+    break;
+  case llvm::Triple::sparc:
     CmdArgs.push_back("-32");
     CmdArgs.push_back("-Av8plusa");
     NeedsKPIC = true;
-  } else if (getToolChain().getArch() == llvm::Triple::sparcv9) {
+    break;
+  case llvm::Triple::sparcv9:
     CmdArgs.push_back("-64");
     CmdArgs.push_back("-Av9a");
     NeedsKPIC = true;
-  } else if (getToolChain().getArch() == llvm::Triple::arm ||
-             getToolChain().getArch() == llvm::Triple::armeb) {
-    StringRef MArch = getToolChain().getArchName();
-    if (MArch == "armv7" || MArch == "armv7a" || MArch == "armv7-a")
+    break;
+  case llvm::Triple::arm:
+  case llvm::Triple::armeb:
+  case llvm::Triple::thumb:
+  case llvm::Triple::thumbeb: {
+    const llvm::Triple &Triple = getToolChain().getTriple();
+    switch (Triple.getSubArch()) {
+    case llvm::Triple::ARMSubArch_v7:
       CmdArgs.push_back("-mfpu=neon");
-    if (MArch == "armv8" || MArch == "armv8a" || MArch == "armv8-a" ||
-        MArch == "armebv8" || MArch == "armebv8a" || MArch == "armebv8-a")
+      break;
+    case llvm::Triple::ARMSubArch_v8:
       CmdArgs.push_back("-mfpu=crypto-neon-fp-armv8");
+      break;
+    default:
+      break;
+    }
 
     StringRef ARMFloatABI = tools::arm::getARMFloatABI(
-        getToolChain().getDriver(), Args, getToolChain().getTriple());
+        getToolChain().getDriver(), Args, Triple);
     CmdArgs.push_back(Args.MakeArgString("-mfloat-abi=" + ARMFloatABI));
 
     Args.AddLastArg(CmdArgs, options::OPT_march_EQ);
@@ -7314,10 +7333,12 @@ void gnutools::Assemble::ConstructJob(Compilation &C, const JobAction &JA,
     else
       Args.AddLastArg(CmdArgs, options::OPT_mcpu_EQ);
     Args.AddLastArg(CmdArgs, options::OPT_mfpu_EQ);
-  } else if (getToolChain().getArch() == llvm::Triple::mips ||
-             getToolChain().getArch() == llvm::Triple::mipsel ||
-             getToolChain().getArch() == llvm::Triple::mips64 ||
-             getToolChain().getArch() == llvm::Triple::mips64el) {
+    break;
+  }
+  case llvm::Triple::mips:
+  case llvm::Triple::mipsel:
+  case llvm::Triple::mips64:
+  case llvm::Triple::mips64el: {
     StringRef CPUName;
     StringRef ABIName;
     mips::getMipsCPUAndABI(Args, getToolChain().getTriple(), CPUName, ABIName);
@@ -7401,11 +7422,15 @@ void gnutools::Assemble::ConstructJob(Compilation &C, const JobAction &JA,
                     options::OPT_mno_odd_spreg);
 
     NeedsKPIC = true;
-  } else if (getToolChain().getArch() == llvm::Triple::systemz) {
+    break;
+  }
+  case llvm::Triple::systemz: {
     // Always pass an -march option, since our default of z10 is later
     // than the GNU assembler's default.
     StringRef CPUName = getSystemZTargetCPU(Args);
     CmdArgs.push_back(Args.MakeArgString("-march=" + CPUName));
+    break;
+  }
   }
 
   if (NeedsKPIC)
