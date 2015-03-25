@@ -225,7 +225,7 @@ private:
   /// The ID numbers for identifiers are consecutive (in order of
   /// discovery), starting at 1. An ID of zero refers to a NULL
   /// IdentifierInfo.
-  llvm::DenseMap<const IdentifierInfo *, serialization::IdentID> IdentifierIDs;
+  llvm::MapVector<const IdentifierInfo *, serialization::IdentID> IdentifierIDs;
 
   /// \brief The first ID number we can use for our own macros.
   serialization::MacroID FirstMacroID;
@@ -321,7 +321,7 @@ private:
   };
 
   typedef SmallVector<DeclUpdate, 1> UpdateRecord;
-  typedef llvm::DenseMap<const Decl *, UpdateRecord> DeclUpdateMap;
+  typedef llvm::MapVector<const Decl *, UpdateRecord> DeclUpdateMap;
   /// \brief Mapping from declarations that came from a chained PCH to the
   /// record containing modifications to them.
   DeclUpdateMap DeclUpdates;
