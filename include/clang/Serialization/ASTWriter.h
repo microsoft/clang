@@ -61,6 +61,7 @@ class PreprocessingRecord;
 class Preprocessor;
 class Sema;
 class SourceManager;
+struct StoredDeclsList;
 class SwitchCase;
 class TargetInfo;
 class Token;
@@ -505,8 +506,8 @@ private:
   void WriteTypeAbbrevs();
   void WriteType(QualType T);
 
-  template<typename Visitor>
-  void visitLocalLookupResults(const DeclContext *DC, Visitor AddLookupResult);
+  bool isLookupResultExternal(StoredDeclsList &Result, DeclContext *DC);
+  bool isLookupResultEntirelyExternal(StoredDeclsList &Result, DeclContext *DC);
 
   uint32_t GenerateNameLookupTable(const DeclContext *DC,
                                    llvm::SmallVectorImpl<char> &LookupTable);
@@ -733,9 +734,6 @@ public:
   /// \brief Add a version tuple to the given record
   void AddVersionTuple(const VersionTuple &Version, RecordDataImpl &Record);
 
-  /// \brief Mark a declaration context as needing an update.
-  void AddUpdatedDeclContext(const DeclContext *DC);
-
   void RewriteDecl(const Decl *D) {
     DeclsToRewrite.insert(D);
   }
@@ -857,6 +855,8 @@ public:
                                     const ObjCCategoryDecl *ClassExt) override;
   void DeclarationMarkedUsed(const Decl *D) override;
   void DeclarationMarkedOpenMPThreadPrivate(const Decl *D) override;
+  void RedefinedHiddenDefinition(const NamedDecl *D,
+                                 SourceLocation Loc) override;
 };
 
 /// \brief AST and semantic-analysis consumer that generates a
