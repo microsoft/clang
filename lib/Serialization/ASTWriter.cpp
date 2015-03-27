@@ -2857,15 +2857,18 @@ void ASTWriter::WriteFileDeclIDsMap() {
   using namespace llvm;
   RecordData Record;
 
+  SmallVector<std::pair<FileID, DeclIDInFileInfo *>, 64> SortedFileDeclIDs(
+      FileDeclIDs.begin(), FileDeclIDs.end());
+  std::sort(SortedFileDeclIDs.begin(), SortedFileDeclIDs.end(),
+            llvm::less_first());
+
   // Join the vectors of DeclIDs from all files.
-  SmallVector<DeclID, 256> FileSortedIDs;
-  for (FileDeclIDsTy::iterator
-         FI = FileDeclIDs.begin(), FE = FileDeclIDs.end(); FI != FE; ++FI) {
-    DeclIDInFileInfo &Info = *FI->second;
-    Info.FirstDeclIndex = FileSortedIDs.size();
-    for (LocDeclIDsTy::iterator
-           DI = Info.DeclIDs.begin(), DE = Info.DeclIDs.end(); DI != DE; ++DI)
-      FileSortedIDs.push_back(DI->second);
+  SmallVector<DeclID, 256> FileGroupedDeclIDs;
+  for (auto &FileDeclEntry : SortedFileDeclIDs) {
+    DeclIDInFileInfo &Info = *FileDeclEntry.second;
+    Info.FirstDeclIndex = FileGroupedDeclIDs.size();
+    for (auto &LocDeclEntry : Info.DeclIDs)
+      FileGroupedDeclIDs.push_back(LocDeclEntry.second);
   }
 
   BitCodeAbbrev *Abbrev = new BitCodeAbbrev();
@@ -2874,8 +2877,8 @@ void ASTWriter::WriteFileDeclIDsMap() {
   Abbrev->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Blob));
   unsigned AbbrevCode = Stream.EmitAbbrev(Abbrev);
   Record.push_back(FILE_SORTED_DECLS);
-  Record.push_back(FileSortedIDs.size());
-  Stream.EmitRecordWithBlob(AbbrevCode, Record, data(FileSortedIDs));
+  Record.push_back(FileGroupedDeclIDs.size());
+  Stream.EmitRecordWithBlob(AbbrevCode, Record, data(FileGroupedDeclIDs));
 }
 
 void ASTWriter::WriteComments() {
@@ -3026,13 +3029,12 @@ void ASTWriter::WriteSelectors(Sema &SemaRef) {
     // Create the on-disk hash table representation. We walk through every
     // selector we've seen and look it up in the method pool.
     SelectorOffsets.resize(NextSelectorID - FirstSelectorID);
-    for (llvm::DenseMap<Selector, SelectorID>::iterator
-             I = SelectorIDs.begin(), E = SelectorIDs.end();
-         I != E; ++I) {
-      Selector S = I->first;
+    for (auto &SelectorAndID : SelectorIDs) {
+      Selector S = SelectorAndID.first;
+      SelectorID ID = SelectorAndID.second;
       Sema::GlobalMethodPool::iterator F = SemaRef.MethodPool.find(S);
       ASTMethodPoolTrait::data_type Data = {
-        I->second,
+        ID,
         ObjCMethodList(),
         ObjCMethodList()
       };
@@ -3042,7 +3044,7 @@ void ASTWriter::WriteSelectors(Sema &SemaRef) {
       }
       // Only write this selector if it's not in an existing AST or something
       // changed.
-      if (Chain && I->second < FirstSelectorID) {
+      if (Chain && ID < FirstSelectorID) {
         // Selector already exists. Did it change?
         bool changed = false;
         for (ObjCMethodList *M = &Data.Instance;
@@ -3120,11 +3122,9 @@ void ASTWriter::WriteReferencedSelectorsPool(Sema &SemaRef) {
   // Note: this writes out all references even for a dependent AST. But it is
   // very tricky to fix, and given that @selector shouldn't really appear in
   // headers, probably not worth it. It's not a correctness issue.
-  for (DenseMap<Selector, SourceLocation>::iterator S =
-       SemaRef.ReferencedSelectors.begin(),
-       E = SemaRef.ReferencedSelectors.end(); S != E; ++S) {
-    Selector Sel = (*S).first;
-    SourceLocation Loc = (*S).second;
+  for (auto &SelectorAndLocation : SemaRef.ReferencedSelectors) {
+    Selector Sel = SelectorAndLocation.first;
+    SourceLocation Loc = SelectorAndLocation.second;
     AddSelectorRef(Sel, Record);
     AddSourceLocation(Loc, Record);
   }
@@ -3504,10 +3504,16 @@ void ASTWriter::WriteIdentifierTable(Preprocessor &PP,
     // table to enable checking of the predefines buffer in the case
     // where the user adds new macro definitions when building the AST
     // file.
+    SmallVector<const IdentifierInfo *, 128> IIs;
     for (IdentifierTable::iterator ID = PP.getIdentifierTable().begin(),
                                 IDEnd = PP.getIdentifierTable().end();
          ID != IDEnd; ++ID)
-      getIdentifierRef(ID->second);
+      IIs.push_back(ID->second);
+    // Sort the identifiers lexicographically before getting them references so
+    // that their order is stable.
+    std::sort(IIs.begin(), IIs.end(), llvm::less_ptr<IdentifierInfo>());
+    for (const IdentifierInfo *II : IIs)
+      getIdentifierRef(II);
 
     // Create the on-disk hash table representation. We only store offsets
     // for identifiers that appear here for the first time.
@@ -3786,34 +3792,48 @@ ASTWriter::GenerateNameLookupTable(const DeclContext *ConstDC,
   // Sort the names into a stable order.
   std::sort(Names.begin(), Names.end());
 
-  if (isa<CXXRecordDecl>(DC) &&
-      (!ConstructorNameSet.empty() || !ConversionNameSet.empty())) {
+  if (auto *D = dyn_cast<CXXRecordDecl>(DC)) {
     // We need to establish an ordering of constructor and conversion function
-    // names, and they don't have an intrinsic ordering. So when we have these,
-    // we walk all the names in the decl and add the constructors and
-    // conversion functions which are visible in the order they lexically occur
-    // within the context.
-    for (Decl *ChildD : DC->decls())
-      if (auto *ChildND = dyn_cast<NamedDecl>(ChildD)) {
-        auto Name = ChildND->getDeclName();
-        switch (Name.getNameKind()) {
-        default:
-          continue;
+    // names, and they don't have an intrinsic ordering.
 
-        case DeclarationName::CXXConstructorName:
-          if (ConstructorNameSet.erase(Name))
-            Names.push_back(Name);
-          break;
+    // First we try the easy case by forming the current context's constructor
+    // name and adding that name first. This is a very useful optimization to
+    // avoid walking the lexical declarations in many cases, and it also
+    // handles the only case where a constructor name can come from some other
+    // lexical context -- when that name is an implicit constructor merged from
+    // another declaration in the redecl chain. Any non-implicit constructor or
+    // conversion function which doesn't occur in all the lexical contexts
+    // would be an ODR violation.
+    auto ImplicitCtorName = Context->DeclarationNames.getCXXConstructorName(
+        Context->getCanonicalType(Context->getRecordType(D)));
+    if (ConstructorNameSet.erase(ImplicitCtorName))
+      Names.push_back(ImplicitCtorName);
 
-        case DeclarationName::CXXConversionFunctionName:
-          if (ConversionNameSet.erase(Name))
-            Names.push_back(Name);
-          break;
+    // If we still have constructors or conversion functions, we walk all the
+    // names in the decl and add the constructors and conversion functions
+    // which are visible in the order they lexically occur within the context.
+    if (!ConstructorNameSet.empty() || !ConversionNameSet.empty())
+      for (Decl *ChildD : cast<CXXRecordDecl>(DC)->decls())
+        if (auto *ChildND = dyn_cast<NamedDecl>(ChildD)) {
+          auto Name = ChildND->getDeclName();
+          switch (Name.getNameKind()) {
+          default:
+            continue;
+
+          case DeclarationName::CXXConstructorName:
+            if (ConstructorNameSet.erase(Name))
+              Names.push_back(Name);
+            break;
+
+          case DeclarationName::CXXConversionFunctionName:
+            if (ConversionNameSet.erase(Name))
+              Names.push_back(Name);
+            break;
+          }
+
+          if (ConstructorNameSet.empty() && ConversionNameSet.empty())
+            break;
         }
-
-        if (ConstructorNameSet.empty() && ConversionNameSet.empty())
-          break;
-      }
 
     assert(ConstructorNameSet.empty() && "Failed to find all of the visible "
                                          "constructors by walking all the "
@@ -4089,11 +4109,10 @@ void ASTWriter::WriteLateParsedTemplates(Sema &SemaRef) {
     return;
 
   RecordData Record;
-  for (Sema::LateParsedTemplateMapT::iterator It = LPTMap.begin(),
-                                              ItEnd = LPTMap.end();
-       It != ItEnd; ++It) {
-    LateParsedTemplate *LPT = It->second;
-    AddDeclRef(It->first, Record);
+  for (auto LPTMapEntry : LPTMap) {
+    const FunctionDecl *FD = LPTMapEntry.first;
+    LateParsedTemplate *LPT = LPTMapEntry.second;
+    AddDeclRef(FD, Record);
     AddDeclRef(LPT->D, Record);
     Record.push_back(LPT->Toks.size());
 
@@ -4322,21 +4341,6 @@ void ASTWriter::WriteASTCore(Sema &SemaRef,
   if (Context.ExternCContext)
     DeclIDs[Context.ExternCContext] = PREDEF_DECL_EXTERN_C_CONTEXT_ID;
 
-  if (!Chain) {
-    // Make sure that we emit IdentifierInfos (and any attached
-    // declarations) for builtins. We don't need to do this when we're
-    // emitting chained PCH files, because all of the builtins will be
-    // in the original PCH file.
-    // FIXME: Modules won't like this at all.
-    IdentifierTable &Table = PP.getIdentifierTable();
-    SmallVector<const char *, 32> BuiltinNames;
-    if (!Context.getLangOpts().NoBuiltin) {
-      Context.BuiltinInfo.GetBuiltinNames(BuiltinNames);
-    }
-    for (unsigned I = 0, N = BuiltinNames.size(); I != N; ++I)
-      getIdentifierRef(&Table.get(BuiltinNames[I]));
-  }
-
   // Build a record containing all of the tentative definitions in this file, in
   // TentativeDefinitions order.  Generally, this record will be empty for
   // headers.
@@ -4359,15 +4363,13 @@ void ASTWriter::WriteASTCore(Sema &SemaRef,
   // entire table, since later PCH files in a PCH chain are only interested in
   // the results at the end of the chain.
   RecordData WeakUndeclaredIdentifiers;
-  if (!SemaRef.WeakUndeclaredIdentifiers.empty()) {
-    for (llvm::DenseMap<IdentifierInfo*,WeakInfo>::iterator
-         I = SemaRef.WeakUndeclaredIdentifiers.begin(),
-         E = SemaRef.WeakUndeclaredIdentifiers.end(); I != E; ++I) {
-      AddIdentifierRef(I->first, WeakUndeclaredIdentifiers);
-      AddIdentifierRef(I->second.getAlias(), WeakUndeclaredIdentifiers);
-      AddSourceLocation(I->second.getLocation(), WeakUndeclaredIdentifiers);
-      WeakUndeclaredIdentifiers.push_back(I->second.getUsed());
-    }
+  for (auto &WeakUndeclaredIdentifier : SemaRef.WeakUndeclaredIdentifiers) {
+    IdentifierInfo *II = WeakUndeclaredIdentifier.first;
+    WeakInfo &WI = WeakUndeclaredIdentifier.second;
+    AddIdentifierRef(II, WeakUndeclaredIdentifiers);
+    AddIdentifierRef(WI.getAlias(), WeakUndeclaredIdentifiers);
+    AddSourceLocation(WI.getLocation(), WeakUndeclaredIdentifiers);
+    WeakUndeclaredIdentifiers.push_back(WI.getUsed());
   }
 
   // Build a record containing all of the ext_vector declarations.
@@ -4508,15 +4510,17 @@ void ASTWriter::WriteASTCore(Sema &SemaRef,
 
   // Make sure all decls associated with an identifier are registered for
   // serialization.
-  llvm::SmallVector<const IdentifierInfo*, 256> IIsToVisit;
+  llvm::SmallVector<const IdentifierInfo*, 256> IIs;
   for (IdentifierTable::iterator ID = PP.getIdentifierTable().begin(),
                               IDEnd = PP.getIdentifierTable().end();
        ID != IDEnd; ++ID) {
     const IdentifierInfo *II = ID->second;
     if (!Chain || !II->isFromAST() || II->hasChangedSinceDeserialization())
-      IIsToVisit.push_back(II);
+      IIs.push_back(II);
   }
-  for (const IdentifierInfo *II : IIsToVisit) {
+  // Sort the identifiers to visit based on their name.
+  std::sort(IIs.begin(), IIs.end(), llvm::less_ptr<IdentifierInfo>());
+  for (const IdentifierInfo *II : IIs) {
     for (IdentifierResolver::iterator D = SemaRef.IdResolver.begin(II),
                                    DEnd = SemaRef.IdResolver.end();
          D != DEnd; ++D) {
