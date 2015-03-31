@@ -16,6 +16,7 @@
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/ASTLambda.h"
+#include "clang/AST/ASTMutationListener.h"
 #include "clang/AST/CXXInheritance.h"
 #include "clang/AST/CharUnits.h"
 #include "clang/AST/CommentDiagnostic.h"
@@ -1835,10 +1836,17 @@ static void filterNonConflictingPreviousTypedefDecls(ASTContext &Context,
 
     // Declarations of the same entity are not ignored, even if they have
     // different linkages.
-    if (auto *OldTD = dyn_cast<TypedefNameDecl>(Old))
+    if (auto *OldTD = dyn_cast<TypedefNameDecl>(Old)) {
       if (Context.hasSameType(OldTD->getUnderlyingType(),
                               Decl->getUnderlyingType()))
         continue;
+
+      // If both declarations give a tag declaration a typedef name for linkage
+      // purposes, then they declare the same entity.
+      if (OldTD->getAnonDeclWithTypedefName() &&
+          Decl->getAnonDeclWithTypedefName())
+        continue;
+    }
 
     if (!Old->isExternallyVisible())
       Filter.erase();
@@ -1949,6 +1957,29 @@ void Sema::MergeTypedefNameDecl(TypedefNameDecl *New, LookupResult &OldDecls) {
   if (Old->isInvalidDecl())
     return New->setInvalidDecl();
 
+  if (auto *OldTD = dyn_cast<TypedefNameDecl>(Old)) {
+    auto *OldTag = OldTD->getAnonDeclWithTypedefName();
+    auto *NewTag = New->getAnonDeclWithTypedefName();
+    NamedDecl *Hidden = nullptr;
+    if (getLangOpts().CPlusPlus && OldTag && NewTag &&
+        OldTag->getCanonicalDecl() != NewTag->getCanonicalDecl() &&
+        !hasVisibleDefinition(OldTag, &Hidden)) {
+      // There is a definition of this tag, but it is not visible. Use it
+      // instead of our tag.
+      New->setTypeForDecl(OldTD->getTypeForDecl());
+      if (OldTD->isModed())
+        New->setModedTypeSourceInfo(OldTD->getTypeSourceInfo(),
+                                    OldTD->getUnderlyingType());
+      else
+        New->setTypeSourceInfo(OldTD->getTypeSourceInfo());
+
+      // Make the old tag definition visible.
+      if (auto *Listener = getASTMutationListener())
+        Listener->RedefinedHiddenDefinition(Hidden, NewTag->getLocation());
+      Hidden->setHidden(false);
+    }
+  }
+
   // If the typedef types are not identical, reject them in all languages and
   // with any extensions enabled.
   if (isIncompatibleTypedef(Old, New))
@@ -2018,7 +2049,6 @@ void Sema::MergeTypedefNameDecl(TypedefNameDecl *New, LookupResult &OldDecls) {
   Diag(New->getLocation(), diag::ext_redefinition_of_typedef)
     << New->getDeclName();
   Diag(Old->getLocation(), diag::note_previous_definition);
-  return;
 }
 
 /// DeclhasAttr - returns true if decl Declaration already has the target
@@ -10252,6 +10282,18 @@ Sema::CheckForFunctionRedefinition(FunctionDecl *FD,
   if (canRedefineFunction(Definition, getLangOpts()))
     return;
 
+  // If we don't have a visible definition of the function, and it's inline or
+  // a template, it's OK to form another definition of it.
+  //
+  // FIXME: Should we skip the body of the function and use the old definition
+  // in this case? That may be necessary for functions that return local types
+  // through a deduced return type, or instantiate templates with local types.
+  if (!hasVisibleDefinition(Definition) &&
+      (Definition->isInlineSpecified() ||
+       Definition->getDescribedFunctionTemplate() ||
+       Definition->getNumTemplateParameterLists()))
+    return;
+
   if (getLangOpts().GNUMode && Definition->isInlineSpecified() &&
       Definition->getStorageClass() == SC_Extern)
     Diag(FD->getLocation(), diag::err_redefinition_extern_inline)
@@ -11233,13 +11275,16 @@ static FixItHint createFriendTagNNSFixIt(Sema &SemaRef, NamedDecl *ND, Scope *S,
   return FixItHint::CreateInsertion(NameLoc, Insertion);
 }
 
-/// ActOnTag - This is invoked when we see 'struct foo' or 'struct {'.  In the
+/// \brief This is invoked when we see 'struct foo' or 'struct {'.  In the
 /// former case, Name will be non-null.  In the later case, Name will be null.
 /// TagSpec indicates what kind of tag this is. TUK indicates whether this is a
 /// reference/declaration/definition of a tag.
 ///
-/// IsTypeSpecifier is true if this is a type-specifier (or
+/// \param IsTypeSpecifier \c true if this is a type-specifier (or
 /// trailing-type-specifier) other than one in an alias-declaration.
+///
+/// \param SkipBody If non-null, will be set to true if the caller should skip
+/// the definition of this tag, and treat it as if it were a declaration.
 Decl *Sema::ActOnTag(Scope *S, unsigned TagSpec, TagUseKind TUK,
                      SourceLocation KWLoc, CXXScopeSpec &SS,
                      IdentifierInfo *Name, SourceLocation NameLoc,
@@ -11250,7 +11295,7 @@ Decl *Sema::ActOnTag(Scope *S, unsigned TagSpec, TagUseKind TUK,
                      SourceLocation ScopedEnumKWLoc,
                      bool ScopedEnumUsesClassTag,
                      TypeResult UnderlyingType,
-                     bool IsTypeSpecifier) {
+                     bool IsTypeSpecifier, bool *SkipBody) {
   // If this is not a definition, it must have a name.
   IdentifierInfo *OrigName = Name;
   assert((Name != nullptr || TUK == TUK_Definition) &&
@@ -11293,7 +11338,8 @@ Decl *Sema::ActOnTag(Scope *S, unsigned TagSpec, TagUseKind TUK,
                                                ModulePrivateLoc,
                                                /*FriendLoc*/SourceLocation(),
                                                TemplateParameterLists.size()-1,
-                                               TemplateParameterLists.data());
+                                               TemplateParameterLists.data(),
+                                               SkipBody);
         return Result.get();
       } else {
         // The "template<>" header is extraneous.
@@ -11676,7 +11722,7 @@ Decl *Sema::ActOnTag(Scope *S, unsigned TagSpec, TagUseKind TUK,
 
           // Diagnose attempts to redefine a tag.
           if (TUK == TUK_Definition) {
-            if (TagDecl *Def = PrevTagDecl->getDefinition()) {
+            if (NamedDecl *Def = PrevTagDecl->getDefinition()) {
               // If we're defining a specialization and the previous definition
               // is from an implicit instantiation, don't emit an error
               // here; we'll catch this in the general case below.
@@ -11692,7 +11738,20 @@ Decl *Sema::ActOnTag(Scope *S, unsigned TagSpec, TagUseKind TUK,
                     TSK_ExplicitSpecialization;
               }
 
-              if (!IsExplicitSpecializationAfterInstantiation) {
+              NamedDecl *Hidden = nullptr;
+              if (SkipBody && getLangOpts().CPlusPlus &&
+                  !hasVisibleDefinition(Def, &Hidden)) {
+                // There is a definition of this tag, but it is not visible. We
+                // explicitly make use of C++'s one definition rule here, and
+                // assume that this definition is identical to the hidden one
+                // we already have. Make the existing definition visible and
+                // use it in place of this one.
+                *SkipBody = true;
+                if (auto *Listener = getASTMutationListener())
+                  Listener->RedefinedHiddenDefinition(Hidden, KWLoc);
+                Hidden->setHidden(false);
+                return Def;
+              } else if (!IsExplicitSpecializationAfterInstantiation) {
                 // A redeclaration in function prototype scope in C isn't
                 // visible elsewhere, so merely issue a warning.
                 if (!getLangOpts().CPlusPlus && S->containedInPrototypeScope())

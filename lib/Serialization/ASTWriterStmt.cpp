@@ -553,6 +553,7 @@ void ASTStmtWriter::VisitMemberExpr(MemberExpr *E) {
   Writer.AddDeclRef(E->getMemberDecl(), Record);
   Writer.AddSourceLocation(E->getMemberLoc(), Record);
   Record.push_back(E->isArrow());
+  Writer.AddSourceLocation(E->getOperatorLoc(), Record);
   Writer.AddDeclarationNameLoc(E->MemberDNLoc,
                                E->getMemberDecl()->getDeclName(), Record);
   Code = serialization::EXPR_MEMBER;
@@ -2004,11 +2005,11 @@ void ASTStmtWriter::VisitOMPAtomicDirective(OMPAtomicDirective *D) {
   VisitStmt(D);
   Record.push_back(D->getNumClauses());
   VisitOMPExecutableDirective(D);
-  Record.push_back(D->getOpKind());
   Writer.AddStmt(D->getX());
-  Writer.AddStmt(D->getXRVal());
   Writer.AddStmt(D->getV());
   Writer.AddStmt(D->getExpr());
+  Writer.AddStmt(D->getUpdateExpr());
+  Record.push_back(D->isXLHSInRHSPart() ? 1 : 0);
   Code = serialization::STMT_OMP_ATOMIC_DIRECTIVE;
 }
 

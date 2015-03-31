@@ -92,7 +92,7 @@ ApplyDebugLocation::ApplyDebugLocation(CodeGenFunction &CGF, llvm::DebugLoc Loc)
     : CGF(CGF) {
   if (CGF.getDebugInfo()) {
     OriginalLocation = CGF.Builder.getCurrentDebugLocation();
-    if (!Loc.isUnknown())
+    if (Loc)
       CGF.Builder.SetCurrentDebugLocation(std::move(Loc));
   }
 }
@@ -3432,7 +3432,8 @@ void CGDebugInfo::finalize() {
 void CGDebugInfo::EmitExplicitCastType(QualType Ty) {
   if (CGM.getCodeGenOpts().getDebugInfo() < CodeGenOptions::LimitedDebugInfo)
     return;
-  llvm::DIType DieTy = getOrCreateType(Ty, getOrCreateMainFile());
-  // Don't ignore in case of explicit cast where it is referenced indirectly.
-  DBuilder.retainType(DieTy);
+
+  if (llvm::DIType DieTy = getOrCreateType(Ty, getOrCreateMainFile()))
+    // Don't ignore in case of explicit cast where it is referenced indirectly.
+    DBuilder.retainType(DieTy);
 }

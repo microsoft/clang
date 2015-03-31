@@ -2157,11 +2157,11 @@ void ASTStmtReader::VisitOMPAtomicDirective(OMPAtomicDirective *D) {
   // The NumClauses field was read in ReadStmtFromStream.
   ++Idx;
   VisitOMPExecutableDirective(D);
-  D->setOpKind(static_cast<BinaryOperatorKind>(Record[Idx++]));
   D->setX(Reader.ReadSubExpr());
-  D->setXRVal(Reader.ReadSubExpr());
   D->setV(Reader.ReadSubExpr());
   D->setExpr(Reader.ReadSubExpr());
+  D->setUpdateExpr(Reader.ReadSubExpr());
+  D->IsXLHSInRHSPart = Record[Idx++] != 0;
 }
 
 void ASTStmtReader::VisitOMPTargetDirective(OMPTargetDirective *D) {
@@ -2450,11 +2450,12 @@ Stmt *ASTReader::ReadStmtFromStream(ModuleFile &F) {
       SourceLocation MemberLoc = ReadSourceLocation(F, Record, Idx);
       DeclarationNameInfo MemberNameInfo(MemberD->getDeclName(), MemberLoc);
       bool IsArrow = Record[Idx++];
+      SourceLocation OperatorLoc = ReadSourceLocation(F, Record, Idx);
 
-      S = MemberExpr::Create(Context, Base, IsArrow, QualifierLoc,
+      S = MemberExpr::Create(Context, Base, IsArrow, OperatorLoc, QualifierLoc,
                              TemplateKWLoc, MemberD, FoundDecl, MemberNameInfo,
-                             HasTemplateKWAndArgsInfo ? &ArgInfo : nullptr,
-                             T, VK, OK);
+                             HasTemplateKWAndArgsInfo ? &ArgInfo : nullptr, T,
+                             VK, OK);
       ReadDeclarationNameLoc(F, cast<MemberExpr>(S)->MemberDNLoc,
                              MemberD->getDeclName(), Record, Idx);
       if (HadMultipleCandidates)

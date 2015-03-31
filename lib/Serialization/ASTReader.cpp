@@ -6730,20 +6730,14 @@ ASTReader::FindExternalVisibleDeclsByName(const DeclContext *DC,
   // individually, because finding an entity in one of them doesn't imply that
   // we can't find a different entity in another one.
   if (isa<CXXRecordDecl>(DC)) {
-    auto Kind = Name.getNameKind();
-    if (Kind == DeclarationName::CXXConstructorName ||
-        Kind == DeclarationName::CXXDestructorName ||
-        (Kind == DeclarationName::CXXOperatorName &&
-         Name.getCXXOverloadedOperator() == OO_Equal)) {
-      auto Merged = MergedLookups.find(DC);
-      if (Merged != MergedLookups.end()) {
-        for (unsigned I = 0; I != Merged->second.size(); ++I) {
-          const DeclContext *Context = Merged->second[I];
-          LookUpInContexts(Context);
-          // We might have just added some more merged lookups. If so, our
-          // iterator is now invalid, so grab a fresh one before continuing.
-          Merged = MergedLookups.find(DC);
-        }
+    auto Merged = MergedLookups.find(DC);
+    if (Merged != MergedLookups.end()) {
+      for (unsigned I = 0; I != Merged->second.size(); ++I) {
+        const DeclContext *Context = Merged->second[I];
+        LookUpInContexts(Context);
+        // We might have just added some more merged lookups. If so, our
+        // iterator is now invalid, so grab a fresh one before continuing.
+        Merged = MergedLookups.find(DC);
       }
     }
   }
@@ -7453,7 +7447,7 @@ void ASTReader::ReadPendingInstantiations(
 }
 
 void ASTReader::ReadLateParsedTemplates(
-    llvm::DenseMap<const FunctionDecl *, LateParsedTemplate *> &LPTMap) {
+    llvm::MapVector<const FunctionDecl *, LateParsedTemplate *> &LPTMap) {
   for (unsigned Idx = 0, N = LateParsedTemplates.size(); Idx < N;
        /* In loop */) {
     FunctionDecl *FD = cast<FunctionDecl>(GetDecl(LateParsedTemplates[Idx++]));
@@ -7469,7 +7463,7 @@ void ASTReader::ReadLateParsedTemplates(
     for (unsigned T = 0; T < TokN; ++T)
       LT->Toks.push_back(ReadToken(*F, LateParsedTemplates, Idx));
 
-    LPTMap[FD] = LT;
+    LPTMap.insert(std::make_pair(FD, LT));
   }
 
   LateParsedTemplates.clear();

@@ -1870,11 +1870,9 @@ public:
         return ExprError();
       Base = BaseResult.get();
       ExprValueKind VK = isArrow ? VK_LValue : Base->getValueKind();
-      MemberExpr *ME =
-        new (getSema().Context) MemberExpr(Base, isArrow,
-                                           Member, MemberNameInfo,
-                                           cast<FieldDecl>(Member)->getType(),
-                                           VK, OK_Ordinary);
+      MemberExpr *ME = new (getSema().Context)
+          MemberExpr(Base, isArrow, OpLoc, Member, MemberNameInfo,
+                     cast<FieldDecl>(Member)->getType(), VK, OK_Ordinary);
       return ME;
     }
 
@@ -2623,6 +2621,31 @@ public:
                                         /*SuperLoc=*/SourceLocation(),
                                         Sel, Method, LBracLoc, SelectorLocs,
                                         RBracLoc, Args);
+  }
+
+  /// \brief Build a new Objective-C instance/class message to 'super'.
+  ExprResult RebuildObjCMessageExpr(SourceLocation SuperLoc,
+                                    Selector Sel,
+                                    ArrayRef<SourceLocation> SelectorLocs,
+                                    ObjCMethodDecl *Method,
+                                    SourceLocation LBracLoc,
+                                    MultiExprArg Args,
+                                    SourceLocation RBracLoc) {
+    ObjCInterfaceDecl *Class = Method->getClassInterface();
+    QualType ReceiverTy = SemaRef.Context.getObjCInterfaceType(Class);
+    
+    return Method->isInstanceMethod() ? SemaRef.BuildInstanceMessage(nullptr,
+                                          ReceiverTy,
+                                          SuperLoc,
+                                          Sel, Method, LBracLoc, SelectorLocs,
+                                          RBracLoc, Args)
+                                      : SemaRef.BuildClassMessage(nullptr,
+                                          ReceiverTy,
+                                          SuperLoc,
+                                          Sel, Method, LBracLoc, SelectorLocs,
+                                          RBracLoc, Args);
+
+      
   }
 
   /// \brief Build a new Objective-C ivar reference expression.
@@ -10042,6 +10065,19 @@ TreeTransform<Derived>::TransformObjCMessageExpr(ObjCMessageExpr *E) {
     SmallVector<SourceLocation, 16> SelLocs;
     E->getSelectorLocs(SelLocs);
     return getDerived().RebuildObjCMessageExpr(ReceiverTypeInfo,
+                                               E->getSelector(),
+                                               SelLocs,
+                                               E->getMethodDecl(),
+                                               E->getLeftLoc(),
+                                               Args,
+                                               E->getRightLoc());
+  }
+  else if (E->getReceiverKind() == ObjCMessageExpr::SuperClass ||
+           E->getReceiverKind() == ObjCMessageExpr::SuperInstance) {
+    // Build a new class message send to 'super'.
+    SmallVector<SourceLocation, 16> SelLocs;
+    E->getSelectorLocs(SelLocs);
+    return getDerived().RebuildObjCMessageExpr(E->getSuperLoc(),
                                                E->getSelector(),
                                                SelLocs,
                                                E->getMethodDecl(),

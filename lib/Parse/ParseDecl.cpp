@@ -4782,7 +4782,8 @@ void Parser::ParseDeclaratorInternal(Declarator &D,
       D.AddTypeInfo(DeclaratorChunk::getPointer(DS.getTypeQualifiers(), Loc,
                                                 DS.getConstSpecLoc(),
                                                 DS.getVolatileSpecLoc(),
-                                                DS.getRestrictSpecLoc()),
+                                                DS.getRestrictSpecLoc(),
+                                                DS.getAtomicSpecLoc()),
                     DS.getAttributes(),
                     SourceLocation());
     else
@@ -5329,7 +5330,7 @@ void Parser::ParseFunctionDeclarator(Declarator &D,
     if (getLangOpts().CPlusPlus) {
       // FIXME: Accept these components in any order, and produce fixits to
       // correct the order if the user gets it wrong. Ideally we should deal
-      // with the virt-specifier-seq and pure-specifier in the same way.
+      // with the pure-specifier in the same way.
 
       // Parse cv-qualifier-seq[opt].
       ParseTypeQualifierListOpt(DS, AR_NoAttributesParsed,
@@ -5342,15 +5343,8 @@ void Parser::ParseFunctionDeclarator(Declarator &D,
       }
 
       // Parse ref-qualifier[opt].
-      if (Tok.is(tok::amp) || Tok.is(tok::ampamp)) {
-        Diag(Tok, getLangOpts().CPlusPlus11 ?
-             diag::warn_cxx98_compat_ref_qualifier :
-             diag::ext_ref_qualifier);
-
-        RefQualifierIsLValueRef = Tok.is(tok::amp);
-        RefQualifierLoc = ConsumeToken();
+      if (ParseRefQualifier(RefQualifierIsLValueRef, RefQualifierLoc))
         EndLoc = RefQualifierLoc;
-      }
 
       // C++11 [expr.prim.general]p3:
       //   If a declaration declares a member function or member function
@@ -5444,6 +5438,22 @@ void Parser::ParseFunctionDeclarator(Declarator &D,
                                              StartLoc, LocalEndLoc, D,
                                              TrailingReturnType),
                 FnAttrs, EndLoc);
+}
+
+/// ParseRefQualifier - Parses a member function ref-qualifier. Returns
+/// true if a ref-qualifier is found.
+bool Parser::ParseRefQualifier(bool &RefQualifierIsLValueRef,
+                               SourceLocation &RefQualifierLoc) {
+  if (Tok.is(tok::amp) || Tok.is(tok::ampamp)) {
+    Diag(Tok, getLangOpts().CPlusPlus11 ?
+         diag::warn_cxx98_compat_ref_qualifier :
+         diag::ext_ref_qualifier);
+
+    RefQualifierIsLValueRef = Tok.is(tok::amp);
+    RefQualifierLoc = ConsumeToken();
+    return true;
+  }
+  return false;
 }
 
 /// isFunctionDeclaratorIdentifierList - This parameter list may have an

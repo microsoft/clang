@@ -243,7 +243,7 @@ void ASTDeclWriter::VisitDecl(Decl *D) {
     while (auto *NS = dyn_cast<NamespaceDecl>(DC->getRedeclContext())) {
       if (!NS->isFromASTFile())
         break;
-      Writer.AddUpdatedDeclContext(NS->getPrimaryContext());
+      Writer.UpdatedDeclContexts.insert(NS->getPrimaryContext());
       if (!NS->isInlineNamespace())
         break;
       DC = NS->getParent();
@@ -978,17 +978,34 @@ void ASTDeclWriter::VisitNamespaceDecl(NamespaceDecl *D) {
   if (Writer.hasChain() && !D->isOriginalNamespace() &&
       D->getOriginalNamespace()->isFromASTFile()) {
     NamespaceDecl *NS = D->getOriginalNamespace();
-    Writer.AddUpdatedDeclContext(NS);
+    Writer.UpdatedDeclContexts.insert(NS);
 
-    // Make sure all visible decls are written. They will be recorded later.
-    if (StoredDeclsMap *Map = NS->buildLookup()) {
-      for (StoredDeclsMap::iterator D = Map->begin(), DEnd = Map->end();
-           D != DEnd; ++D) {
-        DeclContext::lookup_result R = D->second.getLookupResult();
-        for (DeclContext::lookup_iterator I = R.begin(), E = R.end(); I != E;
-             ++I)
-          Writer.GetDeclRef(*I);
+    // Make sure all visible decls are written. They will be recorded later. We
+    // do this using a side data structure so we can sort the names into
+    // a deterministic order.
+    StoredDeclsMap *Map = NS->buildLookup();
+    SmallVector<std::pair<DeclarationName, DeclContext::lookup_result>, 16>
+        LookupResults;
+    LookupResults.reserve(Map->size());
+    for (auto &Entry : *Map)
+      LookupResults.push_back(
+          std::make_pair(Entry.first, Entry.second.getLookupResult()));
+
+    std::sort(LookupResults.begin(), LookupResults.end(), llvm::less_first());
+    for (auto &NameAndResult : LookupResults) {
+      DeclarationName Name = NameAndResult.first;
+      DeclContext::lookup_result Result = NameAndResult.second;
+      if (Name.getNameKind() == DeclarationName::CXXConstructorName ||
+          Name.getNameKind() == DeclarationName::CXXConversionFunctionName) {
+        // We have to work around a name lookup bug here where negative lookup
+        // results for these names get cached in namespace lookup tables.
+        assert(Result.empty() && "Cannot have a constructor or conversion "
+                                 "function name in a namespace!");
+        continue;
       }
+
+      for (NamedDecl *ND : Result)
+        Writer.GetDeclRef(ND);
     }
   }
 

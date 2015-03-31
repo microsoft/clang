@@ -1550,6 +1550,7 @@ void Parser::ParseClassSpecifier(tok::TokenKind TagTokKind,
   TypeResult TypeResult = true; // invalid
 
   bool Owned = false;
+  bool SkipBody = false;
   if (TemplateId) {
     // Explicit specialization, class template partial specialization,
     // or explicit instantiation.
@@ -1695,7 +1696,8 @@ void Parser::ParseClassSpecifier(tok::TokenKind TagTokKind,
                                        TParams, Owned, IsDependent,
                                        SourceLocation(), false,
                                        clang::TypeResult(),
-                                       DSC == DSC_type_specifier);
+                                       DSC == DSC_type_specifier,
+                                       &SkipBody);
 
     // If ActOnTag said the type was dependent, try again with the
     // less common call.
@@ -1711,7 +1713,10 @@ void Parser::ParseClassSpecifier(tok::TokenKind TagTokKind,
     assert(Tok.is(tok::l_brace) ||
            (getLangOpts().CPlusPlus && Tok.is(tok::colon)) ||
            isCXX11FinalKeyword());
-    if (getLangOpts().CPlusPlus)
+    if (SkipBody)
+      SkipCXXMemberSpecification(StartLoc, AttrFixitLoc, TagType,
+                                 TagOrTempResult.get());
+    else if (getLangOpts().CPlusPlus)
       ParseCXXMemberSpecification(StartLoc, AttrFixitLoc, attrs, TagType,
                                   TagOrTempResult.get());
     else
@@ -2037,10 +2042,13 @@ bool Parser::ParseCXXMemberDeclaratorBeforeInitializer(
     BitfieldSize = ParseConstantExpression();
     if (BitfieldSize.isInvalid())
       SkipUntil(tok::comma, StopAtSemi | StopBeforeMatch);
-  } else
+  } else {
     ParseOptionalCXX11VirtSpecifierSeq(
         VS, getCurrentClass().IsInterface,
         DeclaratorInfo.getDeclSpec().getFriendSpecLoc());
+    if (!VS.isUnset())
+      MaybeParseAndDiagnoseDeclSpecAfterCXX11VirtSpecifierSeq(DeclaratorInfo, VS);
+  }
 
   // If a simple-asm-expr is present, parse it.
   if (Tok.is(tok::kw_asm)) {
@@ -2071,6 +2079,7 @@ bool Parser::ParseCXXMemberDeclaratorBeforeInitializer(
           Diag(Attr->getLoc(), diag::warn_gcc_attribute_location);
         Attr = Attr->getNext();
       }
+      MaybeParseAndDiagnoseDeclSpecAfterCXX11VirtSpecifierSeq(DeclaratorInfo, VS);
     }
   }
 
@@ -2082,6 +2091,68 @@ bool Parser::ParseCXXMemberDeclaratorBeforeInitializer(
     return true;
   }
   return false;
+}
+
+/// \brief Look for declaration specifiers possibly occurring after C++11
+/// virt-specifier-seq and diagnose them.
+void Parser::MaybeParseAndDiagnoseDeclSpecAfterCXX11VirtSpecifierSeq(
+    Declarator &D,
+    VirtSpecifiers &VS) {
+  DeclSpec DS(AttrFactory);
+
+  // GNU-style and C++11 attributes are not allowed here, but they will be
+  // handled by the caller.  Diagnose everything else.
+  ParseTypeQualifierListOpt(DS, AR_NoAttributesParsed, false);
+  D.ExtendWithDeclSpec(DS);
+
+  if (D.isFunctionDeclarator()) {
+    auto &Function = D.getFunctionTypeInfo();
+    if (DS.getTypeQualifiers() != DeclSpec::TQ_unspecified) {
+      auto DeclSpecCheck = [&] (DeclSpec::TQ TypeQual,
+                                const char *FixItName,
+                                SourceLocation SpecLoc,
+                                unsigned* QualifierLoc) {
+        FixItHint Insertion;
+        if (DS.getTypeQualifiers() & TypeQual) {
+          if (!(Function.TypeQuals & TypeQual)) {
+            std::string Name(FixItName);
+            Name += " ";
+            Insertion = FixItHint::CreateInsertion(VS.getFirstLocation(), Name.c_str());
+            Function.TypeQuals |= TypeQual;
+            *QualifierLoc = SpecLoc.getRawEncoding();
+          }
+          Diag(SpecLoc, diag::err_declspec_after_virtspec)
+            << FixItName
+            << VirtSpecifiers::getSpecifierName(VS.getLastSpecifier())
+            << FixItHint::CreateRemoval(SpecLoc)
+            << Insertion;
+        }
+      };
+      DeclSpecCheck(DeclSpec::TQ_const, "const", DS.getConstSpecLoc(),
+                    &Function.ConstQualifierLoc);
+      DeclSpecCheck(DeclSpec::TQ_volatile, "volatile", DS.getVolatileSpecLoc(),
+                    &Function.VolatileQualifierLoc);
+      DeclSpecCheck(DeclSpec::TQ_restrict, "restrict", DS.getRestrictSpecLoc(),
+                    &Function.RestrictQualifierLoc);
+    }
+
+    // Parse ref-qualifiers.
+    bool RefQualifierIsLValueRef = true;
+    SourceLocation RefQualifierLoc;
+    if (ParseRefQualifier(RefQualifierIsLValueRef, RefQualifierLoc)) {
+      const char *Name = (RefQualifierIsLValueRef ? "& " : "&& ");
+      FixItHint Insertion = FixItHint::CreateInsertion(VS.getFirstLocation(), Name);
+      Function.RefQualifierIsLValueRef = RefQualifierIsLValueRef;
+      Function.RefQualifierLoc = RefQualifierLoc.getRawEncoding();
+
+      Diag(RefQualifierLoc, diag::err_declspec_after_virtspec)
+        << (RefQualifierIsLValueRef ? "&" : "&&")
+        << VirtSpecifiers::getSpecifierName(VS.getLastSpecifier())
+        << FixItHint::CreateRemoval(RefQualifierLoc)
+        << Insertion;
+      D.SetRangeEnd(RefQualifierLoc);
+    }
+  }
 }
 
 /// ParseCXXClassMemberDeclaration - Parse a C++ class member declaration.
@@ -2620,6 +2691,55 @@ ExprResult Parser::ParseCXXMemberInitializer(Decl *D, bool IsFunction,
     return ExprError();
   }
   return ParseInitializer();
+}
+
+void Parser::SkipCXXMemberSpecification(SourceLocation RecordLoc,
+                                        SourceLocation AttrFixitLoc,
+                                        unsigned TagType, Decl *TagDecl) {
+  // Skip the optional 'final' keyword.
+  if (getLangOpts().CPlusPlus && Tok.is(tok::identifier)) {
+    assert(isCXX11FinalKeyword() && "not a class definition");
+    ConsumeToken();
+
+    // Diagnose any C++11 attributes after 'final' keyword.
+    // We deliberately discard these attributes.
+    ParsedAttributesWithRange Attrs(AttrFactory);
+    CheckMisplacedCXX11Attribute(Attrs, AttrFixitLoc);
+
+    // This can only happen if we had malformed misplaced attributes;
+    // we only get called if there is a colon or left-brace after the
+    // attributes.
+    if (Tok.isNot(tok::colon) && Tok.isNot(tok::l_brace))
+      return;
+  }
+
+  // Skip the base clauses. This requires actually parsing them, because
+  // otherwise we can't be sure where they end (a left brace may appear
+  // within a template argument).
+  if (Tok.is(tok::colon)) {
+    // Enter the scope of the class so that we can correctly parse its bases.
+    ParseScope ClassScope(this, Scope::ClassScope|Scope::DeclScope);
+    ParsingClassDefinition ParsingDef(*this, TagDecl, /*NonNestedClass*/ true,
+                                      TagType == DeclSpec::TST_interface);
+    Actions.ActOnTagStartSkippedDefinition(getCurScope(), TagDecl);
+
+    // Parse the bases but don't attach them to the class.
+    ParseBaseClause(nullptr);
+
+    Actions.ActOnTagFinishSkippedDefinition();
+
+    if (!Tok.is(tok::l_brace)) {
+      Diag(PP.getLocForEndOfToken(PrevTokLocation),
+           diag::err_expected_lbrace_after_base_specifiers);
+      return;
+    }
+  }
+
+  // Skip the body.
+  assert(Tok.is(tok::l_brace));
+  BalancedDelimiterTracker T(*this, tok::l_brace);
+  T.consumeOpen();
+  T.skipToEnd();
 }
 
 /// ParseCXXMemberSpecification - Parse the class definition.
@@ -3407,7 +3527,9 @@ IdentifierInfo *Parser::TryParseCXX11AttributeIdentifier(SourceLocation &Loc) {
     // Alternative tokens do not have identifier info, but their spelling
     // starts with an alphabetical character.
     SmallString<8> SpellingBuf;
-    StringRef Spelling = PP.getSpelling(Tok.getLocation(), SpellingBuf);
+    SourceLocation SpellingLoc =
+        PP.getSourceManager().getSpellingLoc(Tok.getLocation());
+    StringRef Spelling = PP.getSpelling(SpellingLoc, SpellingBuf);
     if (isLetter(Spelling[0])) {
       Loc = ConsumeToken();
       return &PP.getIdentifierTable().get(Spelling);

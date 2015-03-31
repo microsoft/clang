@@ -61,6 +61,7 @@ class PreprocessingRecord;
 class Preprocessor;
 class Sema;
 class SourceManager;
+struct StoredDeclsList;
 class SwitchCase;
 class TargetInfo;
 class Token;
@@ -225,7 +226,7 @@ private:
   /// The ID numbers for identifiers are consecutive (in order of
   /// discovery), starting at 1. An ID of zero refers to a NULL
   /// IdentifierInfo.
-  llvm::DenseMap<const IdentifierInfo *, serialization::IdentID> IdentifierIDs;
+  llvm::MapVector<const IdentifierInfo *, serialization::IdentID> IdentifierIDs;
 
   /// \brief The first ID number we can use for our own macros.
   serialization::MacroID FirstMacroID;
@@ -275,7 +276,7 @@ private:
   serialization::SelectorID NextSelectorID;
 
   /// \brief Map that provides the ID numbers of each Selector.
-  llvm::DenseMap<Selector, serialization::SelectorID> SelectorIDs;
+  llvm::MapVector<Selector, serialization::SelectorID> SelectorIDs;
 
   /// \brief Offset of each selector within the method pool/selector
   /// table, indexed by the Selector ID (-1).
@@ -321,7 +322,7 @@ private:
   };
 
   typedef SmallVector<DeclUpdate, 1> UpdateRecord;
-  typedef llvm::DenseMap<const Decl *, UpdateRecord> DeclUpdateMap;
+  typedef llvm::MapVector<const Decl *, UpdateRecord> DeclUpdateMap;
   /// \brief Mapping from declarations that came from a chained PCH to the
   /// record containing modifications to them.
   DeclUpdateMap DeclUpdates;
@@ -351,13 +352,13 @@ private:
   /// if its primary namespace comes from the chain. If it does, we add the
   /// primary to this set, so that we can write out lexical content updates for
   /// it.
-  llvm::SmallPtrSet<const DeclContext *, 16> UpdatedDeclContexts;
+  llvm::SmallSetVector<const DeclContext *, 16> UpdatedDeclContexts;
 
   /// \brief Keeps track of visible decls that were added in DeclContexts
   /// coming from another AST file.
   SmallVector<const Decl *, 16> UpdatingVisibleDecls;
 
-  typedef llvm::SmallPtrSet<const Decl *, 16> DeclsToRewriteTy;
+  typedef llvm::SmallSetVector<const Decl *, 16> DeclsToRewriteTy;
   /// \brief Decls that will be replaced in the current dependent AST file.
   DeclsToRewriteTy DeclsToRewrite;
 
@@ -386,8 +387,7 @@ private:
                  
   /// \brief The set of declarations that may have redeclaration chains that
   /// need to be serialized.
-  llvm::SetVector<Decl *, SmallVector<Decl *, 4>,
-                  llvm::SmallPtrSet<Decl *, 4> > Redeclarations;
+  llvm::SmallSetVector<Decl *, 4> Redeclarations;
                                       
   /// \brief Statements that we've encountered while serializing a
   /// declaration or type.
@@ -505,8 +505,8 @@ private:
   void WriteTypeAbbrevs();
   void WriteType(QualType T);
 
-  template<typename Visitor>
-  void visitLocalLookupResults(const DeclContext *DC, Visitor AddLookupResult);
+  bool isLookupResultExternal(StoredDeclsList &Result, DeclContext *DC);
+  bool isLookupResultEntirelyExternal(StoredDeclsList &Result, DeclContext *DC);
 
   uint32_t GenerateNameLookupTable(const DeclContext *DC,
                                    llvm::SmallVectorImpl<char> &LookupTable);
@@ -733,9 +733,6 @@ public:
   /// \brief Add a version tuple to the given record
   void AddVersionTuple(const VersionTuple &Version, RecordDataImpl &Record);
 
-  /// \brief Mark a declaration context as needing an update.
-  void AddUpdatedDeclContext(const DeclContext *DC);
-
   void RewriteDecl(const Decl *D) {
     DeclsToRewrite.insert(D);
   }
@@ -857,6 +854,8 @@ public:
                                     const ObjCCategoryDecl *ClassExt) override;
   void DeclarationMarkedUsed(const Decl *D) override;
   void DeclarationMarkedOpenMPThreadPrivate(const Decl *D) override;
+  void RedefinedHiddenDefinition(const NamedDecl *D,
+                                 SourceLocation Loc) override;
 };
 
 /// \brief AST and semantic-analysis consumer that generates a
