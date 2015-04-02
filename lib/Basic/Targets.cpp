@@ -1476,6 +1476,7 @@ public:
     GK_SM21,
     GK_SM30,
     GK_SM35,
+    GK_SM37,
   } GPU;
 
   public:
@@ -1510,6 +1511,9 @@ public:
           break;
         case GK_SM35:
           CUDAArchCode = "350";
+          break;
+        case GK_SM37:
+          CUDAArchCode = "370";
           break;
         default:
           llvm_unreachable("Unhandled target CPU");
@@ -1563,6 +1567,7 @@ public:
                 .Case("sm_21", GK_SM21)
                 .Case("sm_30", GK_SM30)
                 .Case("sm_35", GK_SM35)
+                .Case("sm_37", GK_SM37)
                 .Default(GK_NONE);
 
       return GPU != GK_NONE;
@@ -1590,20 +1595,22 @@ public:
   public:
     NVPTX32TargetInfo(const llvm::Triple &Triple) : NVPTXTargetInfo(Triple) {
       PointerWidth = PointerAlign = 32;
-      SizeType     = PtrDiffType = TargetInfo::UnsignedInt;
+      SizeType = TargetInfo::UnsignedInt;
+      PtrDiffType = TargetInfo::SignedInt;
       IntPtrType = TargetInfo::SignedInt;
       DescriptionString = "e-p:32:32-i64:64-v16:16-v32:32-n16:32:64";
-  }
+    }
   };
 
   class NVPTX64TargetInfo : public NVPTXTargetInfo {
   public:
     NVPTX64TargetInfo(const llvm::Triple &Triple) : NVPTXTargetInfo(Triple) {
       PointerWidth = PointerAlign = 64;
-      SizeType     = PtrDiffType = TargetInfo::UnsignedLongLong;
-      IntPtrType = TargetInfo::SignedLongLong;
+      SizeType = TargetInfo::UnsignedLong;
+      PtrDiffType = TargetInfo::SignedLong;
+      IntPtrType = TargetInfo::SignedLong;
       DescriptionString = "e-i64:64-v16:16-v32:32-n16:32:64";
-  }
+    }
   };
 
 static const unsigned R600AddrSpaceMap[] = {
@@ -3429,7 +3436,10 @@ public:
       : WindowsTargetInfo<X86_32TargetInfo>(Triple) {
     WCharType = UnsignedShort;
     DoubleAlign = LongLongAlign = 64;
-    DescriptionString = "e-m:x-p:32:32-i64:64-f80:32-n8:16:32-S32";
+    bool IsWinCOFF =
+        getTriple().isOSWindows() && getTriple().isOSBinFormatCOFF();
+    DescriptionString = IsWinCOFF ? "e-m:x-p:32:32-i64:64-f80:32-n8:16:32-S32"
+                                  : "e-m:e-p:32:32-i64:64-f80:32-n8:16:32-S32";
   }
   void getTargetDefines(const LangOptions &Opts,
                         MacroBuilder &Builder) const override {
@@ -5402,10 +5412,14 @@ public:
 };
 
 class SystemZTargetInfo : public TargetInfo {
+  static const Builtin::Info BuiltinInfo[];
   static const char *const GCCRegNames[];
+  std::string CPU;
+  bool HasTransactionalExecution;
 
 public:
-  SystemZTargetInfo(const llvm::Triple &Triple) : TargetInfo(Triple) {
+  SystemZTargetInfo(const llvm::Triple &Triple)
+    : TargetInfo(Triple), CPU("z10"), HasTransactionalExecution(false) {
     IntMaxType = SignedLong;
     Int64Type = SignedLong;
     TLSSupported = true;
@@ -5425,12 +5439,13 @@ public:
     Builder.defineMacro("__s390x__");
     Builder.defineMacro("__zarch__");
     Builder.defineMacro("__LONG_DOUBLE_128__");
+    if (HasTransactionalExecution)
+      Builder.defineMacro("__HTM__");
   }
   void getTargetBuiltins(const Builtin::Info *&Records,
                          unsigned &NumRecords) const override {
-    // FIXME: Implement.
-    Records = nullptr;
-    NumRecords = 0;
+    Records = BuiltinInfo;
+    NumRecords = clang::SystemZ::LastTSBuiltin-Builtin::FirstTSBuiltin;
   }
 
   void getGCCRegNames(const char *const *&Names,
@@ -5451,16 +5466,42 @@ public:
     return TargetInfo::SystemZBuiltinVaList;
   }
   bool setCPU(const std::string &Name) override {
+    CPU = Name;
     bool CPUKnown = llvm::StringSwitch<bool>(Name)
       .Case("z10", true)
       .Case("z196", true)
       .Case("zEC12", true)
       .Default(false);
 
-    // No need to store the CPU yet.  There aren't any CPU-specific
-    // macros to define.
     return CPUKnown;
   }
+  void getDefaultFeatures(llvm::StringMap<bool> &Features) const override {
+    if (CPU == "zEC12")
+      Features["transactional-execution"] = true;
+  }
+
+  bool handleTargetFeatures(std::vector<std::string> &Features,
+                            DiagnosticsEngine &Diags) override {
+    HasTransactionalExecution = false;
+    for (unsigned i = 0, e = Features.size(); i != e; ++i) {
+      if (Features[i] == "+transactional-execution")
+        HasTransactionalExecution = true;
+    }
+    return true;
+  }
+
+  bool hasFeature(StringRef Feature) const override {
+    return llvm::StringSwitch<bool>(Feature)
+        .Case("systemz", true)
+        .Case("htm", HasTransactionalExecution)
+        .Default(false);
+  }
+};
+
+const Builtin::Info SystemZTargetInfo::BuiltinInfo[] = {
+#define BUILTIN(ID, TYPE, ATTRS)                                               \
+  { #ID, TYPE, ATTRS, 0, ALL_LANGUAGES },
+#include "clang/Basic/BuiltinsSystemZ.def"
 };
 
 const char *const SystemZTargetInfo::GCCRegNames[] = {
