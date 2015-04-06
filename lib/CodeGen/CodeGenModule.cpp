@@ -147,8 +147,8 @@ CodeGenModule::CodeGenModule(ASTContext &C, const CodeGenOptions &CGO,
       unsigned DiagID = Diags.getCustomDiagID(DiagnosticsEngine::Error,
                                               "Could not read profile: %0");
       getDiags().Report(DiagID) << EC.message();
-    }
-    PGOReader = std::move(ReaderOrErr.get());
+    } else
+      PGOReader = std::move(ReaderOrErr.get());
   }
 
   // If coverage mapping generation is enabled, create the
@@ -2564,12 +2564,10 @@ llvm::Function *CodeGenModule::getIntrinsic(unsigned IID,
                                          Tys);
 }
 
-static llvm::StringMapEntry<llvm::Constant*> &
-GetConstantCFStringEntry(llvm::StringMap<llvm::Constant*> &Map,
-                         const StringLiteral *Literal,
-                         bool TargetIsLSB,
-                         bool &IsUTF16,
-                         unsigned &StringLength) {
+static llvm::StringMapEntry<llvm::GlobalVariable *> &
+GetConstantCFStringEntry(llvm::StringMap<llvm::GlobalVariable *> &Map,
+                         const StringLiteral *Literal, bool TargetIsLSB,
+                         bool &IsUTF16, unsigned &StringLength) {
   StringRef String = Literal->getString();
   unsigned NumBytes = String.size();
 
@@ -2601,10 +2599,9 @@ GetConstantCFStringEntry(llvm::StringMap<llvm::Constant*> &Map,
                          nullptr)).first;
 }
 
-static llvm::StringMapEntry<llvm::Constant*> &
-GetConstantStringEntry(llvm::StringMap<llvm::Constant*> &Map,
-                       const StringLiteral *Literal,
-                       unsigned &StringLength) {
+static llvm::StringMapEntry<llvm::GlobalVariable *> &
+GetConstantStringEntry(llvm::StringMap<llvm::GlobalVariable *> &Map,
+                       const StringLiteral *Literal, unsigned &StringLength) {
   StringRef String = Literal->getString();
   StringLength = String.size();
   return *Map.insert(std::make_pair(String, nullptr)).first;
@@ -2614,10 +2611,10 @@ llvm::Constant *
 CodeGenModule::GetAddrOfConstantCFString(const StringLiteral *Literal) {
   unsigned StringLength = 0;
   bool isUTF16 = false;
-  llvm::StringMapEntry<llvm::Constant*> &Entry =
-    GetConstantCFStringEntry(CFConstantStringMap, Literal,
-                             getDataLayout().isLittleEndian(),
-                             isUTF16, StringLength);
+  llvm::StringMapEntry<llvm::GlobalVariable *> &Entry =
+      GetConstantCFStringEntry(CFConstantStringMap, Literal,
+                               getDataLayout().isLittleEndian(), isUTF16,
+                               StringLength);
 
   if (auto *C = Entry.second)
     return C;
@@ -2707,11 +2704,11 @@ CodeGenModule::GetAddrOfConstantCFString(const StringLiteral *Literal) {
   return GV;
 }
 
-llvm::Constant *
+llvm::GlobalVariable *
 CodeGenModule::GetAddrOfConstantString(const StringLiteral *Literal) {
   unsigned StringLength = 0;
-  llvm::StringMapEntry<llvm::Constant*> &Entry =
-    GetConstantStringEntry(CFConstantStringMap, Literal, StringLength);
+  llvm::StringMapEntry<llvm::GlobalVariable *> &Entry =
+      GetConstantStringEntry(CFConstantStringMap, Literal, StringLength);
 
   if (auto *C = Entry.second)
     return C;
@@ -2743,8 +2740,7 @@ CodeGenModule::GetAddrOfConstantString(const StringLiteral *Literal) {
       V = llvm::ConstantExpr::getGetElementPtr(PTy, GV, Zeros);
       ConstantStringClassRef = V;
     }
-  }
-  else
+  } else
     V = ConstantStringClassRef;
 
   if (!NSConstantStringType) {
