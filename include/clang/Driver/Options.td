@@ -561,7 +561,9 @@ def fno_unsafe_math_optimizations : Flag<["-"], "fno-unsafe-math-optimizations">
   Group<f_Group>;
 def fassociative_math : Flag<["-"], "fassociative-math">, Group<f_Group>;
 def fno_associative_math : Flag<["-"], "fno-associative-math">, Group<f_Group>;
-def freciprocal_math : Flag<["-"], "freciprocal-math">, Group<f_Group>;
+def freciprocal_math :
+  Flag<["-"], "freciprocal-math">, Group<f_Group>, Flags<[CC1Option]>,
+  HelpText<"Allow division operations to be reassociated">;
 def fno_reciprocal_math : Flag<["-"], "fno-reciprocal-math">, Group<f_Group>;
 def ffinite_math_only : Flag<["-"], "ffinite-math-only">, Group<f_Group>, Flags<[CC1Option]>;
 def fno_finite_math_only : Flag<["-"], "fno-finite-math-only">, Group<f_Group>;
@@ -1272,6 +1274,8 @@ def mfprnd : Flag<["-"], "mfprnd">, Group<m_ppc_Features_Group>;
 def mno_fprnd : Flag<["-"], "mno-fprnd">, Group<m_ppc_Features_Group>;
 def mcmpb : Flag<["-"], "mcmpb">, Group<m_ppc_Features_Group>;
 def mno_cmpb : Flag<["-"], "mno-cmpb">, Group<m_ppc_Features_Group>;
+def misel : Flag<["-"], "misel">, Group<m_ppc_Features_Group>;
+def mno_isel : Flag<["-"], "mno-isel">, Group<m_ppc_Features_Group>;
 def mmfcrf : Flag<["-"], "mmfcrf">, Group<m_ppc_Features_Group>;
 def mno_mfcrf : Flag<["-"], "mno-mfcrf">, Group<m_ppc_Features_Group>;
 def mpopcntd : Flag<["-"], "mpopcntd">, Group<m_ppc_Features_Group>;

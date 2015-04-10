@@ -744,6 +744,8 @@ class PPCTargetInfo : public TargetInfo {
   bool HasP8Crypto;
   bool HasQPX;
   bool HasHTM;
+  bool HasBPERMD;
+  bool HasExtDiv;
 
 protected:
   std::string ABI;
@@ -751,7 +753,8 @@ protected:
 public:
   PPCTargetInfo(const llvm::Triple &Triple)
     : TargetInfo(Triple), HasVSX(false), HasP8Vector(false),
-      HasP8Crypto(false), HasQPX(false), HasHTM(false) {
+      HasP8Crypto(false), HasQPX(false), HasHTM(false),
+      HasBPERMD(false), HasExtDiv(false) {
     BigEndian = (Triple.getArch() != llvm::Triple::ppc64le);
     LongDoubleWidth = LongDoubleAlign = 128;
     LongDoubleFormat = &llvm::APFloat::PPCDoubleDouble;
@@ -1011,6 +1014,16 @@ bool PPCTargetInfo::handleTargetFeatures(std::vector<std::string> &Features,
       continue;
     }
 
+    if (Feature == "bpermd") {
+      HasBPERMD = true;
+      continue;
+    }
+
+    if (Feature == "extdiv") {
+      HasExtDiv = true;
+      continue;
+    }
+
     if (Feature == "power8-vector") {
       HasP8Vector = true;
       continue;
@@ -1233,6 +1246,16 @@ void PPCTargetInfo::getDefaultFeatures(llvm::StringMap<bool> &Features) const {
     .Case("ppc64le", true)
     .Case("pwr8", true)
     .Default(false);
+  Features["bpermd"] = llvm::StringSwitch<bool>(CPU)
+    .Case("ppc64le", true)
+    .Case("pwr8", true)
+    .Case("pwr7", true)
+    .Default(false);
+  Features["extdiv"] = llvm::StringSwitch<bool>(CPU)
+    .Case("ppc64le", true)
+    .Case("pwr8", true)
+    .Case("pwr7", true)
+    .Default(false);
 }
 
 bool PPCTargetInfo::hasFeature(StringRef Feature) const {
@@ -1243,6 +1266,8 @@ bool PPCTargetInfo::hasFeature(StringRef Feature) const {
     .Case("crypto", HasP8Crypto)
     .Case("qpx", HasQPX)
     .Case("htm", HasHTM)
+    .Case("bpermd", HasBPERMD)
+    .Case("extdiv", HasExtDiv)
     .Default(false);
 }
 
@@ -4092,7 +4117,7 @@ public:
       Features["hwdiv"] = true;
       Features["hwdiv-arm"] = true;
     } else if (CPU == "cortex-m3" || CPU == "cortex-m4" || CPU == "cortex-m7" ||
-               CPU == "sc300") {
+               CPU == "sc300" || CPU == "cortex-r4" || CPU == "cortex-r4f") {
       Features["hwdiv"] = true;
     }
   }
@@ -4191,7 +4216,7 @@ public:
         .Cases("cortex-a5", "cortex-a7", "cortex-a8", "7A")
         .Cases("cortex-a9", "cortex-a12", "cortex-a15", "cortex-a17", "krait",
                "7A")
-        .Cases("cortex-r4", "cortex-r5", "cortex-r7", "7R")
+        .Cases("cortex-r4", "cortex-r4f", "cortex-r5", "cortex-r7", "7R")
         .Case("swift", "7S")
         .Case("cyclone", "8A")
         .Cases("sc300", "cortex-m3", "7M")
@@ -4208,7 +4233,7 @@ public:
         .Cases("cortex-a53", "cortex-a57", "cortex-a72", "A")
         .Cases("cortex-m3", "cortex-m4", "cortex-m0", "cortex-m0plus", "M")
         .Cases("cortex-m1", "cortex-m7", "sc000", "sc300", "M")
-        .Cases("cortex-r4", "cortex-r5", "cortex-r7", "R")
+        .Cases("cortex-r4",  "cortex-r4f", "cortex-r5", "cortex-r7", "R")
         .Default("");
   }
   bool setCPU(const std::string &Name) override {

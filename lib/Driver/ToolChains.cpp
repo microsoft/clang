@@ -135,7 +135,7 @@ static const char *GetArmArchForMCpu(StringRef Value) {
     .Cases("sc000", "cortex-m0", "cortex-m0plus", "cortex-m1", "armv6m")
     .Cases("cortex-a5", "cortex-a7", "cortex-a8", "armv7")
     .Cases("cortex-a9", "cortex-a12", "cortex-a15", "cortex-a17", "krait", "armv7")
-    .Cases("cortex-r4", "cortex-r5", "cortex-r7", "armv7r")
+    .Cases("cortex-r4", "cortex-r4f", "cortex-r5", "cortex-r7", "armv7r")
     .Cases("sc300", "cortex-m3", "armv7m")
     .Cases("cortex-m4", "cortex-m7", "armv7em")
     .Case("swift", "armv7s")
@@ -338,9 +338,12 @@ void DarwinClang::AddLinkSanitizerLibArgs(const ArgList &Args,
                                     OS + "_dynamic.dylib").str(),
                     /*AlwaysLink*/ true, /*IsEmbedded*/ false,
                     /*AddRPath*/ true);
-  // Add explicit dependcy on -lc++abi, as -lc++ doesn't re-export
-  // all RTTI-related symbols that UBSan uses.
-  CmdArgs.push_back("-lc++abi");
+
+  if (GetCXXStdlibType(Args) == ToolChain::CST_Libcxx) {
+    // Add explicit dependcy on -lc++abi, as -lc++ doesn't re-export
+    // all RTTI-related symbols that UBSan uses.
+    CmdArgs.push_back("-lc++abi");
+  }
 }
 
 void DarwinClang::AddLinkRuntimeLibArgs(const ArgList &Args,

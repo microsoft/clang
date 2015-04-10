@@ -19,6 +19,7 @@
 #include "clang/Frontend/FrontendDiagnostic.h"
 #include "clang/Frontend/TextDiagnosticPrinter.h"
 #include "clang/Frontend/Utils.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/ADT/Triple.h"
 #include "llvm/IR/DataLayout.h"
@@ -254,9 +255,9 @@ bool AssemblerInvocation::CreateFromArgs(AssemblerInvocation &Opts,
   return Success;
 }
 
-static formatted_raw_ostream *GetOutputStream(AssemblerInvocation &Opts,
-                                              DiagnosticsEngine &Diags,
-                                              bool Binary) {
+static std::unique_ptr<raw_fd_ostream>
+getOutputStream(AssemblerInvocation &Opts, DiagnosticsEngine &Diags,
+                bool Binary) {
   if (Opts.OutputPath.empty())
     Opts.OutputPath = "-";
 
@@ -266,16 +267,15 @@ static formatted_raw_ostream *GetOutputStream(AssemblerInvocation &Opts,
     sys::RemoveFileOnSignal(Opts.OutputPath);
 
   std::error_code EC;
-  raw_fd_ostream *Out = new raw_fd_ostream(
+  auto Out = llvm::make_unique<raw_fd_ostream>(
       Opts.OutputPath, EC, (Binary ? sys::fs::F_None : sys::fs::F_Text));
   if (EC) {
     Diags.Report(diag::err_fe_unable_to_open_output) << Opts.OutputPath
                                                      << EC.message();
-    delete Out;
     return nullptr;
   }
 
-  return new formatted_raw_ostream(*Out, formatted_raw_ostream::DELETE_STREAM);
+  return Out;
 }
 
 static bool ExecuteAssembler(AssemblerInvocation &Opts,
@@ -315,8 +315,7 @@ static bool ExecuteAssembler(AssemblerInvocation &Opts,
     MAI->setCompressDebugSections(true);
 
   bool IsBinary = Opts.OutputType == AssemblerInvocation::FT_Obj;
-  std::unique_ptr<formatted_raw_ostream> Out(
-      GetOutputStream(Opts, Diags, IsBinary));
+  std::unique_ptr<raw_fd_ostream> Out = getOutputStream(Opts, Diags, IsBinary);
   if (!Out)
     return true;
 
@@ -366,10 +365,10 @@ static bool ExecuteAssembler(AssemblerInvocation &Opts,
       CE = TheTarget->createMCCodeEmitter(*MCII, *MRI, Ctx);
       MAB = TheTarget->createMCAsmBackend(*MRI, Opts.Triple, Opts.CPU);
     }
-    Str.reset(TheTarget->createAsmStreamer(Ctx, *Out, /*asmverbose*/true,
-                                           /*useDwarfDirectory*/ true,
-                                           IP, CE, MAB,
-                                           Opts.ShowInst));
+    auto FOut = llvm::make_unique<formatted_raw_ostream>(*Out);
+    Str.reset(TheTarget->createAsmStreamer(
+        Ctx, std::move(FOut), /*asmverbose*/ true,
+        /*useDwarfDirectory*/ true, IP, CE, MAB, Opts.ShowInst));
   } else if (Opts.OutputType == AssemblerInvocation::FT_Null) {
     Str.reset(createNullStreamer(Ctx));
   } else {
