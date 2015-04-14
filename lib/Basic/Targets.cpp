@@ -445,6 +445,7 @@ protected:
 public:
   NetBSDTargetInfo(const llvm::Triple &Triple) : OSTargetInfo<Target>(Triple) {
     this->UserLabelPrefix = "";
+    this->MCountName = "_mcount";
   }
 };
 
@@ -742,6 +743,7 @@ class PPCTargetInfo : public TargetInfo {
   bool HasVSX;
   bool HasP8Vector;
   bool HasP8Crypto;
+  bool HasDirectMove;
   bool HasQPX;
   bool HasHTM;
   bool HasBPERMD;
@@ -753,7 +755,7 @@ protected:
 public:
   PPCTargetInfo(const llvm::Triple &Triple)
     : TargetInfo(Triple), HasVSX(false), HasP8Vector(false),
-      HasP8Crypto(false), HasQPX(false), HasHTM(false),
+      HasP8Crypto(false), HasDirectMove(false), HasQPX(false), HasHTM(false),
       HasBPERMD(false), HasExtDiv(false) {
     BigEndian = (Triple.getArch() != llvm::Triple::ppc64le);
     LongDoubleWidth = LongDoubleAlign = 128;
@@ -1034,6 +1036,11 @@ bool PPCTargetInfo::handleTargetFeatures(std::vector<std::string> &Features,
       continue;
     }
 
+    if (Feature == "direct-move") {
+      HasDirectMove = true;
+      continue;
+    }
+
     if (Feature == "qpx") {
       HasQPX = true;
       continue;
@@ -1256,6 +1263,10 @@ void PPCTargetInfo::getDefaultFeatures(llvm::StringMap<bool> &Features) const {
     .Case("pwr8", true)
     .Case("pwr7", true)
     .Default(false);
+  Features["direct-move"] = llvm::StringSwitch<bool>(CPU)
+    .Case("ppc64le", true)
+    .Case("pwr8", true)
+    .Default(false);
 }
 
 bool PPCTargetInfo::hasFeature(StringRef Feature) const {
@@ -1264,6 +1275,7 @@ bool PPCTargetInfo::hasFeature(StringRef Feature) const {
     .Case("vsx", HasVSX)
     .Case("power8-vector", HasP8Vector)
     .Case("crypto", HasP8Crypto)
+    .Case("direct-move", HasDirectMove)
     .Case("qpx", HasQPX)
     .Case("htm", HasHTM)
     .Case("bpermd", HasBPERMD)
@@ -4595,8 +4607,8 @@ class ARMleTargetInfo : public ARMTargetInfo {
 public:
   ARMleTargetInfo(const llvm::Triple &Triple)
     : ARMTargetInfo(Triple, false) { }
-  virtual void getTargetDefines(const LangOptions &Opts,
-                                MacroBuilder &Builder) const {
+  void getTargetDefines(const LangOptions &Opts,
+                        MacroBuilder &Builder) const override {
     Builder.defineMacro("__ARMEL__");
     ARMTargetInfo::getTargetDefines(Opts, Builder);
   }
@@ -4606,8 +4618,8 @@ class ARMbeTargetInfo : public ARMTargetInfo {
 public:
   ARMbeTargetInfo(const llvm::Triple &Triple)
     : ARMTargetInfo(Triple, true) { }
-  virtual void getTargetDefines(const LangOptions &Opts,
-                                MacroBuilder &Builder) const {
+  void getTargetDefines(const LangOptions &Opts,
+                        MacroBuilder &Builder) const override {
     Builder.defineMacro("__ARMEB__");
     Builder.defineMacro("__ARM_BIG_ENDIAN");
     ARMTargetInfo::getTargetDefines(Opts, Builder);
@@ -4779,8 +4791,8 @@ public:
     return CPUKnown;
   }
 
-  virtual void getTargetDefines(const LangOptions &Opts,
-                                MacroBuilder &Builder) const  override {
+  void getTargetDefines(const LangOptions &Opts,
+                        MacroBuilder &Builder) const override {
     // Target identification.
     Builder.defineMacro("__aarch64__");
 
@@ -4839,8 +4851,8 @@ public:
       Builder.defineMacro("__ARM_FEATURE_CRYPTO");
   }
 
-  virtual void getTargetBuiltins(const Builtin::Info *&Records,
-                                 unsigned &NumRecords) const override {
+  void getTargetBuiltins(const Builtin::Info *&Records,
+                         unsigned &NumRecords) const override {
     Records = BuiltinInfo;
     NumRecords = clang::AArch64::LastTSBuiltin - Builtin::FirstTSBuiltin;
   }
@@ -4876,14 +4888,13 @@ public:
     return TargetInfo::AArch64ABIBuiltinVaList;
   }
 
-  virtual void getGCCRegNames(const char *const *&Names,
-                              unsigned &NumNames) const override;
-  virtual void getGCCRegAliases(const GCCRegAlias *&Aliases,
-                                unsigned &NumAliases) const override;
+  void getGCCRegNames(const char *const *&Names,
+                      unsigned &NumNames) const override;
+  void getGCCRegAliases(const GCCRegAlias *&Aliases,
+                        unsigned &NumAliases) const override;
 
-  virtual bool
-  validateAsmConstraint(const char *&Name,
-                        TargetInfo::ConstraintInfo &Info) const override {
+  bool validateAsmConstraint(const char *&Name,
+                             TargetInfo::ConstraintInfo &Info) const override {
     switch (*Name) {
     default:
       return false;
@@ -6841,6 +6852,8 @@ static TargetInfo *AllocateTarget(const llvm::Triple &Triple) {
     switch (os) {
     case llvm::Triple::Linux:
       return new LinuxTargetInfo<PPC64TargetInfo>(Triple);
+    case llvm::Triple::NetBSD:
+      return new NetBSDTargetInfo<PPC64TargetInfo>(Triple);
     default:
       return new PPC64TargetInfo(Triple);
     }

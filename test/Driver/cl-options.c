@@ -343,16 +343,21 @@
 // ThreadSafeStatics-NOT: "-fno-threadsafe-statics"
 
 // Accept "core" clang options.
-// (/Zs is for syntax-only)
+// (/Zs is for syntax-only, -Werror makes it fail hard on unknown options)
 // RUN: %clang_cl \
 // RUN:     --driver-mode=cl \
+// RUN:     -fcolor-diagnostics \
+// RUN:     -fno-color-diagnostics \
+// RUN:     -fdiagnostics-color \
+// RUN:     -fno-diagnostics-color \
 // RUN:     -ferror-limit=10 \
 // RUN:     -fmsc-version=1800 \
 // RUN:     -fno-strict-aliasing \
 // RUN:     -fstrict-aliasing \
 // RUN:     -mllvm -disable-llvm-optzns \
-// RUN:     -Wunused-variables \
-// RUN:     /Zs -- %s 2>&1
+// RUN:     -Wunused-variable \
+// RUN:     -fmacro-backtrace-limit=0 \
+// RUN:     -Werror /Zs -- %s 2>&1
 
 
 void f() { }

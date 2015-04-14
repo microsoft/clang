@@ -126,10 +126,9 @@ void CGDebugInfo::setLocation(SourceLocation Loc) {
   if (PCLoc.isInvalid() || Scope.getFilename() == PCLoc.getFilename())
     return;
 
-  if (llvm::DILexicalBlockFile LBF =
-          dyn_cast<llvm::MDLexicalBlockFile>(Scope)) {
+  if (auto *LBF = dyn_cast<llvm::MDLexicalBlockFile>(Scope)) {
     llvm::DIDescriptor D = DBuilder.createLexicalBlockFile(
-        LBF.getContext(), getOrCreateFile(CurLoc));
+        LBF->getScope(), getOrCreateFile(CurLoc));
     llvm::MDNode *N = D;
     LexicalBlockStack.pop_back();
     LexicalBlockStack.emplace_back(N);
@@ -2500,16 +2499,16 @@ llvm::DISubprogram CGDebugInfo::getFunctionDeclaration(const Decl *D) {
     }
   }
   if (MI != SPCache.end()) {
-    llvm::DISubprogram SP = dyn_cast_or_null<llvm::MDSubprogram>(MI->second);
-    if (SP && !SP.isDefinition())
+    auto *SP = dyn_cast_or_null<llvm::MDSubprogram>(MI->second);
+    if (SP && !SP->isDefinition())
       return SP;
   }
 
   for (auto NextFD : FD->redecls()) {
     auto MI = SPCache.find(NextFD->getCanonicalDecl());
     if (MI != SPCache.end()) {
-      llvm::DISubprogram SP = dyn_cast_or_null<llvm::MDSubprogram>(MI->second);
-      if (SP && !SP.isDefinition())
+      auto *SP = dyn_cast_or_null<llvm::MDSubprogram>(MI->second);
+      if (SP && !SP->isDefinition())
         return SP;
     }
   }
@@ -2603,8 +2602,8 @@ void CGDebugInfo::EmitFunctionStart(GlobalDecl GD, SourceLocation Loc,
     // If there is a DISubprogram for this function available then use it.
     auto FI = SPCache.find(FD->getCanonicalDecl());
     if (FI != SPCache.end()) {
-      llvm::DISubprogram SP = dyn_cast_or_null<llvm::MDSubprogram>(FI->second);
-      if (SP && SP.isDefinition()) {
+      auto *SP = dyn_cast_or_null<llvm::MDSubprogram>(FI->second);
+      if (SP && SP->isDefinition()) {
         llvm::MDNode *SPN = SP;
         LexicalBlockStack.emplace_back(SPN);
         RegionMap[D].reset(SP);
@@ -3385,10 +3384,10 @@ void CGDebugInfo::finalize() {
   // element and the size(), so don't cache/reference them.
   for (size_t i = 0; i != ObjCInterfaceCache.size(); ++i) {
     ObjCInterfaceCacheEntry E = ObjCInterfaceCache[i];
-    E.Decl.replaceAllUsesWith(CGM.getLLVMContext(),
-                              E.Type->getDecl()->getDefinition()
-                                  ? CreateTypeDefinition(E.Type, E.Unit)
-                                  : E.Decl);
+    llvm::MDType *Ty = E.Type->getDecl()->getDefinition()
+                           ? CreateTypeDefinition(E.Type, E.Unit)
+                           : E.Decl;
+    DBuilder.replaceTemporary(llvm::TempMDType(E.Decl), Ty);
   }
 
   for (auto p : ReplaceMap) {
@@ -3400,8 +3399,8 @@ void CGDebugInfo::finalize() {
     assert(it != TypeCache.end());
     assert(it->second);
 
-    llvm::DIType RepTy = cast<llvm::MDType>(it->second);
-    Ty.replaceAllUsesWith(CGM.getLLVMContext(), RepTy);
+    DBuilder.replaceTemporary(llvm::TempMDType(Ty),
+                               cast<llvm::MDType>(it->second));
   }
 
   for (const auto &p : FwdDeclReplaceMap) {
@@ -3418,8 +3417,8 @@ void CGDebugInfo::finalize() {
     else
       Repl = it->second;
 
-    FwdDecl.replaceAllUsesWith(CGM.getLLVMContext(),
-                               llvm::DIDescriptor(cast<llvm::MDNode>(Repl)));
+    DBuilder.replaceTemporary(llvm::TempMDNode(FwdDecl),
+                              cast<llvm::MDNode>(Repl));
   }
 
   // We keep our own list of retained types, because we need to look
