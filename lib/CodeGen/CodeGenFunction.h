@@ -2068,6 +2068,40 @@ public:
                                  OMPPrivateScope &PrivateScope);
   void EmitOMPPrivateClause(const OMPExecutableDirective &D,
                             OMPPrivateScope &PrivateScope);
+  /// \brief Emit code for copyin clause in \a D directive. The next code is
+  /// generated at the start of outlined functions for directives:
+  /// \code
+  /// threadprivate_var1 = master_threadprivate_var1;
+  /// operator=(threadprivate_var2, master_threadprivate_var2);
+  /// ...
+  /// __kmpc_barrier(&loc, global_tid);
+  /// \endcode
+  ///
+  /// \param D OpenMP directive possibly with 'copyin' clause(s).
+  /// \returns true if at least one copyin variable is found, false otherwise.
+  bool EmitOMPCopyinClause(const OMPExecutableDirective &D);
+  /// \brief Emit initial code for lastprivate variables. If some variable is
+  /// not also firstprivate, then the default initialization is used. Otherwise
+  /// initialization of this variable is performed by EmitOMPFirstprivateClause
+  /// method.
+  ///
+  /// \param D Directive that may have 'lastprivate' directives.
+  /// \param PrivateScope Private scope for capturing lastprivate variables for
+  /// proper codegen in internal captured statement.
+  ///
+  /// \returns true if there is at least one lastprivate variable, false
+  /// otherwise.
+  bool EmitOMPLastprivateClauseInit(const OMPExecutableDirective &D,
+                                    OMPPrivateScope &PrivateScope);
+  /// \brief Emit final copying of lastprivate values to original variables at
+  /// the end of the worksharing or simd directive.
+  ///
+  /// \param D Directive that has at least one 'lastprivate' directives.
+  /// \param IsLastIterCond Boolean condition that must be set to 'i1 true' if
+  /// it is the last iteration of the loop code in associated directive, or to
+  /// 'i1 false' otherwise.
+  void EmitOMPLastprivateClauseFinal(const OMPExecutableDirective &D,
+                                     llvm::Value *IsLastIterCond);
   /// \brief Emit initial code for reduction variables. Creates reduction copies
   /// and initializes them with the values according to OpenMP standard.
   ///
@@ -2116,7 +2150,10 @@ private:
   void EmitOMPLoopBody(const OMPLoopDirective &Directive,
                        bool SeparateIter = false);
   void EmitOMPSimdFinal(const OMPLoopDirective &S);
-  void EmitOMPWorksharingLoop(const OMPLoopDirective &S);
+  /// \brief Emit code for the worksharing loop-based directive.
+  /// \return true, if this construct has any lastprivate clause, false -
+  /// otherwise.
+  bool EmitOMPWorksharingLoop(const OMPLoopDirective &S);
   void EmitOMPForOuterLoop(OpenMPScheduleClauseKind ScheduleKind,
                            const OMPLoopDirective &S,
                            OMPPrivateScope &LoopScope, llvm::Value *LB,

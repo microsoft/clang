@@ -1877,9 +1877,8 @@ bool VarDecl::isInExternCXXContext() const {
 
 VarDecl *VarDecl::getCanonicalDecl() { return getFirstDecl(); }
 
-VarDecl::DefinitionKind VarDecl::isThisDeclarationADefinition(
-  ASTContext &C) const
-{
+VarDecl::DefinitionKind
+VarDecl::isThisDeclarationADefinition(ASTContext &C) const {
   // C++ [basic.def]p2:
   //   A declaration is a definition unless [...] it contains the 'extern'
   //   specifier or a linkage-specification and neither an initializer [...],
@@ -1916,7 +1915,7 @@ VarDecl::DefinitionKind VarDecl::isThisDeclarationADefinition(
   if (hasInit())
     return Definition;
 
-  if (hasAttr<AliasAttr>())
+  if (hasAttr<AliasAttr>() || hasAttr<SelectAnyAttr>())
     return Definition;
 
   // A variable template specialization (other than a static data member
