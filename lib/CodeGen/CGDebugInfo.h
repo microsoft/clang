@@ -93,7 +93,7 @@ class CGDebugInfo {
       FwdDeclReplaceMap;
 
   // LexicalBlockStack - Keep track of our current nested lexical block.
-  std::vector<llvm::TrackingMDNodeRef> LexicalBlockStack;
+  std::vector<llvm::TypedTrackingMDRef<llvm::MDScope>> LexicalBlockStack;
   llvm::DenseMap<const Decl *, llvm::TrackingMDRef> RegionMap;
   // FnBeginRegionCount - Keep track of LexicalBlockStack counter at the
   // beginning of a function. This is used to pop unbalanced regions at
@@ -327,9 +327,6 @@ private:
   /// \brief Create a forward decl for a RecordType in a given context.
   llvm::MDCompositeType *getOrCreateRecordFwdDecl(const RecordType *,
                                                   llvm::MDScope *);
-
-  /// \brief Create a set of decls for the context chain.
-  llvm::DIDescriptor createContextChain(const Decl *Decl);
 
   /// \brief Return current directory name.
   StringRef getCurrentDirname();
