@@ -1335,7 +1335,7 @@ CharUnits ASTContext::getDeclAlign(const Decl *D, bool ForAlignof) const {
       }
       Align = std::max(Align, getPreferredTypeAlign(T.getTypePtr()));
       if (const VarDecl *VD = dyn_cast<VarDecl>(D)) {
-        if (VD->hasGlobalStorage())
+        if (VD->hasGlobalStorage() && !ForAlignof)
           Align = std::max(Align, getTargetInfo().getMinGlobalAlign());
       }
     }
@@ -1815,6 +1815,13 @@ unsigned ASTContext::getPreferredTypeAlign(const Type *T) const {
       return std::max(ABIAlign, (unsigned)getTypeSize(T));
 
   return ABIAlign;
+}
+
+/// getTargetDefaultAlignForAttributeAligned - Return the default alignment
+/// for __attribute__((aligned)) on this target, to be used if no alignment
+/// value is specified.
+unsigned ASTContext::getTargetDefaultAlignForAttributeAligned(void) const {
+  return getTargetInfo().getDefaultAlignForAttributeAligned();
 }
 
 /// getAlignOfGlobalVar - Return the alignment in bits that should be given

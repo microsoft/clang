@@ -177,12 +177,12 @@ class CGDebugInfo {
                        SmallVectorImpl<llvm::Metadata *> &EltTys,
                        llvm::MDType *RecordTy);
 
-  llvm::DIArray CollectTemplateParams(const TemplateParameterList *TPList,
-                                      ArrayRef<TemplateArgument> TAList,
-                                      llvm::MDFile *Unit);
-  llvm::DIArray CollectFunctionTemplateParams(const FunctionDecl *FD,
-                                              llvm::MDFile *Unit);
-  llvm::DIArray
+  llvm::DebugNodeArray
+  CollectTemplateParams(const TemplateParameterList *TPList,
+                        ArrayRef<TemplateArgument> TAList, llvm::MDFile *Unit);
+  llvm::DebugNodeArray CollectFunctionTemplateParams(const FunctionDecl *FD,
+                                                     llvm::MDFile *Unit);
+  llvm::DebugNodeArray
   CollectCXXTemplateParams(const ClassTemplateSpecializationDecl *TS,
                            llvm::MDFile *F);
 
@@ -290,7 +290,7 @@ public:
   void EmitUsingDecl(const UsingDecl &UD);
 
   /// \brief Emit C++ namespace alias.
-  llvm::DIImportedEntity EmitNamespaceAlias(const NamespaceAliasDecl &NA);
+  llvm::MDImportedEntity *EmitNamespaceAlias(const NamespaceAliasDecl &NA);
 
   /// \brief Emit record type's standalone debug info.
   llvm::MDType *getOrCreateRecordType(QualType Ty, SourceLocation L);
@@ -376,13 +376,14 @@ private:
   /// decalration represented in the given FunctionDecl.
   llvm::MDSubprogram *getFunctionForwardDeclaration(const FunctionDecl *FD);
 
-  /// \brief Create a DIGlobalVariable describing the forward
-  /// decalration represented in the given VarDecl.
-  llvm::DIGlobalVariable getGlobalVariableForwardDeclaration(const VarDecl *VD);
+  /// \brief Create a global variable describing the forward decalration
+  /// represented in the given VarDecl.
+  llvm::MDGlobalVariable *
+  getGlobalVariableForwardDeclaration(const VarDecl *VD);
 
   /// Return a global variable that represents one of the collection of
   /// global variables created for an anonmyous union.
-  llvm::DIGlobalVariable
+  llvm::MDGlobalVariable *
   CollectAnonRecordDecls(const RecordDecl *RD, llvm::MDFile *Unit,
                          unsigned LineNo, StringRef LinkageName,
                          llvm::GlobalVariable *Var, llvm::MDScope *DContext);
@@ -420,7 +421,8 @@ private:
   void collectFunctionDeclProps(GlobalDecl GD, llvm::MDFile *Unit,
                                 StringRef &Name, StringRef &LinkageName,
                                 llvm::MDScope *&FDContext,
-                                llvm::DIArray &TParamsArray, unsigned &Flags);
+                                llvm::DebugNodeArray &TParamsArray,
+                                unsigned &Flags);
 
   /// \brief Collect various properties of a VarDecl.
   void collectVarDeclProps(const VarDecl *VD, llvm::MDFile *&Unit,
