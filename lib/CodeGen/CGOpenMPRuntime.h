@@ -118,6 +118,16 @@ private:
     // Call to void __kmpc_end_reduce_nowait(ident_t *loc, kmp_int32 global_tid,
     // kmp_critical_name *lck);
     OMPRTL__kmpc_end_reduce_nowait,
+    // Call to void __kmpc_omp_task_begin_if0(ident_t *, kmp_int32 gtid,
+    // kmp_task_t * new_task);
+    OMPRTL__kmpc_omp_task_begin_if0,
+    // Call to void __kmpc_omp_task_complete_if0(ident_t *, kmp_int32 gtid,
+    // kmp_task_t * new_task);
+    OMPRTL__kmpc_omp_task_complete_if0,
+    // Call to void __kmpc_ordered(ident_t *loc, kmp_int32 global_tid);
+    OMPRTL__kmpc_ordered,
+    // Call to void __kmpc_end_ordered(ident_t *loc, kmp_int32 global_tid);
+    OMPRTL__kmpc_end_ordered,
   };
 
   /// \brief Values for bit flags used in the ident_t to describe the fields.
@@ -252,6 +262,10 @@ private:
   /// size \a IVSize and sign \a IVSigned.
   llvm::Constant *createDispatchNextFunction(unsigned IVSize, bool IVSigned);
 
+  /// \brief Returns __kmpc_dispatch_fini_* runtime function for the specified
+  /// size \a IVSize and sign \a IVSigned.
+  llvm::Constant *createDispatchFiniFunction(unsigned IVSize, bool IVSigned);
+
   /// \brief If the specified mangled name is not in the module, create and
   /// return threadprivate cache object. This object is a pointer's worth of
   /// storage that's reserved for use by the OpenMP runtime.
@@ -328,26 +342,20 @@ public:
   ///
   void functionFinished(CodeGenFunction &CGF);
 
-  /// \brief Emits code for parallel call of the \a OutlinedFn with variables
-  /// captured in a record which address is stored in \a CapturedStruct.
+  /// \brief Emits code for parallel or serial call of the \a OutlinedFn with
+  /// variables captured in a record which address is stored in \a
+  /// CapturedStruct.
   /// \param OutlinedFn Outlined function to be run in parallel threads. Type of
   /// this function is void(*)(kmp_int32 *, kmp_int32, struct context_vars*).
   /// \param CapturedStruct A pointer to the record with the references to
   /// variables used in \a OutlinedFn function.
+  /// \param IfCond Condition in the associated 'if' clause, if it was
+  /// specified, nullptr otherwise.
   ///
   virtual void emitParallelCall(CodeGenFunction &CGF, SourceLocation Loc,
                                 llvm::Value *OutlinedFn,
-                                llvm::Value *CapturedStruct);
-
-  /// \brief Emits code for serial call of the \a OutlinedFn with variables
-  /// captured in a record which address is stored in \a CapturedStruct.
-  /// \param OutlinedFn Outlined function to be run in serial mode.
-  /// \param CapturedStruct A pointer to the record with the references to
-  /// variables used in \a OutlinedFn function.
-  ///
-  virtual void emitSerialCall(CodeGenFunction &CGF, SourceLocation Loc,
-                              llvm::Value *OutlinedFn,
-                              llvm::Value *CapturedStruct);
+                                llvm::Value *CapturedStruct,
+                                const Expr *IfCond);
 
   /// \brief Emits a critical region.
   /// \param CriticalName Name of the critical region.
@@ -377,6 +385,13 @@ public:
                                 ArrayRef<const Expr *> DestExprs,
                                 ArrayRef<const Expr *> SrcExprs,
                                 ArrayRef<const Expr *> AssignmentOps);
+
+  /// \brief Emit an ordered region.
+  /// \param OrderedOpGen Generator for the statement associated with the given
+  /// critical region.
+  virtual void emitOrderedRegion(CodeGenFunction &CGF,
+                                 const RegionCodeGenTy &OrderedOpGen,
+                                 SourceLocation Loc);
 
   /// \brief Emit an implicit/explicit barrier for OpenMP threads.
   /// \param Kind Directive for which this implicit barrier call must be
@@ -429,14 +444,25 @@ public:
                            llvm::Value *Chunk = nullptr);
 
   /// \brief Call the appropriate runtime routine to notify that we finished
+  /// iteration of the ordered loop with the dynamic scheduling.
+  ///
+  /// \param CGF Reference to current CodeGenFunction.
+  /// \param Loc Clang source location.
+  /// \param IVSize Size of the iteration variable in bits.
+  /// \param IVSigned Sign of the interation variable.
+  ///
+  virtual void emitForOrderedDynamicIterationEnd(CodeGenFunction &CGF,
+                                                 SourceLocation Loc,
+                                                 unsigned IVSize,
+                                                 bool IVSigned);
+
+  /// \brief Call the appropriate runtime routine to notify that we finished
   /// all the work with current loop.
   ///
   /// \param CGF Reference to current CodeGenFunction.
   /// \param Loc Clang source location.
-  /// \param ScheduleKind Schedule kind, specified by the 'schedule' clause.
   ///
-  virtual void emitForFinish(CodeGenFunction &CGF, SourceLocation Loc,
-                             OpenMPScheduleClauseKind ScheduleKind);
+  virtual void emitForStaticFinish(CodeGenFunction &CGF, SourceLocation Loc);
 
   /// Call __kmpc_dispatch_next(
   ///          ident_t *loc, kmp_int32 tid, kmp_int32 *p_lastiter,
@@ -522,10 +548,12 @@ public:
   /// \param SharedsTy A type which contains references the shared variables.
   /// \param Shareds Context with the list of shared variables from the \a
   /// TaskFunction.
+  /// \param IfCond Not a nullptr if 'if' clause was specified, nullptr
+  /// otherwise.
   virtual void emitTaskCall(CodeGenFunction &CGF, SourceLocation Loc, bool Tied,
                             llvm::PointerIntPair<llvm::Value *, 1, bool> Final,
                             llvm::Value *TaskFunction, QualType SharedsTy,
-                            llvm::Value *Shareds);
+                            llvm::Value *Shareds, const Expr *IfCond);
 
   /// \brief Emit code for the directive that does not require outlining.
   ///
