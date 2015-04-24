@@ -637,9 +637,8 @@ private:
 
 public:
   LineType parseLine() {
-    if (CurrentToken->is(tok::hash)) {
+    if (CurrentToken->is(tok::hash))
       return parsePreprocessorDirective();
-    }
 
     // Directly allow to 'import <string-literal>' to support protocol buffer
     // definitions (code.google.com/p/protobuf) or missing "#" (either way we
@@ -661,6 +660,15 @@ public:
     if (CurrentToken->is(tok::less) && Line.Last->is(tok::greater)) {
       parseIncludeDirective();
       return LT_ImportStatement;
+    }
+
+    // In .proto files, top-level options are very similar to import statements
+    // and should not be line-wrapped.
+    if (Style.Language == FormatStyle::LK_Proto && Line.Level == 0 &&
+        CurrentToken->is(Keywords.kw_option)) {
+      next();
+      if (CurrentToken && CurrentToken->is(tok::identifier))
+        return LT_ImportStatement;
     }
 
     bool KeywordVirtualFound = false;
@@ -1392,7 +1400,8 @@ static bool isFunctionDeclarationName(const FormatToken &Current) {
     if (Tok->is(tok::kw_const) || Tok->isSimpleTypeSpecifier() ||
         Tok->isOneOf(TT_PointerOrReference, TT_StartOfName))
       return true;
-    if (Tok->isOneOf(tok::l_brace, tok::string_literal) || Tok->Tok.isLiteral())
+    if (Tok->isOneOf(tok::l_brace, tok::string_literal, TT_ObjCMethodExpr) ||
+        Tok->Tok.isLiteral())
       return false;
   }
   return false;
@@ -1702,7 +1711,8 @@ bool TokenAnnotator::spaceRequiredBetween(const AnnotatedLine &Line,
     return true;
   if (Left.is(TT_PointerOrReference))
     return Right.Tok.isLiteral() || Right.is(TT_BlockComment) ||
-           (!Right.isOneOf(TT_PointerOrReference, tok::l_paren) &&
+           (!Right.isOneOf(TT_PointerOrReference, TT_ArraySubscriptLSquare,
+                           tok::l_paren) &&
             (Style.PointerAlignment != FormatStyle::PAS_Right &&
              !Line.IsMultiVariableDeclStmt) &&
             Left.Previous &&
@@ -2054,7 +2064,8 @@ bool TokenAnnotator::canBreakBefore(const AnnotatedLine &Line,
   if (Left.isOneOf(TT_TemplateCloser, TT_UnaryOperator) ||
       Left.is(tok::kw_operator))
     return false;
-  if (Left.is(tok::equal) && Line.Type == LT_VirtualFunctionDecl)
+  if (Left.is(tok::equal) && !Right.isOneOf(tok::kw_default, tok::kw_delete) &&
+      Line.Type == LT_VirtualFunctionDecl)
     return false;
   if (Left.is(tok::l_paren) && Left.is(TT_AttributeParen))
     return false;

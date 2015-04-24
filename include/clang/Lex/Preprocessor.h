@@ -364,11 +364,88 @@ class Preprocessor : public RefCountedBase<Preprocessor> {
   };
   SmallVector<MacroExpandsInfo, 2> DelayedMacroExpandsCallbacks;
 
+  /// The state of a macro for an identifier.
+  class MacroState {
+    struct ExtInfo {
+      ExtInfo(MacroDirective *MD) : MD(MD) {}
+
+      // The most recent macro directive for this identifier.
+      MacroDirective *MD;
+      // The module macros that are overridden by this macro.
+      SmallVector<ModuleMacro*, 4> OverriddenMacros;
+    };
+
+    llvm::PointerUnion<MacroDirective *, ExtInfo *> State;
+
+    ExtInfo &getExtInfo(Preprocessor &PP) {
+      auto *Ext = State.dyn_cast<ExtInfo*>();
+      if (!Ext) {
+        Ext = new (PP.getPreprocessorAllocator())
+            ExtInfo(State.get<MacroDirective *>());
+        State = Ext;
+      }
+      return *Ext;
+    }
+
+  public:
+    MacroState() : MacroState(nullptr) {}
+    MacroState(MacroDirective *MD) : State(MD) {}
+    MacroDirective *getLatest() const {
+      if (auto *Ext = State.dyn_cast<ExtInfo*>())
+        return Ext->MD;
+      return State.get<MacroDirective*>();
+    }
+    void setLatest(MacroDirective *MD) {
+      if (auto *Ext = State.dyn_cast<ExtInfo*>())
+        Ext->MD = MD;
+      else
+        State = MD;
+    }
+
+    MacroDirective::DefInfo findDirectiveAtLoc(SourceLocation Loc,
+                                               SourceManager &SourceMgr) const {
+      return getLatest()->findDirectiveAtLoc(Loc, SourceMgr);
+    }
+
+    void addOverriddenMacro(Preprocessor &PP, ModuleMacro *MM) {
+      getExtInfo(PP).OverriddenMacros.push_back(MM);
+    }
+    ArrayRef<ModuleMacro*> getOverriddenMacros() const {
+      if (auto *Ext = State.dyn_cast<ExtInfo*>())
+        return Ext->OverriddenMacros;
+      return None;
+    }
+  };
+
+  typedef llvm::DenseMap<const IdentifierInfo *, MacroState> MacroMap;
+
   /// For each IdentifierInfo that was associated with a macro, we
   /// keep a mapping to the history of all macro definitions and #undefs in
   /// the reverse order (the latest one is in the head of the list).
-  llvm::DenseMap<const IdentifierInfo*, MacroDirective*> Macros;
+  MacroMap Macros;
+
   friend class ASTReader;
+
+  /// \brief Information about a submodule that we're currently building.
+  struct BuildingSubmoduleInfo {
+    BuildingSubmoduleInfo(Module *M, SourceLocation ImportLoc)
+        : M(M), ImportLoc(ImportLoc) {}
+
+    /// The module that we are building.
+    Module *M;
+    /// The location at which the module was included.
+    SourceLocation ImportLoc;
+    /// The macros that were visible before we entered the module.
+    MacroMap Macros;
+
+    // FIXME: VisibleModules?
+    // FIXME: CounterValue?
+    // FIXME: PragmaPushMacroInfo?
+  };
+  SmallVector<BuildingSubmoduleInfo, 8> BuildingSubmoduleStack;
+
+  void EnterSubmodule(Module *M, SourceLocation ImportLoc);
+  void LeaveSubmodule();
 
   /// The set of known macros exported from modules.
   llvm::FoldingSet<ModuleMacro> ModuleMacros;
@@ -641,34 +718,43 @@ public:
   /// \brief Add a directive to the macro directive history for this identifier.
   void appendMacroDirective(IdentifierInfo *II, MacroDirective *MD);
   DefMacroDirective *appendDefMacroDirective(IdentifierInfo *II, MacroInfo *MI,
-                                             SourceLocation Loc,
-                                             unsigned ImportedFromModuleID,
-                                             ArrayRef<unsigned> Overrides) {
-    DefMacroDirective *MD =
-        AllocateDefMacroDirective(MI, Loc, ImportedFromModuleID, Overrides);
+                                             SourceLocation Loc) {
+    DefMacroDirective *MD = AllocateDefMacroDirective(MI, Loc);
     appendMacroDirective(II, MD);
     return MD;
   }
-  DefMacroDirective *appendDefMacroDirective(IdentifierInfo *II, MacroInfo *MI){
-    return appendDefMacroDirective(II, MI, MI->getDefinitionLoc(), 0, None);
+  DefMacroDirective *appendDefMacroDirective(IdentifierInfo *II,
+                                             MacroInfo *MI) {
+    return appendDefMacroDirective(II, MI, MI->getDefinitionLoc());
   }
   /// \brief Set a MacroDirective that was loaded from a PCH file.
   void setLoadedMacroDirective(IdentifierInfo *II, MacroDirective *MD);
 
   /// \brief Register an exported macro for a module and identifier.
-  ModuleMacro *addModuleMacro(unsigned ModuleID, IdentifierInfo *II,
-                              MacroInfo *Macro,
+  ModuleMacro *addModuleMacro(Module *Mod, IdentifierInfo *II, MacroInfo *Macro,
                               ArrayRef<ModuleMacro *> Overrides, bool &IsNew);
-  ModuleMacro *getModuleMacro(unsigned ModuleID, IdentifierInfo *II);
+  ModuleMacro *getModuleMacro(Module *Mod, IdentifierInfo *II);
+
+  /// \brief Get the list of leaf (non-overridden) module macros for a name.
+  ArrayRef<ModuleMacro*> getLeafModuleMacros(const IdentifierInfo *II) const {
+    auto I = LeafModuleMacros.find(II);
+    if (I != LeafModuleMacros.end())
+      return I->second;
+    return None;
+  }
 
   /// \{
   /// Iterators for the macro history table. Currently defined macros have
   /// IdentifierInfo::hasMacroDefinition() set and an empty
   /// MacroInfo::getUndefLoc() at the head of the list.
-  typedef llvm::DenseMap<const IdentifierInfo *,
-                         MacroDirective*>::const_iterator macro_iterator;
+  typedef MacroMap::const_iterator macro_iterator;
   macro_iterator macro_begin(bool IncludeExternalMacros = true) const;
   macro_iterator macro_end(bool IncludeExternalMacros = true) const;
+  llvm::iterator_range<macro_iterator>
+  macros(bool IncludeExternalMacros = true) const {
+    return llvm::make_range(macro_begin(IncludeExternalMacros),
+                            macro_end(IncludeExternalMacros));
+  }
   /// \}
 
   /// \brief Return the name of the macro defined before \p Loc that has
@@ -1424,16 +1510,14 @@ private:
   /// \brief Allocate a new MacroInfo object.
   MacroInfo *AllocateMacroInfo();
 
-  DefMacroDirective *
-  AllocateDefMacroDirective(MacroInfo *MI, SourceLocation Loc,
-                            unsigned ImportedFromModuleID = 0,
-                            ArrayRef<unsigned> Overrides = None);
-  UndefMacroDirective *
-  AllocateUndefMacroDirective(SourceLocation UndefLoc,
-                              unsigned ImportedFromModuleID = 0,
-                              ArrayRef<unsigned> Overrides = None);
+  DefMacroDirective *AllocateDefMacroDirective(MacroInfo *MI,
+                                               SourceLocation Loc);
+  UndefMacroDirective *AllocateUndefMacroDirective(SourceLocation UndefLoc);
   VisibilityMacroDirective *AllocateVisibilityMacroDirective(SourceLocation Loc,
                                                              bool isPublic);
+
+  MacroDirective *AllocateImportedMacroDirective(ModuleMacro *MM,
+                                                 SourceLocation Loc);
 
   /// \brief Lex and validate a macro name, which occurs after a
   /// \#define or \#undef.
@@ -1588,9 +1672,14 @@ private:
   void HandleMicrosoftImportDirective(Token &Tok);
 
   // Module inclusion testing.
-  /// \brief Find the module for the source or header file that \p FilenameLoc
-  /// points to.
-  Module *getModuleForLocation(SourceLocation FilenameLoc);
+  /// \brief Find the module that owns the source or header file that
+  /// \p Loc points to. If the location is in a file that was included
+  /// into a module, or is outside any module, returns nullptr.
+  Module *getModuleForLocation(SourceLocation Loc);
+
+  /// \brief Find the module that contains the specified location, either
+  /// directly or indirectly.
+  Module *getModuleContainingLocation(SourceLocation Loc);
 
   // Macro handling.
   void HandleDefineDirective(Token &Tok, bool ImmediatelyAfterTopLevelIfndef);
