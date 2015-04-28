@@ -338,6 +338,7 @@ void Clang::AddPreprocessingOptions(Compilation &C,
   }
 
   Args.AddLastArg(CmdArgs, options::OPT_MP);
+  Args.AddLastArg(CmdArgs, options::OPT_MV);
 
   // Convert all -MQ <target> args to -MT <quoted target>
   for (arg_iterator it = Args.filtered_begin(options::OPT_MT,
@@ -2325,10 +2326,16 @@ collectSanitizerRuntimes(const ToolChain &TC, const ArgList &Args,
     StaticRuntimes.push_back("dfsan");
   if (SanArgs.needsLsanRt())
     StaticRuntimes.push_back("lsan");
-  if (SanArgs.needsMsanRt())
+  if (SanArgs.needsMsanRt()) {
     StaticRuntimes.push_back("msan");
-  if (SanArgs.needsTsanRt())
+    if (SanArgs.linkCXXRuntimes())
+      StaticRuntimes.push_back("msan_cxx");
+  }
+  if (SanArgs.needsTsanRt()) {
     StaticRuntimes.push_back("tsan");
+    if (SanArgs.linkCXXRuntimes())
+      StaticRuntimes.push_back("tsan_cxx");
+  }
   if (SanArgs.needsUbsanRt()) {
     StaticRuntimes.push_back("ubsan_standalone");
     if (SanArgs.linkCXXRuntimes())

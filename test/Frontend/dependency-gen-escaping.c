@@ -1,16 +1,18 @@
 // PR15642
-// RUN: rm -rf %t.dir
-// RUN: mkdir -p %t.dir
-// RUN: echo > '%t.dir/    .h'
-// RUN: echo > '%t.dir/$$.h'
-// RUN: echo > '%t.dir/##.h'
-// RUN: cd %t.dir
-// RUN: %clang -MD -MF - %s -fsyntax-only -I. | FileCheck -strict-whitespace %s
+// RUN: %clang -M -MG %s | FileCheck -strict-whitespace %s
+// RUN: %clang -M -MG -MV %s | FileCheck -strict-whitespace %s --check-prefix=NMAKE
 
 // CHECK: \ \ \ \ .h
 // CHECK: $$$$.h
 // CHECK: \#\#.h
+// NMAKE: "    .h"
+// NMAKE: "$$.h"
+// NMAKE: "##.h"
+// NMAKE-NOT: "
+// NMAKE: normal.h
+// NMAKE-NOT: "
 
 #include "    .h"
 #include "$$.h"
 #include "##.h"
+#include "normal.h"
