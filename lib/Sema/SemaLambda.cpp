@@ -818,7 +818,6 @@ VarDecl *Sema::createLambdaInitCaptureVarDecl(SourceLocation Loc,
   NewVD->markUsed(Context);
   NewVD->setInit(Init);
   return NewVD;
-
 }
 
 FieldDecl *Sema::buildInitCaptureField(LambdaScopeInfo *LSI, VarDecl *Var) {
@@ -1477,13 +1476,30 @@ ExprResult Sema::ActOnLambdaExpr(SourceLocation StartLoc, Stmt *Body,
   return BuildLambdaExpr(StartLoc, Body->getLocEnd(), &LSI);
 }
 
+static LambdaCaptureDefault
+mapImplicitCaptureStyle(CapturingScopeInfo::ImplicitCaptureStyle ICS) {
+  switch (ICS) {
+  case CapturingScopeInfo::ImpCap_None:
+    return LCD_None;
+  case CapturingScopeInfo::ImpCap_LambdaByval:
+    return LCD_ByCopy;
+  case CapturingScopeInfo::ImpCap_CapturedRegion:
+  case CapturingScopeInfo::ImpCap_LambdaByref:
+    return LCD_ByRef;
+  case CapturingScopeInfo::ImpCap_Block:
+    llvm_unreachable("block capture in lambda");
+  }
+  llvm_unreachable("Unknown implicit capture style");
+}
+
 ExprResult Sema::BuildLambdaExpr(SourceLocation StartLoc, SourceLocation EndLoc,
                                  LambdaScopeInfo *LSI) {
   // Collect information from the lambda scope.
   SmallVector<LambdaCapture, 4> Captures;
   SmallVector<Expr *, 4> CaptureInits;
-  LambdaCaptureDefault CaptureDefault;
-  SourceLocation CaptureDefaultLoc;
+  SourceLocation CaptureDefaultLoc = LSI->CaptureDefaultLoc;
+  LambdaCaptureDefault CaptureDefault =
+      mapImplicitCaptureStyle(LSI->ImpCaptureStyle);
   CXXRecordDecl *Class;
   CXXMethodDecl *CallOperator;
   SourceRange IntroducerRange;
@@ -1501,8 +1517,6 @@ ExprResult Sema::BuildLambdaExpr(SourceLocation StartLoc, SourceLocation EndLoc,
     ExplicitResultType = !LSI->HasImplicitReturnType;
     LambdaExprNeedsCleanups = LSI->ExprNeedsCleanups;
     ContainsUnexpandedParameterPack = LSI->ContainsUnexpandedParameterPack;
-    ArrayIndexVars.swap(LSI->ArrayIndexVars);
-    ArrayIndexStarts.swap(LSI->ArrayIndexStarts);
     
     CallOperator->setLexicalDeclContext(Class);
     Decl *TemplateOrNonTemplateCallOperatorDecl = 
@@ -1529,12 +1543,14 @@ ExprResult Sema::BuildLambdaExpr(SourceLocation StartLoc, SourceLocation EndLoc,
         CaptureInits.push_back(new (Context) CXXThisExpr(From.getLocation(),
                                                          getCurrentThisType(),
                                                          /*isImplicit=*/true));
+        ArrayIndexStarts.push_back(ArrayIndexVars.size());
         continue;
       }
       if (From.isVLATypeCapture()) {
         Captures.push_back(
             LambdaCapture(From.getLocation(), IsImplicit, LCK_VLAType));
         CaptureInits.push_back(nullptr);
+        ArrayIndexStarts.push_back(ArrayIndexVars.size());
         continue;
       }
 
@@ -1549,29 +1565,11 @@ ExprResult Sema::BuildLambdaExpr(SourceLocation StartLoc, SourceLocation EndLoc,
         if (InitResult.isInvalid())
           return ExprError();
         Init = InitResult.get();
+      } else {
+        ArrayIndexStarts.push_back(ArrayIndexVars.size());
       }
       CaptureInits.push_back(Init);
     }
-
-    switch (LSI->ImpCaptureStyle) {
-    case CapturingScopeInfo::ImpCap_None:
-      CaptureDefault = LCD_None;
-      break;
-
-    case CapturingScopeInfo::ImpCap_LambdaByval:
-      CaptureDefault = LCD_ByCopy;
-      break;
-
-    case CapturingScopeInfo::ImpCap_CapturedRegion:
-    case CapturingScopeInfo::ImpCap_LambdaByref:
-      CaptureDefault = LCD_ByRef;
-      break;
-
-    case CapturingScopeInfo::ImpCap_Block:
-      llvm_unreachable("block capture in lambda");
-      break;
-    }
-    CaptureDefaultLoc = LSI->CaptureDefaultLoc;
 
     // C++11 [expr.prim.lambda]p6:
     //   The closure type for a lambda-expression with no lambda-capture

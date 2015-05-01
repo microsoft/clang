@@ -203,7 +203,8 @@ private:
 
     // Check that the current line allows merging. This depends on whether we
     // are in a control flow statements as well as several style flags.
-    if (Line.First->isOneOf(tok::kw_else, tok::kw_case))
+    if (Line.First->isOneOf(tok::kw_else, tok::kw_case) ||
+        (Line.First->Next && Line.First->Next->is(tok::kw_else)))
       return 0;
     if (Line.First->isOneOf(tok::kw_if, tok::kw_while, tok::kw_do, tok::kw_try,
                             tok::kw___try, tok::kw_catch, tok::kw___finally,
@@ -262,6 +263,10 @@ private:
       // Last, check that the third line starts with a closing brace.
       Tok = I[2]->First;
       if (Tok->isNot(tok::r_brace))
+        return 0;
+
+      // Don't merge "if (a) { .. } else {".
+      if (Tok->Next && Tok->Next->is(tok::kw_else))
         return 0;
 
       return 2;
@@ -461,7 +466,9 @@ UnwrappedLineFormatter::format(const SmallVectorImpl<AnnotatedLine *> &Lines,
 
           if (static_cast<int>(LevelIndent) - Offset >= 0)
             LevelIndent -= Offset;
-          if (Tok->isNot(tok::comment) && !TheLine.InPPDirective)
+          if ((Tok->isNot(tok::comment) ||
+               IndentForLevel[TheLine.Level] == -1) &&
+              !TheLine.InPPDirective)
             IndentForLevel[TheLine.Level] = LevelIndent;
         } else if (!DryRun) {
           Whitespaces->addUntouchableToken(*Tok, TheLine.InPPDirective);

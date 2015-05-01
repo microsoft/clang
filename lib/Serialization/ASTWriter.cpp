@@ -1979,10 +1979,6 @@ static bool shouldIgnoreMacro(MacroDirective *MD, bool IsModule,
       return true;
 
   if (IsModule) {
-    // Re-export any imported directives.
-    if (MD->isImported())
-      return false;
-
     SourceLocation Loc = MD->getLocation();
     if (Loc.isInvalid())
       return true;
@@ -2050,7 +2046,7 @@ void ASTWriter::WritePreprocessor(const Preprocessor &PP, bool IsModule) {
     // If the macro or identifier need no updates, don't write the macro history
     // for this one.
     // FIXME: Chain the macro history instead of re-writing it.
-    if (MD->isFromPCH() &&
+    if (MD && MD->isFromPCH() &&
         Name->isFromAST() && !Name->hasChangedSinceDeserialization())
       continue;
 
@@ -2066,19 +2062,10 @@ void ASTWriter::WritePreprocessor(const Preprocessor &PP, bool IsModule) {
       AddSourceLocation(MD->getLocation(), Record);
       Record.push_back(MD->getKind());
       if (auto *DefMD = dyn_cast<DefMacroDirective>(MD)) {
-        MacroID InfoID = getMacroRef(DefMD->getInfo(), Name);
-        Record.push_back(InfoID);
-        Record.push_back(DefMD->isAmbiguous());
+        Record.push_back(getMacroRef(DefMD->getInfo(), Name));
       } else if (auto *VisMD = dyn_cast<VisibilityMacroDirective>(MD)) {
         Record.push_back(VisMD->isPublic());
-        // No owning module macro.
-        continue;
       }
-
-      if (auto *MM = MD->getOwningModuleMacro())
-        Record.push_back(getSubmoduleID(MM->getOwningModule()));
-      else
-        Record.push_back(0);
     }
 
     // Write out any exported module macros.

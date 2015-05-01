@@ -73,8 +73,7 @@ Preprocessor::Preprocessor(IntrusiveRefCntPtr<PreprocessorOptions> PPOpts,
       ModuleImportExpectsIdentifier(false), CodeCompletionReached(0),
       MainFileDir(nullptr), SkipMainFilePreamble(0, true), CurPPLexer(nullptr),
       CurDirLookup(nullptr), CurLexerKind(CLK_Lexer), CurSubmodule(nullptr),
-      Callbacks(nullptr), MacroVisibilityGeneration(0),
-      MacroArgCache(nullptr), Record(nullptr),
+      Callbacks(nullptr), MacroArgCache(nullptr), Record(nullptr),
       MIChainHead(nullptr), DeserialMIChainHead(nullptr) {
   OwnsHeaderSearch = OwnsHeaders;
   
@@ -108,6 +107,9 @@ Preprocessor::Preprocessor(IntrusiveRefCntPtr<PreprocessorOptions> PPOpts,
 
   // We haven't read anything from the external source.
   ReadMacrosFromExternalSource = false;
+  // We might already have some macros from an imported module (via a PCH or
+  // preamble) if modules is enabled.
+  MacroVisibilityGeneration = LangOpts.Modules ? 1 : 0;
   
   // "Poison" __VA_ARGS__, which can only appear in the expansion of a macro.
   // This gets unpoisoned where it is allowed.
@@ -141,9 +143,6 @@ Preprocessor::Preprocessor(IntrusiveRefCntPtr<PreprocessorOptions> PPOpts,
 
 Preprocessor::~Preprocessor() {
   assert(BacktrackPositions.empty() && "EnableBacktrack/Backtrack imbalance!");
-
-  for (auto &Macro : Macros)
-    Macro.second.destroy();
 
   IncludeMacroStack.clear();
 
@@ -626,8 +625,9 @@ bool Preprocessor::HandleIdentifier(Token &Identifier) {
   }
 
   // If this is a macro to be expanded, do it.
-  if (MacroDirective *MD = getMacroDirective(&II)) {
-    MacroInfo *MI = MD->getMacroInfo();
+  if (MacroDefinition MD = getMacroDefinition(&II)) {
+    auto *MI = MD.getMacroInfo();
+    assert(MI && "macro definition with no macro info?");
     if (!DisableMacroExpansion) {
       if (!Identifier.isExpandDisabled() && MI->isEnabled()) {
         // C99 6.10.3p10: If the preprocessing token immediately after the
