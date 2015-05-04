@@ -60,11 +60,6 @@ public:
   /// exits.
   void setCurrentRegionCount(uint64_t Count) { CurrentRegionCount = Count; }
 
-  /// Indicate that the current region is never reached, and thus should have a
-  /// counter value of zero. This is important so that subsequent regions can
-  /// correctly track their parent counts.
-  void setCurrentRegionUnreachable() { setCurrentRegionCount(0); }
-
   /// Check if an execution count is known for a given statement. If so, return
   /// true and put the value in Count; else return false.
   Optional<uint64_t> getStmtCount(const Stmt *S) {
@@ -82,11 +77,6 @@ public:
     if (auto Count = getStmtCount(S))
       setCurrentRegionCount(*Count);
   }
-
-  /// Calculate branch weights appropriate for PGO data
-  llvm::MDNode *createBranchWeights(uint64_t TrueCount, uint64_t FalseCount);
-  llvm::MDNode *createBranchWeights(ArrayRef<uint64_t> Weights);
-  llvm::MDNode *createLoopWeights(const Stmt *Cond, uint64_t LoopCount);
 
   /// Check if we need to emit coverage mapping for a given declaration
   void checkGlobalDecl(GlobalDecl GD);
@@ -122,79 +112,6 @@ public:
     if (!haveRegionCounts())
       return 0;
     return RegionCounts[(*RegionCounterMap)[S]];
-  }
-};
-
-/// A counter for a particular region. This is the primary interface through
-/// which clients manage PGO counters and their values.
-class RegionCounter {
-  CodeGenPGO *PGO;
-  uint64_t Count;
-  uint64_t ParentCount;
-  uint64_t RegionCount;
-  int64_t Adjust;
-
-public:
-  RegionCounter(CodeGenPGO &PGO, const Stmt *S)
-    : PGO(&PGO), Count(PGO.getRegionCount(S)),
-      ParentCount(PGO.getCurrentRegionCount()), Adjust(0) {}
-
-  /// Get the value of the counter. In most cases this is the number of times
-  /// the region of the counter was entered, but for switch labels it's the
-  /// number of direct jumps to that label.
-  uint64_t getCount() const { return Count; }
-
-  /// Get the value of the counter with adjustments applied. Adjustments occur
-  /// when control enters or leaves the region abnormally; i.e., if there is a
-  /// jump to a label within the region, or if the function can return from
-  /// within the region. The adjusted count, then, is the value of the counter
-  /// at the end of the region.
-  uint64_t getAdjustedCount() const {
-    return Count + Adjust;
-  }
-
-  /// Get the value of the counter in this region's parent, i.e., the region
-  /// that was active when this region began. This is useful for deriving
-  /// counts in implicitly counted regions, like the false case of a condition
-  /// or the normal exits of a loop.
-  uint64_t getParentCount() const { return ParentCount; }
-
-  void beginRegion(bool AddIncomingFallThrough=false) {
-    RegionCount = Count;
-    if (AddIncomingFallThrough)
-      RegionCount += PGO->getCurrentRegionCount();
-    PGO->setCurrentRegionCount(RegionCount);
-  }
-
-  /// For counters on boolean branches, begins tracking adjustments for the
-  /// uncounted path.
-  void beginElseRegion() {
-    RegionCount = ParentCount - Count;
-    PGO->setCurrentRegionCount(RegionCount);
-  }
-
-  /// Reset the current region count.
-  void setCurrentRegionCount(uint64_t CurrentCount) {
-    RegionCount = CurrentCount;
-    PGO->setCurrentRegionCount(RegionCount);
-  }
-
-  /// Adjust for non-local control flow after emitting a subexpression or
-  /// substatement. This must be called to account for constructs such as gotos,
-  /// labels, and returns, so that we can ensure that our region's count is
-  /// correct in the code that follows.
-  void adjustForControlFlow() {
-    Adjust += PGO->getCurrentRegionCount() - RegionCount;
-    // Reset the region count in case this is called again later.
-    RegionCount = PGO->getCurrentRegionCount();
-  }
-
-  /// Commit all adjustments to the current region. If the region is a loop,
-  /// the LoopAdjust value should be the count of all the breaks and continues
-  /// from the loop, to compensate for those counts being deducted from the
-  /// adjustments for the body of the loop.
-  void applyAdjustmentsToRegion(uint64_t LoopAdjust) {
-    PGO->setCurrentRegionCount(ParentCount + Adjust + LoopAdjust);
   }
 };
 

@@ -108,9 +108,9 @@ static bool EvaluateDefined(PPValue &Result, Token &PeekTok, DefinedTracker &DT,
 
   // Otherwise, we got an identifier, is it defined to something?
   IdentifierInfo *II = PeekTok.getIdentifierInfo();
-  Preprocessor::MacroDefinition Macro = PP.getMacroDefinition(II);
+  MacroDefinition Macro = PP.getMacroDefinition(II);
   Result.Val = !!Macro;
-  Result.Val.setIsUnsigned(false);  // Result is signed intmax_t.
+  Result.Val.setIsUnsigned(false); // Result is signed intmax_t.
 
   // If there is a macro, mark it used.
   if (Result.Val != 0 && ValueLive)
@@ -142,9 +142,7 @@ static bool EvaluateDefined(PPValue &Result, Token &PeekTok, DefinedTracker &DT,
 
   // Invoke the 'defined' callback.
   if (PPCallbacks *Callbacks = PP.getPPCallbacks()) {
-    // FIXME: Tell callbacks about module macros.
-    MacroDirective *MD = Macro.getLocalDirective();
-    Callbacks->Defined(macroToken, MD,
+    Callbacks->Defined(macroToken, Macro,
                        SourceRange(beginLoc, PeekTok.getLocation()));
   }
 
@@ -730,8 +728,7 @@ static bool EvaluateDirectiveSubExpr(PPValue &LHS, unsigned MinPrec,
 /// EvaluateDirectiveExpression - Evaluate an integer constant expression that
 /// may occur after a #if or #elif directive.  If the expression is equivalent
 /// to "!defined(X)" return X in IfNDefMacro.
-bool Preprocessor::
-EvaluateDirectiveExpression(IdentifierInfo *&IfNDefMacro) {
+bool Preprocessor::EvaluateDirectiveExpression(IdentifierInfo *&IfNDefMacro) {
   SaveAndRestore<bool> PPDir(ParsingIfOrElifDirective, true);
   // Save the current state of 'DisableMacroExpansion' and reset it to false. If
   // 'DisableMacroExpansion' is true, then we must be in a macro argument list

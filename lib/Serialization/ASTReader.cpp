@@ -1432,10 +1432,10 @@ MacroInfo *ASTReader::ReadMacroRecord(ModuleFile &F, uint64_t Offset) {
         PreprocessedEntityID
             GlobalID = getGlobalPreprocessedEntityID(F, Record[NextIndex]);
         PreprocessingRecord &PPRec = *PP.getPreprocessingRecord();
-        PreprocessingRecord::PPEntityID
-          PPID = PPRec.getPPEntityID(GlobalID-1, /*isLoaded=*/true);
-        MacroDefinition *PPDef =
-          cast_or_null<MacroDefinition>(PPRec.getPreprocessedEntity(PPID));
+        PreprocessingRecord::PPEntityID PPID =
+            PPRec.getPPEntityID(GlobalID - 1, /*isLoaded=*/true);
+        MacroDefinitionRecord *PPDef = cast_or_null<MacroDefinitionRecord>(
+            PPRec.getPreprocessedEntity(PPID));
         if (PPDef)
           PPRec.RegisterMacroDefinition(Macro, PPDef);
       }
@@ -3222,10 +3222,7 @@ static void moveMethodToBackOfGlobalList(Sema &S, ObjCMethodDecl *Method) {
 }
 
 void ASTReader::makeNamesVisible(const HiddenNames &Names, Module *Owner) {
-  assert(Owner->NameVisibility >= Module::MacrosVisible &&
-         "nothing to make visible?");
-
-  // FIXME: Only do this if Owner->NameVisibility == AllVisible.
+  assert(Owner->NameVisibility != Module::Hidden && "nothing to make visible?");
   for (Decl *D : Names) {
     bool wasHidden = D->Hidden;
     D->Hidden = false;
@@ -3240,8 +3237,7 @@ void ASTReader::makeNamesVisible(const HiddenNames &Names, Module *Owner) {
 
 void ASTReader::makeModuleVisible(Module *Mod,
                                   Module::NameVisibilityKind NameVisibility,
-                                  SourceLocation ImportLoc,
-                                  bool Complain) {
+                                  SourceLocation ImportLoc) {
   llvm::SmallPtrSet<Module *, 4> Visited;
   SmallVector<Module *, 4> Stack;
   Stack.push_back(Mod);
@@ -3260,9 +3256,6 @@ void ASTReader::makeModuleVisible(Module *Mod,
     }
 
     // Update the module's name visibility.
-    if (NameVisibility >= Module::MacrosVisible &&
-        Mod->NameVisibility < Module::MacrosVisible)
-      Mod->MacroVisibilityLoc = ImportLoc;
     Mod->NameVisibility = NameVisibility;
 
     // If we've already deserialized any names from this module,
@@ -3284,20 +3277,6 @@ void ASTReader::makeModuleVisible(Module *Mod,
       Module *Exported = *I;
       if (Visited.insert(Exported).second)
         Stack.push_back(Exported);
-    }
-
-    // Detect any conflicts.
-    if (Complain) {
-      assert(ImportLoc.isValid() && "Missing import location");
-      for (unsigned I = 0, N = Mod->Conflicts.size(); I != N; ++I) {
-        if (Mod->Conflicts[I].Other->NameVisibility >= NameVisibility) {
-          Diag(ImportLoc, diag::warn_module_conflict)
-            << Mod->getFullModuleName()
-            << Mod->Conflicts[I].Other->getFullModuleName()
-            << Mod->Conflicts[I].Message;
-          // FIXME: Need note where the other module was imported.
-        }
-      }
     }
   }
 }
@@ -3457,7 +3436,7 @@ ASTReader::ASTReadResult ASTReader::ReadAST(const std::string &FileName,
 
     case UnresolvedModuleRef::Import:
       if (ResolvedMod)
-        Unresolved.Mod->Imports.push_back(ResolvedMod);
+        Unresolved.Mod->Imports.insert(ResolvedMod);
       continue;
 
     case UnresolvedModuleRef::Export:
@@ -3669,7 +3648,7 @@ ASTReader::ReadASTCore(StringRef FileName,
   return Success;
 }
 
-void ASTReader::InitializeContext() {  
+void ASTReader::InitializeContext() {
   // If there's a listener, notify them that we "read" the translation unit.
   if (DeserializationListener)
     DeserializationListener->DeclRead(PREDEF_DECL_TRANSLATION_UNIT_ID, 
@@ -3792,13 +3771,13 @@ void ASTReader::InitializeContext() {
   }
 
   // Re-export any modules that were imported by a non-module AST file.
-  // FIXME: This does not make macro-only imports visible again. It also doesn't
-  // make #includes mapped to module imports visible.
+  // FIXME: This does not make macro-only imports visible again.
   for (auto &Import : ImportedModules) {
-    if (Module *Imported = getSubmodule(Import.ID))
+    if (Module *Imported = getSubmodule(Import.ID)) {
       makeModuleVisible(Imported, Module::AllVisible,
-                        /*ImportLoc=*/Import.ImportLoc,
-                        /*Complain=*/false);
+                        /*ImportLoc=*/Import.ImportLoc);
+      PP.makeModuleVisible(Imported, Import.ImportLoc);
+    }
   }
   ImportedModules.clear();
 }
@@ -4642,13 +4621,14 @@ PreprocessedEntity *ASTReader::ReadPreprocessedEntity(unsigned Index) {
   case PPD_MACRO_EXPANSION: {
     bool isBuiltin = Record[0];
     IdentifierInfo *Name = nullptr;
-    MacroDefinition *Def = nullptr;
+    MacroDefinitionRecord *Def = nullptr;
     if (isBuiltin)
       Name = getLocalIdentifier(M, Record[1]);
     else {
-      PreprocessedEntityID
-          GlobalID = getGlobalPreprocessedEntityID(M, Record[1]);
-      Def =cast<MacroDefinition>(PPRec.getLoadedPreprocessedEntity(GlobalID-1));
+      PreprocessedEntityID GlobalID =
+          getGlobalPreprocessedEntityID(M, Record[1]);
+      Def = cast<MacroDefinitionRecord>(
+          PPRec.getLoadedPreprocessedEntity(GlobalID - 1));
     }
 
     MacroExpansion *ME;
@@ -4664,8 +4644,7 @@ PreprocessedEntity *ASTReader::ReadPreprocessedEntity(unsigned Index) {
     // Decode the identifier info and then check again; if the macro is
     // still defined and associated with the identifier,
     IdentifierInfo *II = getLocalIdentifier(M, Record[0]);
-    MacroDefinition *MD
-      = new (PPRec) MacroDefinition(II, Range);
+    MacroDefinitionRecord *MD = new (PPRec) MacroDefinitionRecord(II, Range);
 
     if (DeserializationListener)
       DeserializationListener->MacroDefinitionRead(PPID, MD);

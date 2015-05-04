@@ -107,9 +107,6 @@ Preprocessor::Preprocessor(IntrusiveRefCntPtr<PreprocessorOptions> PPOpts,
 
   // We haven't read anything from the external source.
   ReadMacrosFromExternalSource = false;
-  // We might already have some macros from an imported module (via a PCH or
-  // preamble) if modules is enabled.
-  MacroVisibilityGeneration = LangOpts.Modules ? 1 : 0;
   
   // "Poison" __VA_ARGS__, which can only appear in the expansion of a macro.
   // This gets unpoisoned where it is allowed.
@@ -755,13 +752,31 @@ void Preprocessor::LexAfterModuleImport(Token &Result) {
     if (getLangOpts().Modules) {
       Imported = TheModuleLoader.loadModule(ModuleImportLoc,
                                             ModuleImportPath,
-                                            Module::MacrosVisible,
+                                            Module::Hidden,
                                             /*IsIncludeDirective=*/false);
-      ++MacroVisibilityGeneration;
+      if (Imported)
+        makeModuleVisible(Imported, ModuleImportLoc);
     }
     if (Callbacks && (getLangOpts().Modules || getLangOpts().DebuggerSupport))
       Callbacks->moduleImport(ModuleImportLoc, ModuleImportPath, Imported);
   }
+}
+
+void Preprocessor::makeModuleVisible(Module *M, SourceLocation Loc) {
+  VisibleModules.setVisible(
+      M, Loc, [](Module *) {},
+      [&](ArrayRef<Module *> Path, Module *Conflict, StringRef Message) {
+        // FIXME: Include the path in the diagnostic.
+        // FIXME: Include the import location for the conflicting module.
+        Diag(ModuleImportLoc, diag::warn_module_conflict)
+            << Path[0]->getFullModuleName()
+            << Conflict->getFullModuleName()
+            << Message;
+      });
+
+  // Add this module to the imports list of the currently-built submodule.
+  if (!BuildingSubmoduleStack.empty())
+    BuildingSubmoduleStack.back().M->Imports.insert(M);
 }
 
 bool Preprocessor::FinishLexStringLiteral(Token &Result, std::string &String,

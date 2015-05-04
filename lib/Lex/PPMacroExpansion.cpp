@@ -124,9 +124,9 @@ ModuleMacro *Preprocessor::getModuleMacro(Module *Mod, IdentifierInfo *II) {
 
 void Preprocessor::updateModuleMacroInfo(const IdentifierInfo *II,
                                          ModuleMacroInfo &Info) {
-  assert(Info.ActiveModuleMacrosGeneration != MacroVisibilityGeneration &&
+  assert(Info.ActiveModuleMacrosGeneration != VisibleModules.getGeneration() &&
          "don't need to update this macro name info");
-  Info.ActiveModuleMacrosGeneration = MacroVisibilityGeneration;
+  Info.ActiveModuleMacrosGeneration = VisibleModules.getGeneration();
 
   auto Leaf = LeafModuleMacros.find(II);
   if (Leaf == LeafModuleMacros.end()) {
@@ -146,7 +146,7 @@ void Preprocessor::updateModuleMacroInfo(const IdentifierInfo *II,
                                                 Leaf->second.end());
   while (!Worklist.empty()) {
     auto *MM = Worklist.pop_back_val();
-    if (MM->getOwningModule()->NameVisibility >= Module::MacrosVisible) {
+    if (VisibleModules.isVisible(MM->getOwningModule())) {
       // We only care about collecting definitions; undefinitions only act
       // to override other definitions.
       if (MM->getMacroInfo())
@@ -192,6 +192,70 @@ void Preprocessor::updateModuleMacroInfo(const IdentifierInfo *II,
     MI = NewMI;
   }
   Info.IsAmbiguous = IsAmbiguous && !IsSystemMacro;
+}
+
+void Preprocessor::dumpMacroInfo(const IdentifierInfo *II) {
+  ArrayRef<ModuleMacro*> Leaf;
+  auto LeafIt = LeafModuleMacros.find(II);
+  if (LeafIt != LeafModuleMacros.end())
+    Leaf = LeafIt->second;
+  const MacroState *State = nullptr;
+  auto Pos = Macros.find(II);
+  if (Pos != Macros.end())
+    State = &Pos->second;
+
+  llvm::errs() << "MacroState " << State << " " << II->getNameStart();
+  if (State && State->isAmbiguous(*this, II))
+    llvm::errs() << " ambiguous";
+  if (State && !State->getOverriddenMacros().empty()) {
+    llvm::errs() << " overrides";
+    for (auto *O : State->getOverriddenMacros())
+      llvm::errs() << " " << O->getOwningModule()->getFullModuleName();
+  }
+  llvm::errs() << "\n";
+
+  // Dump local macro directives.
+  for (auto *MD = State ? State->getLatest() : nullptr; MD;
+       MD = MD->getPrevious()) {
+    llvm::errs() << " ";
+    MD->dump();
+  }
+
+  // Dump module macros.
+  llvm::DenseSet<ModuleMacro*> Active;
+  for (auto *MM : State ? State->getActiveModuleMacros(*this, II) : None)
+    Active.insert(MM);
+  llvm::DenseSet<ModuleMacro*> Visited;
+  llvm::SmallVector<ModuleMacro *, 16> Worklist(Leaf.begin(), Leaf.end());
+  while (!Worklist.empty()) {
+    auto *MM = Worklist.pop_back_val();
+    llvm::errs() << " ModuleMacro " << MM << " "
+                 << MM->getOwningModule()->getFullModuleName();
+    if (!MM->getMacroInfo())
+      llvm::errs() << " undef";
+
+    if (Active.count(MM))
+      llvm::errs() << " active";
+    else if (!VisibleModules.isVisible(MM->getOwningModule()))
+      llvm::errs() << " hidden";
+    else
+      llvm::errs() << " overridden";
+
+    if (!MM->overrides().empty()) {
+      llvm::errs() << " overrides";
+      for (auto *O : MM->overrides()) {
+        llvm::errs() << " " << O->getOwningModule()->getFullModuleName();
+        if (Visited.insert(O).second)
+          Worklist.push_back(O);
+      }
+    }
+    llvm::errs() << "\n";
+    if (auto *MI = MM->getMacroInfo()) {
+      llvm::errs() << "  ";
+      MI->dump();
+      llvm::errs() << "\n";
+    }
+  }
 }
 
 /// RegisterBuiltinMacro - Register the specified identifier in the identifier
@@ -355,10 +419,9 @@ bool Preprocessor::HandleMacroExpandedIdentifier(Token &Identifier,
 
   // If this is a builtin macro, like __LINE__ or _Pragma, handle it specially.
   if (MI->isBuiltinMacro()) {
-    // FIXME: Tell callbacks about module macros.
-    if (Callbacks) Callbacks->MacroExpands(Identifier, M.getLocalDirective(),
-                                           Identifier.getLocation(),
-                                           /*Args=*/nullptr);
+    if (Callbacks)
+      Callbacks->MacroExpands(Identifier, M, Identifier.getLocation(),
+                              /*Args=*/nullptr);
     ExpandBuiltinMacro(Identifier);
     return true;
   }
@@ -404,13 +467,10 @@ bool Preprocessor::HandleMacroExpandedIdentifier(Token &Identifier,
       // reading the function macro arguments. To ensure, in that case, that
       // MacroExpands callbacks still happen in source order, queue this
       // callback to have it happen after the function macro callback.
-      // FIXME: Tell callbacks about module macros.
       DelayedMacroExpandsCallbacks.push_back(
-          MacroExpandsInfo(Identifier, M.getLocalDirective(), ExpansionRange));
+          MacroExpandsInfo(Identifier, M, ExpansionRange));
     } else {
-      // FIXME: Tell callbacks about module macros.
-      Callbacks->MacroExpands(Identifier, M.getLocalDirective(), ExpansionRange,
-                              Args);
+      Callbacks->MacroExpands(Identifier, M, ExpansionRange, Args);
       if (!DelayedMacroExpandsCallbacks.empty()) {
         for (unsigned i=0, e = DelayedMacroExpandsCallbacks.size(); i!=e; ++i) {
           MacroExpandsInfo &Info = DelayedMacroExpandsCallbacks[i];

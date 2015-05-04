@@ -1312,12 +1312,9 @@ public:
   /// module.  Visibility can only be increased over time.
   ///
   /// \param ImportLoc The location at which the import occurs.
-  ///
-  /// \param Complain Whether to complain about conflicting module imports.
   void makeModuleVisible(Module *Mod,
                          Module::NameVisibilityKind NameVisibility,
-                         SourceLocation ImportLoc,
-                         bool Complain);
+                         SourceLocation ImportLoc);
 
   /// \brief Make the names within this set of hidden names visible.
   void makeNamesVisible(const HiddenNames &Names, Module *Owner);

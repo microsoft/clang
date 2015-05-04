@@ -394,6 +394,7 @@ void EmitAssemblyHelper::CreatePasses() {
   if (CodeGenOpts.ProfileInstrGenerate) {
     InstrProfOptions Options;
     Options.NoRedZone = CodeGenOpts.DisableRedZone;
+    Options.InstrProfileOutput = CodeGenOpts.InstrProfileOutput;
     MPM->add(createInstrProfilingPass(Options));
   }
 
@@ -570,8 +571,7 @@ bool EmitAssemblyHelper::AddEmitPasses(BackendAction Action,
   // Add ObjC ARC final-cleanup optimizations. This is done as part of the
   // "codegen" passes so that it isn't run multiple times when there is
   // inlining happening.
-  if (LangOpts.ObjCAutoRefCount &&
-      CodeGenOpts.OptimizationLevel > 0)
+  if (CodeGenOpts.OptimizationLevel > 0)
     PM->add(createObjCARCContractPass());
 
   if (TM->addPassesToEmitFile(*PM, OS, CGFT,

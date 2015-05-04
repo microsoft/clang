@@ -646,6 +646,12 @@ TEST_F(FormatTestJS, TemplateStrings) {
       "var x =\n    `multi\n  line`;",
       format("var x = `multi\n  line`;", getGoogleJSStyleWithColumns(14 - 1)));
 
+  // Make sure template strings get a proper ColumnWidth assigned, even if they
+  // are first token in line.
+  verifyFormat(
+      "var a = aaaaaaaaaaaaaaaaaaaaaaaaaaaa ||\n"
+      "        `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`;");
+
   // Two template strings.
   verifyFormat("var x = `hello` == `hello`;");
 
@@ -687,6 +693,8 @@ TEST_F(FormatTestJS, TypeArguments) {
   verifyFormat("foo<Y>(a);");
   verifyFormat("var x: X<Y>[];");
   verifyFormat("class C extends D<E> implements F<G>, H<I> {}");
+  verifyFormat("function f(a: List<any> = null) {\n}");
+  verifyFormat("function f(): List<any> {\n}");
 }
 
 TEST_F(FormatTestJS, OptionalTypes) {
