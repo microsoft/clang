@@ -43,8 +43,9 @@ private:
   bool parseAngle() {
     if (!CurrentToken)
       return false;
-    ScopedContextCreator ContextCreator(*this, tok::less, 10);
     FormatToken *Left = CurrentToken->Previous;
+    Left->ParentBracket = Contexts.back().ContextKind;
+    ScopedContextCreator ContextCreator(*this, tok::less, 10);
     Contexts.back().IsExpression = false;
     // If there's a template keyword before the opening angle bracket, this is a
     // template parameter, not an argument.
@@ -92,6 +93,8 @@ private:
   bool parseParens(bool LookForDecls = false) {
     if (!CurrentToken)
       return false;
+    FormatToken *Left = CurrentToken->Previous;
+    Left->ParentBracket = Contexts.back().ContextKind;
     ScopedContextCreator ContextCreator(*this, tok::l_paren, 1);
 
     // FIXME: This is a bit of a hack. Do better.
@@ -99,7 +102,6 @@ private:
         Contexts.size() == 2 && Contexts[0].ColonIsForRangeExpr;
 
     bool StartsObjCMethodExpr = false;
-    FormatToken *Left = CurrentToken->Previous;
     if (CurrentToken->is(tok::caret)) {
       // (^ can start a block type.
       Left->Type = TT_ObjCBlockLParen;
@@ -132,7 +134,7 @@ private:
       Contexts.back().IsExpression = false;
     } else if (Left->Previous && Left->Previous->is(tok::kw___attribute)) {
       Left->Type = TT_AttributeParen;
-    } else if (Left->Previous && Left->Previous->IsForEachMacro) {
+    } else if (Left->Previous && Left->Previous->is(TT_ForEachMacro)) {
       // The first argument to a foreach macro is a declaration.
       Contexts.back().IsForEachMacro = true;
       Contexts.back().IsExpression = false;
@@ -245,6 +247,7 @@ private:
     // ')' or ']'), it could be the start of an Objective-C method
     // expression, or it could the the start of an Objective-C array literal.
     FormatToken *Left = CurrentToken->Previous;
+    Left->ParentBracket = Contexts.back().ContextKind;
     FormatToken *Parent = Left->getPreviousNonComment();
     bool StartsObjCMethodExpr =
         Contexts.back().CanBeExpression && Left->isNot(TT_LambdaLSquare) &&
@@ -324,6 +327,7 @@ private:
   bool parseBrace() {
     if (CurrentToken) {
       FormatToken *Left = CurrentToken->Previous;
+      Left->ParentBracket = Contexts.back().ContextKind;
 
       if (Contexts.back().CaretFound)
         Left->Type = TT_ObjCBlockLBrace;
@@ -714,9 +718,9 @@ private:
 
     // Reset token type in case we have already looked at it and then
     // recovered from an error (e.g. failure to find the matching >).
-    if (!CurrentToken->isOneOf(TT_LambdaLSquare, TT_FunctionLBrace,
-                               TT_ImplicitStringLiteral, TT_RegexLiteral,
-                               TT_TrailingReturnArrow))
+    if (!CurrentToken->isOneOf(TT_LambdaLSquare, TT_ForEachMacro,
+                               TT_FunctionLBrace, TT_ImplicitStringLiteral,
+                               TT_RegexLiteral, TT_TrailingReturnArrow))
       CurrentToken->Type = TT_Unknown;
     CurrentToken->Role.reset();
     CurrentToken->MatchingParen = nullptr;
@@ -1750,11 +1754,10 @@ bool TokenAnnotator::spaceRequiredBetween(const AnnotatedLine &Line,
     return Line.Type == LT_ObjCDecl || Left.is(tok::semi) ||
            (Style.SpaceBeforeParens != FormatStyle::SBPO_Never &&
             (Left.isOneOf(tok::kw_if, tok::kw_for, tok::kw_while,
-                          tok::kw_switch, tok::kw_case) ||
+                          tok::kw_switch, tok::kw_case, TT_ForEachMacro) ||
              (Left.isOneOf(tok::kw_try, Keywords.kw___except, tok::kw_catch,
                            tok::kw_new, tok::kw_delete) &&
-              (!Left.Previous || Left.Previous->isNot(tok::period))) ||
-             Left.IsForEachMacro)) ||
+              (!Left.Previous || Left.Previous->isNot(tok::period))))) ||
            (Style.SpaceBeforeParens == FormatStyle::SBPO_Always &&
             (Left.is(tok::identifier) || Left.isFunctionLikeKeyword()) &&
             Line.Type != LT_PreprocessorDirective);
