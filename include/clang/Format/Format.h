@@ -538,14 +538,6 @@ std::error_code parseConfiguration(StringRef Text, FormatStyle *Style);
 /// \brief Gets configuration in a YAML string.
 std::string configurationAsText(const FormatStyle &Style);
 
-/// \brief Reformats the given \p Ranges in the token stream coming out of
-/// \c Lex.
-///
-/// DEPRECATED: Do not use.
-tooling::Replacements reformat(const FormatStyle &Style, Lexer &Lex,
-                               SourceManager &SourceMgr,
-                               ArrayRef<CharSourceRange> Ranges);
-
 /// \brief Reformats the given \p Ranges in the file \p ID.
 ///
 /// Each range is extended on either end to its next bigger logic unit, i.e.
@@ -554,16 +546,22 @@ tooling::Replacements reformat(const FormatStyle &Style, Lexer &Lex,
 ///
 /// Returns the \c Replacements necessary to make all \p Ranges comply with
 /// \p Style.
+///
+/// If \c IncompleteFormat is non-null, its value will be set to true if any
+/// of the affected ranges were not formatted due to a non-recoverable syntax
+/// error.
 tooling::Replacements reformat(const FormatStyle &Style,
                                SourceManager &SourceMgr, FileID ID,
-                               ArrayRef<CharSourceRange> Ranges);
+                               ArrayRef<CharSourceRange> Ranges,
+                               bool *IncompleteFormat = nullptr);
 
 /// \brief Reformats the given \p Ranges in \p Code.
 ///
-/// Otherwise identical to the reformat() function consuming a \c Lexer.
+/// Otherwise identical to the reformat() function using a file ID.
 tooling::Replacements reformat(const FormatStyle &Style, StringRef Code,
                                ArrayRef<tooling::Range> Ranges,
-                               StringRef FileName = "<stdin>");
+                               StringRef FileName = "<stdin>",
+                               bool *IncompleteFormat = nullptr);
 
 /// \brief Returns the \c LangOpts that the formatter expects you to set.
 ///

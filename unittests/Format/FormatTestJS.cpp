@@ -276,6 +276,12 @@ TEST_F(FormatTestJS, FunctionLiterals) {
                "    return x.zIsTooLongForOneLineWithTheDeclarationLine();\n"
                "  };\n"
                "}");
+  verifyFormat("someLooooooooongFunction(\n"
+               "    aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,\n"
+               "    aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,\n"
+               "    function(aaaaaaaaaaaaaaaaaaaaaaaaaaaaa) {\n"
+               "      // code\n"
+               "    });");
 
   verifyFormat("f({a: function() { return 1; }});",
                getGoogleJSStyleWithColumns(33));
@@ -463,6 +469,7 @@ TEST_F(FormatTestJS, RegexLiteralClassification) {
 }
 
 TEST_F(FormatTestJS, RegexLiteralSpecialCharacters) {
+  verifyFormat("var regex = /=/;");
   verifyFormat("var regex = /a*/;");
   verifyFormat("var regex = /a+/;");
   verifyFormat("var regex = /a?/;");
@@ -545,6 +552,12 @@ TEST_F(FormatTestJS, ClassDeclarations) {
   verifyFormat("class C {\n  static x(): string { return 'asd'; }\n}");
   verifyFormat("class C extends P implements I {}");
   verifyFormat("class C extends p.P implements i.I {}");
+}
+
+TEST_F(FormatTestJS, InterfaceDeclarations) {
+  verifyFormat("interface I {\n"
+               "  x: string;\n"
+               "}");
 }
 
 TEST_F(FormatTestJS, MetadataAnnotations) {
@@ -703,6 +716,10 @@ TEST_F(FormatTestJS, OptionalTypes) {
                "  y?: z;\n"
                "  z?;\n"
                "}");
+  verifyFormat("interface X {\n"
+               "  y?(): z;\n"
+               "}");
+  verifyFormat("x ? 1 : 2;");
 }
 
 TEST_F(FormatTestJS, IndexSignature) {

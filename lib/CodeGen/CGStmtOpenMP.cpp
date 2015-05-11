@@ -533,7 +533,16 @@ void CodeGenFunction::EmitOMPInnerLoop(
 void CodeGenFunction::EmitOMPSimdFinal(const OMPLoopDirective &S) {
   auto IC = S.counters().begin();
   for (auto F : S.finals()) {
-    if (LocalDeclMap.lookup(cast<DeclRefExpr>((*IC))->getDecl())) {
+    auto *OrigVD = cast<VarDecl>(cast<DeclRefExpr>((*IC))->getDecl());
+    if (LocalDeclMap.lookup(OrigVD)) {
+      DeclRefExpr DRE(const_cast<VarDecl *>(OrigVD),
+                      CapturedStmtInfo->lookup(OrigVD) != nullptr,
+                      (*IC)->getType(), VK_LValue, (*IC)->getExprLoc());
+      auto *OrigAddr = EmitLValue(&DRE).getAddress();
+      OMPPrivateScope VarScope(*this);
+      VarScope.addPrivate(OrigVD,
+                          [OrigAddr]() -> llvm::Value *{ return OrigAddr; });
+      (void)VarScope.Privatize();
       EmitIgnoredExpr(F);
     }
     ++IC;
@@ -541,8 +550,19 @@ void CodeGenFunction::EmitOMPSimdFinal(const OMPLoopDirective &S) {
   // Emit the final values of the linear variables.
   for (auto &&I = S.getClausesOfKind(OMPC_linear); I; ++I) {
     auto *C = cast<OMPLinearClause>(*I);
+    auto IC = C->varlist_begin();
     for (auto F : C->finals()) {
+      auto *OrigVD = cast<VarDecl>(cast<DeclRefExpr>(*IC)->getDecl());
+      DeclRefExpr DRE(const_cast<VarDecl *>(OrigVD),
+                      CapturedStmtInfo->lookup(OrigVD) != nullptr,
+                      (*IC)->getType(), VK_LValue, (*IC)->getExprLoc());
+      auto *OrigAddr = EmitLValue(&DRE).getAddress();
+      OMPPrivateScope VarScope(*this);
+      VarScope.addPrivate(OrigVD,
+                          [OrigAddr]() -> llvm::Value *{ return OrigAddr; });
+      (void)VarScope.Privatize();
       EmitIgnoredExpr(F);
+      ++IC;
     }
   }
 }
@@ -886,6 +906,11 @@ void CodeGenFunction::EmitOMPForOuterLoop(OpenMPScheduleClauseKind ScheduleKind,
   bool DynamicWithOrderedClause =
       Dynamic && S.getSingleClause(OMPC_ordered) != nullptr;
   SourceLocation Loc = S.getLocStart();
+  // Generate !llvm.loop.parallel metadata for loads and stores for loops with
+  // dynamic/guided scheduling and without ordered clause.
+  LoopStack.setParallel((ScheduleKind == OMPC_SCHEDULE_dynamic ||
+                         ScheduleKind == OMPC_SCHEDULE_guided) &&
+                        !DynamicWithOrderedClause);
   EmitOMPInnerLoop(
       S, LoopScope.requiresCleanups(), S.getCond(/*SeparateIter=*/false),
       S.getInc(),
@@ -1559,10 +1584,11 @@ static std::pair<bool, RValue> emitOMPAtomicRMW(CodeGenFunction &CGF, LValue X,
   // expression is simple and atomic is allowed for the given type for the
   // target platform.
   if (BO == BO_Comma || !Update.isScalar() ||
-      !Update.getScalarVal()->getType()->isIntegerTy() || !X.isSimple() ||
-      (!isa<llvm::ConstantInt>(Update.getScalarVal()) &&
-       (Update.getScalarVal()->getType() !=
-        X.getAddress()->getType()->getPointerElementType())) ||
+      !Update.getScalarVal()->getType()->isIntegerTy() ||
+      !X.isSimple() || (!isa<llvm::ConstantInt>(Update.getScalarVal()) &&
+                        (Update.getScalarVal()->getType() !=
+                         X.getAddress()->getType()->getPointerElementType())) ||
+      !X.getAddress()->getType()->getPointerElementType()->isIntegerTy() ||
       !Context.getTargetInfo().hasBuiltinAtomic(
           Context.getTypeSize(X.getType()), Context.toBits(X.getAlignment())))
     return std::make_pair(false, RValue::get(nullptr));

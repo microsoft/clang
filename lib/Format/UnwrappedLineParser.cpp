@@ -58,11 +58,10 @@ private:
 class ScopedMacroState : public FormatTokenSource {
 public:
   ScopedMacroState(UnwrappedLine &Line, FormatTokenSource *&TokenSource,
-                   FormatToken *&ResetToken, bool &StructuralError)
+                   FormatToken *&ResetToken)
       : Line(Line), TokenSource(TokenSource), ResetToken(ResetToken),
         PreviousLineLevel(Line.Level), PreviousTokenSource(TokenSource),
-        StructuralError(StructuralError),
-        PreviousStructuralError(StructuralError), Token(nullptr) {
+        Token(nullptr) {
     TokenSource = this;
     Line.Level = 0;
     Line.InPPDirective = true;
@@ -73,7 +72,6 @@ public:
     ResetToken = Token;
     Line.InPPDirective = false;
     Line.Level = PreviousLineLevel;
-    StructuralError = PreviousStructuralError;
   }
 
   FormatToken *getNextToken() override {
@@ -112,8 +110,6 @@ private:
   FormatToken *&ResetToken;
   unsigned PreviousLineLevel;
   FormatTokenSource *PreviousTokenSource;
-  bool &StructuralError;
-  bool PreviousStructuralError;
 
   FormatToken *Token;
 };
@@ -208,9 +204,8 @@ UnwrappedLineParser::UnwrappedLineParser(const FormatStyle &Style,
                                          ArrayRef<FormatToken *> Tokens,
                                          UnwrappedLineConsumer &Callback)
     : Line(new UnwrappedLine), MustBreakBeforeNextToken(false),
-      CurrentLines(&Lines), StructuralError(false), Style(Style),
-      Keywords(Keywords), Tokens(nullptr), Callback(Callback),
-      AllTokens(Tokens), PPBranchLevel(-1) {}
+      CurrentLines(&Lines), Style(Style), Keywords(Keywords), Tokens(nullptr),
+      Callback(Callback), AllTokens(Tokens), PPBranchLevel(-1) {}
 
 void UnwrappedLineParser::reset() {
   PPBranchLevel = -1;
@@ -221,11 +216,10 @@ void UnwrappedLineParser::reset() {
   PreprocessorDirectives.clear();
   CurrentLines = &Lines;
   DeclarationScopeStack.clear();
-  StructuralError = false;
   PPStack.clear();
 }
 
-bool UnwrappedLineParser::parse() {
+void UnwrappedLineParser::parse() {
   IndexedTokenSource TokenSource(AllTokens);
   do {
     DEBUG(llvm::dbgs() << "----\n");
@@ -258,13 +252,15 @@ bool UnwrappedLineParser::parse() {
     }
   } while (!PPLevelBranchIndex.empty());
 
-  return StructuralError;
 }
 
 void UnwrappedLineParser::parseFile() {
-  ScopedDeclarationState DeclarationState(
-      *Line, DeclarationScopeStack,
-      /*MustBeDeclaration=*/!Line->InPPDirective);
+  // The top-level context in a file always has declarations, except for pre-
+  // processor directives and JavaScript files.
+  bool MustBeDeclaration =
+      !Line->InPPDirective && Style.Language != FormatStyle::LK_JavaScript;
+  ScopedDeclarationState DeclarationState(*Line, DeclarationScopeStack,
+                                          MustBeDeclaration);
   parseLevel(/*HasOpeningBrace=*/false);
   // Make sure to format the remaining tokens.
   flushComments(true);
@@ -288,7 +284,6 @@ void UnwrappedLineParser::parseLevel(bool HasOpeningBrace) {
     case tok::r_brace:
       if (HasOpeningBrace)
         return;
-      StructuralError = true;
       nextToken();
       addUnwrappedLine();
       break;
@@ -410,7 +405,6 @@ void UnwrappedLineParser::parseBlock(bool MustBeDeclaration, bool AddLevel,
 
   if (!FormatTok->Tok.is(tok::r_brace)) {
     Line->Level = InitialLevel;
-    StructuralError = true;
     return;
   }
 
@@ -470,7 +464,7 @@ void UnwrappedLineParser::parseChildBlock() {
 
 void UnwrappedLineParser::parsePPDirective() {
   assert(FormatTok->Tok.is(tok::hash) && "'#' expected");
-  ScopedMacroState MacroState(*Line, Tokens, FormatTok, StructuralError);
+  ScopedMacroState MacroState(*Line, Tokens, FormatTok);
   nextToken();
 
   if (!FormatTok->Tok.getIdentifierInfo()) {
@@ -672,9 +666,11 @@ void UnwrappedLineParser::parseStructuralElement() {
   case tok::kw_asm:
     nextToken();
     if (FormatTok->is(tok::l_brace)) {
+      FormatTok->Type = TT_InlineASMBrace;
       nextToken();
       while (FormatTok && FormatTok->isNot(tok::eof)) {
         if (FormatTok->is(tok::r_brace)) {
+          FormatTok->Type = TT_InlineASMBrace;
           nextToken();
           break;
         }
@@ -837,14 +833,21 @@ void UnwrappedLineParser::parseStructuralElement() {
       parseTryCatch();
       return;
     case tok::identifier: {
-      StringRef Text = FormatTok->TokenText;
       // Parse function literal unless 'function' is the first token in a line
       // in which case this should be treated as a free-standing function.
-      if (Style.Language == FormatStyle::LK_JavaScript && Text == "function" &&
-          Line->Tokens.size() > 0) {
+      if (Style.Language == FormatStyle::LK_JavaScript &&
+          FormatTok->is(Keywords.kw_function) && Line->Tokens.size() > 0) {
         tryToParseJSFunction();
         break;
       }
+      if ((Style.Language == FormatStyle::LK_JavaScript ||
+           Style.Language == FormatStyle::LK_Java) &&
+          FormatTok->is(Keywords.kw_interface)) {
+        parseRecord();
+        break;
+      }
+
+      StringRef Text = FormatTok->TokenText;
       nextToken();
       if (Line->Tokens.size() == 1 &&
           // JS doesn't have macros, and within classes colons indicate fields,
@@ -1206,8 +1209,6 @@ void UnwrappedLineParser::parseTryCatch() {
       nextToken();
       if (FormatTok->is(tok::l_paren))
         parseParens();
-      else
-        StructuralError = true;
       if (FormatTok->is(tok::comma))
         nextToken();
     }
@@ -1230,7 +1231,6 @@ void UnwrappedLineParser::parseTryCatch() {
     // The C++ standard requires a compound-statement after a try.
     // If there's none, we try to assume there's a structuralElement
     // and try to continue.
-    StructuralError = true;
     addUnwrappedLine();
     ++Line->Level;
     parseStructuralElement();
@@ -1383,6 +1383,8 @@ void UnwrappedLineParser::parseLabel() {
     }
     addUnwrappedLine();
   } else {
+    if (FormatTok->is(tok::semi))
+      nextToken();
     addUnwrappedLine();
   }
   Line->Level = OldLineLevel;
@@ -1533,38 +1535,40 @@ void UnwrappedLineParser::parseJavaEnumBody() {
 void UnwrappedLineParser::parseRecord() {
   const FormatToken &InitialToken = *FormatTok;
   nextToken();
-  if (FormatTok->isOneOf(tok::identifier, tok::coloncolon, tok::kw___attribute,
-                         tok::kw___declspec, tok::kw_alignas)) {
+
+
+  // The actual identifier can be a nested name specifier, and in macros
+  // it is often token-pasted.
+  while (FormatTok->isOneOf(tok::identifier, tok::coloncolon, tok::hashhash,
+                            tok::kw___attribute, tok::kw___declspec,
+                            tok::kw_alignas) ||
+         ((Style.Language == FormatStyle::LK_Java ||
+           Style.Language == FormatStyle::LK_JavaScript) &&
+          FormatTok->isOneOf(tok::period, tok::comma))) {
+    bool IsNonMacroIdentifier =
+        FormatTok->is(tok::identifier) &&
+        FormatTok->TokenText != FormatTok->TokenText.upper();
     nextToken();
     // We can have macros or attributes in between 'class' and the class name.
-    if (FormatTok->Tok.is(tok::l_paren)) {
+    if (!IsNonMacroIdentifier && FormatTok->Tok.is(tok::l_paren))
       parseParens();
-    }
-    // The actual identifier can be a nested name specifier, and in macros
-    // it is often token-pasted.
-    while (FormatTok->is(tok::identifier) || FormatTok->is(tok::coloncolon) ||
-           FormatTok->is(tok::hashhash) ||
-           ((Style.Language == FormatStyle::LK_Java ||
-             Style.Language == FormatStyle::LK_JavaScript) &&
-            FormatTok->isOneOf(tok::period, tok::comma)))
-      nextToken();
+  }
 
-    // Note that parsing away template declarations here leads to incorrectly
-    // accepting function declarations as record declarations.
-    // In general, we cannot solve this problem. Consider:
-    // class A<int> B() {}
-    // which can be a function definition or a class definition when B() is a
-    // macro. If we find enough real-world cases where this is a problem, we
-    // can parse for the 'template' keyword in the beginning of the statement,
-    // and thus rule out the record production in case there is no template
-    // (this would still leave us with an ambiguity between template function
-    // and class declarations).
-    if (FormatTok->Tok.is(tok::colon) || FormatTok->Tok.is(tok::less)) {
-      while (!eof() && FormatTok->Tok.isNot(tok::l_brace)) {
-        if (FormatTok->Tok.is(tok::semi))
-          return;
-        nextToken();
-      }
+  // Note that parsing away template declarations here leads to incorrectly
+  // accepting function declarations as record declarations.
+  // In general, we cannot solve this problem. Consider:
+  // class A<int> B() {}
+  // which can be a function definition or a class definition when B() is a
+  // macro. If we find enough real-world cases where this is a problem, we
+  // can parse for the 'template' keyword in the beginning of the statement,
+  // and thus rule out the record production in case there is no template
+  // (this would still leave us with an ambiguity between template function
+  // and class declarations).
+  if (FormatTok->Tok.is(tok::colon) || FormatTok->Tok.is(tok::less)) {
+    while (!eof() && FormatTok->Tok.isNot(tok::l_brace)) {
+      if (FormatTok->Tok.is(tok::semi))
+        return;
+      nextToken();
     }
   }
   if (FormatTok->Tok.is(tok::l_brace)) {
@@ -1577,7 +1581,7 @@ void UnwrappedLineParser::parseRecord() {
   // We fall through to parsing a structural element afterwards, so
   // class A {} n, m;
   // will end up in one unwrapped line.
-  // This does not apply for Java.
+  // This does not apply for Java and JavaScript.
   if (Style.Language == FormatStyle::LK_Java ||
       Style.Language == FormatStyle::LK_JavaScript)
     addUnwrappedLine();

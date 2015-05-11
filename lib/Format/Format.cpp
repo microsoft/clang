@@ -752,7 +752,7 @@ private:
     unsigned LastColumn = Tokens.back()->OriginalColumn;
     for (auto I = Tokens.rbegin() + 1, E = Tokens.rend(); I != E; ++I) {
       ++TokenCount;
-      if (I[0]->is(tok::slash) && I + 1 != E &&
+      if (I[0]->isOneOf(tok::slash, tok::slashequal) && I + 1 != E &&
           (I[1]->isOneOf(tok::l_paren, tok::semi, tok::l_brace, tok::r_brace,
                          tok::exclaim, tok::l_square, tok::colon, tok::comma,
                          tok::question, tok::kw_return) ||
@@ -1000,18 +1000,25 @@ private:
     // Consume and record whitespace until we find a significant token.
     unsigned WhitespaceLength = TrailingWhitespace;
     while (FormatTok->Tok.is(tok::unknown)) {
+      StringRef Text = FormatTok->TokenText;
+      auto EscapesNewline = [&](int pos) {
+        // A '\r' here is just part of '\r\n'. Skip it.
+        if (pos >= 0 && Text[pos] == '\r')
+          --pos;
+        // See whether there is an odd number of '\' before this.
+        unsigned count = 0;
+        for (; pos >= 0; --pos, ++count)
+          if (Text[pos] != '\\')
+            break;
+        return count & 1;
+      };
       // FIXME: This miscounts tok:unknown tokens that are not just
       // whitespace, e.g. a '`' character.
-      for (int i = 0, e = FormatTok->TokenText.size(); i != e; ++i) {
-        switch (FormatTok->TokenText[i]) {
+      for (int i = 0, e = Text.size(); i != e; ++i) {
+        switch (Text[i]) {
         case '\n':
           ++FormatTok->NewlinesBefore;
-          // FIXME: This is technically incorrect, as it could also
-          // be a literal backslash at the end of the line.
-          if (i == 0 || (FormatTok->TokenText[i - 1] != '\\' &&
-                         (FormatTok->TokenText[i - 1] != '\r' || i == 1 ||
-                          FormatTok->TokenText[i - 2] != '\\')))
-            FormatTok->HasUnescapedNewline = true;
+          FormatTok->HasUnescapedNewline = !EscapesNewline(i - 1);
           FormatTok->LastNewlineOffset = WhitespaceLength + i + 1;
           Column = 0;
           break;
@@ -1030,8 +1037,7 @@ private:
           Column += Style.TabWidth - Column % Style.TabWidth;
           break;
         case '\\':
-          if (i + 1 == e || (FormatTok->TokenText[i + 1] != '\r' &&
-                             FormatTok->TokenText[i + 1] != '\n'))
+          if (i + 1 == e || (Text[i + 1] != '\r' && Text[i + 1] != '\n'))
             FormatTok->Type = TT_ImplicitStringLiteral;
           break;
         default:
@@ -1056,6 +1062,7 @@ private:
            FormatTok->TokenText[1] == '\n') {
       ++FormatTok->NewlinesBefore;
       WhitespaceLength += 2;
+      FormatTok->LastNewlineOffset = 2;
       Column = 0;
       FormatTok->TokenText = FormatTok->TokenText.substr(2);
     }
@@ -1212,13 +1219,13 @@ public:
                        << "\n");
   }
 
-  tooling::Replacements format() {
+  tooling::Replacements format(bool *IncompleteFormat) {
     tooling::Replacements Result;
     FormatTokenLexer Tokens(SourceMgr, ID, Style, Encoding);
 
     UnwrappedLineParser Parser(Style, Tokens.getKeywords(), Tokens.lex(),
                                *this);
-    bool StructuralError = Parser.parse();
+    Parser.parse();
     assert(UnwrappedLines.rbegin()->empty());
     for (unsigned Run = 0, RunE = UnwrappedLines.size(); Run + 1 != RunE;
          ++Run) {
@@ -1228,7 +1235,7 @@ public:
         AnnotatedLines.push_back(new AnnotatedLine(UnwrappedLines[Run][i]));
       }
       tooling::Replacements RunResult =
-          format(AnnotatedLines, StructuralError, Tokens);
+          format(AnnotatedLines, Tokens, IncompleteFormat);
       DEBUG({
         llvm::dbgs() << "Replacements for run " << Run << ":\n";
         for (tooling::Replacements::iterator I = RunResult.begin(),
@@ -1247,7 +1254,7 @@ public:
   }
 
   tooling::Replacements format(SmallVectorImpl<AnnotatedLine *> &AnnotatedLines,
-                               bool StructuralError, FormatTokenLexer &Tokens) {
+                               FormatTokenLexer &Tokens, bool *IncompleteFormat) {
     TokenAnnotator Annotator(Style, Tokens.getKeywords());
     for (unsigned i = 0, e = AnnotatedLines.size(); i != e; ++i) {
       Annotator.annotate(*AnnotatedLines[i]);
@@ -1263,7 +1270,7 @@ public:
                                   Whitespaces, Encoding,
                                   BinPackInconclusiveFunctions);
     UnwrappedLineFormatter Formatter(&Indenter, &Whitespaces, Style,
-                                     Tokens.getKeywords());
+                                     Tokens.getKeywords(), IncompleteFormat);
     Formatter.format(AnnotatedLines, /*DryRun=*/false);
     return Whitespaces.generateReplacements();
   }
@@ -1481,27 +1488,20 @@ private:
 
 } // end anonymous namespace
 
-tooling::Replacements reformat(const FormatStyle &Style, Lexer &Lex,
-                               SourceManager &SourceMgr,
-                               ArrayRef<CharSourceRange> Ranges) {
-  if (Style.DisableFormat)
-    return tooling::Replacements();
-  return reformat(Style, SourceMgr,
-                  SourceMgr.getFileID(Lex.getSourceLocation()), Ranges);
-}
-
 tooling::Replacements reformat(const FormatStyle &Style,
                                SourceManager &SourceMgr, FileID ID,
-                               ArrayRef<CharSourceRange> Ranges) {
+                               ArrayRef<CharSourceRange> Ranges,
+                               bool *IncompleteFormat) {
   if (Style.DisableFormat)
     return tooling::Replacements();
   Formatter formatter(Style, SourceMgr, ID, Ranges);
-  return formatter.format();
+  return formatter.format(IncompleteFormat);
 }
 
 tooling::Replacements reformat(const FormatStyle &Style, StringRef Code,
                                ArrayRef<tooling::Range> Ranges,
-                               StringRef FileName) {
+                               StringRef FileName,
+                               bool *IncompleteFormat) {
   if (Style.DisableFormat)
     return tooling::Replacements();
 
@@ -1524,7 +1524,7 @@ tooling::Replacements reformat(const FormatStyle &Style, StringRef Code,
     SourceLocation End = Start.getLocWithOffset(Range.getLength());
     CharRanges.push_back(CharSourceRange::getCharRange(Start, End));
   }
-  return reformat(Style, SourceMgr, ID, CharRanges);
+  return reformat(Style, SourceMgr, ID, CharRanges, IncompleteFormat);
 }
 
 LangOptions getFormattingLangOpts(const FormatStyle &Style) {

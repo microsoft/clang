@@ -15,6 +15,7 @@
 
 #include "TokenAnnotator.h"
 #include "clang/Basic/SourceManager.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/Debug.h"
 
 #define DEBUG_TYPE "format-token-annotator"
@@ -46,6 +47,11 @@ private:
     FormatToken *Left = CurrentToken->Previous;
     Left->ParentBracket = Contexts.back().ContextKind;
     ScopedContextCreator ContextCreator(*this, tok::less, 10);
+
+    // If this angle is in the context of an expression, we need to be more
+    // hesitant to detect it as opening template parameters.
+    bool InExprContext = Contexts.back().IsExpression;
+
     Contexts.back().IsExpression = false;
     // If there's a template keyword before the opening angle bracket, this is a
     // template parameter, not an argument.
@@ -69,8 +75,8 @@ private:
         next();
         continue;
       }
-      if (CurrentToken->isOneOf(tok::r_paren, tok::r_square, tok::r_brace,
-                                tok::colon, tok::question))
+      if (CurrentToken->isOneOf(tok::r_paren, tok::r_square, tok::r_brace) ||
+          (CurrentToken->isOneOf(tok::colon, tok::question) && InExprContext))
         return false;
       // If a && or || is found and interpreted as a binary operator, this set
       // of angles is likely part of something like "a < b && c > d". If the
@@ -422,11 +428,12 @@ private:
         return false;
       // Colons from ?: are handled in parseConditional().
       if (Style.Language == FormatStyle::LK_JavaScript) {
-        if (Contexts.back().ColonIsForRangeExpr ||
-            (Contexts.size() == 1 &&
+        if (Contexts.back().ColonIsForRangeExpr || // colon in for loop
+            (Contexts.size() == 1 &&               // switch/case labels
              !Line.First->isOneOf(tok::kw_enum, tok::kw_case)) ||
-            Contexts.back().ContextKind == tok::l_paren ||
-            Contexts.back().ContextKind == tok::l_square) {
+            Contexts.back().ContextKind == tok::l_paren ||  // function params
+            Contexts.back().ContextKind == tok::l_square || // array type
+            Line.MustBeDeclaration) { // method/property declaration
           Tok->Type = TT_JsTypeColon;
           break;
         }
@@ -494,13 +501,15 @@ private:
         return false;
       break;
     case tok::less:
-      if ((!Tok->Previous ||
+      if (!NonTemplateLess.count(Tok) &&
+          (!Tok->Previous ||
            (!Tok->Previous->Tok.isLiteral() &&
             !(Tok->Previous->is(tok::r_paren) && Contexts.size() > 1))) &&
           parseAngle()) {
         Tok->Type = TT_TemplateOpener;
       } else {
         Tok->Type = TT_BinaryOperator;
+        NonTemplateLess.insert(Tok);
         CurrentToken = Tok;
         next();
       }
@@ -533,14 +542,20 @@ private:
       break;
     case tok::question:
       if (Style.Language == FormatStyle::LK_JavaScript && Tok->Next &&
-          Tok->Next->isOneOf(tok::colon, tok::semi, tok::r_paren,
+          Tok->Next->isOneOf(tok::semi, tok::colon, tok::r_paren,
                              tok::r_brace)) {
-        // Question marks before semicolons, colons, commas, etc. indicate
-        // optional types (fields, parameters), e.g.
-        // `function(x?: string, y?) {...}` or `class X {y?;}`
+        // Question marks before semicolons, colons, etc. indicate optional
+        // types (fields, parameters), e.g.
+        //   function(x?: string, y?) {...}
+        //   class X { y?; }
         Tok->Type = TT_JsTypeOptionalQuestion;
         break;
       }
+      // Declarations cannot be conditional expressions, this can only be part
+      // of a type declaration.
+      if (Line.MustBeDeclaration &&
+          Style.Language == FormatStyle::LK_JavaScript)
+        break;
       parseConditional();
       break;
     case tok::kw_template:
@@ -641,6 +656,7 @@ private:
 
 public:
   LineType parseLine() {
+    NonTemplateLess.clear();
     if (CurrentToken->is(tok::hash))
       return parsePreprocessorDirective();
 
@@ -720,7 +736,8 @@ private:
     // recovered from an error (e.g. failure to find the matching >).
     if (!CurrentToken->isOneOf(TT_LambdaLSquare, TT_ForEachMacro,
                                TT_FunctionLBrace, TT_ImplicitStringLiteral,
-                               TT_RegexLiteral, TT_TrailingReturnArrow))
+                               TT_InlineASMBrace, TT_RegexLiteral,
+                               TT_TrailingReturnArrow))
       CurrentToken->Type = TT_Unknown;
     CurrentToken->Role.reset();
     CurrentToken->MatchingParen = nullptr;
@@ -872,13 +889,28 @@ private:
     } else if (Current.isOneOf(tok::exclaim, tok::tilde)) {
       Current.Type = TT_UnaryOperator;
     } else if (Current.is(tok::question)) {
-      Current.Type = TT_ConditionalExpr;
+      if (Style.Language == FormatStyle::LK_JavaScript &&
+          Line.MustBeDeclaration) {
+        // In JavaScript, `interface X { foo?(): bar; }` is an optional method
+        // on the interface, not a ternary expression.
+        Current.Type = TT_JsTypeOptionalQuestion;
+      } else {
+        Current.Type = TT_ConditionalExpr;
+      }
     } else if (Current.isBinaryOperator() &&
                (!Current.Previous || Current.Previous->isNot(tok::l_square))) {
       Current.Type = TT_BinaryOperator;
     } else if (Current.is(tok::comment)) {
-      Current.Type =
-          Current.TokenText.startswith("/*") ? TT_BlockComment : TT_LineComment;
+      if (Current.TokenText.startswith("/*")) {
+        if (Current.TokenText.endswith("*/"))
+          Current.Type = TT_BlockComment;
+        else
+          // The lexer has for some reason determined a comment here. But we
+          // cannot really handle it, if it isn't properly terminated.
+          Current.Tok.setKind(tok::unknown);
+      } else {
+        Current.Type = TT_LineComment;
+      }
     } else if (Current.is(tok::r_paren)) {
       if (rParenEndsCast(Current))
         Current.Type = TT_CastRParen;
@@ -1146,6 +1178,12 @@ private:
   FormatToken *CurrentToken;
   bool AutoFound;
   const AdditionalKeywords &Keywords;
+
+  // Set of "<" tokens that do not open a template parameter list. If parseAngle
+  // determines that a specific token can't be a template opener, it will make
+  // same decision irrespective of the decisions for tokens leading up to it.
+  // Store this information to prevent this from causing exponential runtime.
+  llvm::SmallPtrSet<FormatToken *, 16> NonTemplateLess;
 };
 
 static const int PrecedenceUnaryOperator = prec::PointerToMember + 1;
@@ -1541,7 +1579,7 @@ unsigned TokenAnnotator::splitPenalty(const AnnotatedLine &Line,
     if (Left.is(tok::comma) && Left.NestingLevel == 0)
       return 3;
   } else if (Style.Language == FormatStyle::LK_JavaScript) {
-    if (Right.is(Keywords.kw_function))
+    if (Right.is(Keywords.kw_function) && Left.isNot(tok::comma))
       return 100;
   }
 
@@ -1652,6 +1690,9 @@ unsigned TokenAnnotator::splitPenalty(const AnnotatedLine &Line,
   if (Left.is(TT_ConditionalExpr))
     return prec::Conditional;
   prec::Level Level = Left.getPrecedence();
+  if (Level != prec::Unknown)
+    return Level;
+  Level = Right.getPrecedence();
   if (Level != prec::Unknown)
     return Level;
 
@@ -1854,12 +1895,20 @@ bool TokenAnnotator::spaceRequiredBefore(const AnnotatedLine &Line,
     return Right.is(tok::coloncolon);
   if (Right.is(TT_OverloadedOperatorLParen))
     return false;
-  if (Right.is(tok::colon))
-    return !Line.First->isOneOf(tok::kw_case, tok::kw_default) &&
-           Right.getNextNonComment() && Right.isNot(TT_ObjCMethodExpr) &&
-           !Left.is(tok::question) &&
-           !(Right.is(TT_InlineASMColon) && Left.is(tok::coloncolon)) &&
-           (Right.isNot(TT_DictLiteral) || Style.SpacesInContainerLiterals);
+  if (Right.is(tok::colon)) {
+    if (Line.First->isOneOf(tok::kw_case, tok::kw_default) ||
+        !Right.getNextNonComment() || Right.getNextNonComment()->is(tok::semi))
+      return false;
+    if (Right.is(TT_ObjCMethodExpr))
+      return false;
+    if (Left.is(tok::question))
+      return false;
+    if (Right.is(TT_InlineASMColon) && Left.is(tok::coloncolon))
+      return false;
+    if (Right.is(TT_DictLiteral))
+      return Style.SpacesInContainerLiterals;
+    return true;
+  }
   if (Left.is(TT_UnaryOperator))
     return Right.is(TT_BinaryOperator);
   if (Left.is(TT_CastRParen))
@@ -1958,6 +2007,8 @@ bool TokenAnnotator::mustBreakBefore(const AnnotatedLine &Line,
       Style.Language == FormatStyle::LK_Proto)
     // Don't put enums onto single lines in protocol buffers.
     return true;
+  if (Right.is(TT_InlineASMBrace))
+    return Right.HasUnescapedNewline;
   if (Style.Language == FormatStyle::LK_JavaScript && Right.is(tok::r_brace) &&
       Left.is(tok::l_brace) && !Left.Children.empty())
     // Support AllowShortFunctionsOnASingleLine for JavaScript.

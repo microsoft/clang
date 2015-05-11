@@ -529,9 +529,15 @@ def fsanitize_blacklist : Joined<["-"], "fsanitize-blacklist=">,
 def fno_sanitize_blacklist : Flag<["-"], "fno-sanitize-blacklist">,
                              Group<f_clang_Group>,
                              HelpText<"Don't use blacklist file for sanitizers">;
-def fsanitize_coverage : Joined<["-"], "fsanitize-coverage=">,
-                                        Group<f_clang_Group>, Flags<[CC1Option, CoreOption]>,
-                                        HelpText<"Enable coverage instrumentation for Sanitizers">;
+def fsanitize_coverage
+    : CommaJoined<["-"], "fsanitize-coverage=">,
+      Group<f_clang_Group>, Flags<[CoreOption]>,
+      HelpText<"Specify the type of coverage instrumentation for Sanitizers">;
+def fno_sanitize_coverage
+    : CommaJoined<["-"], "fno-sanitize-coverage=">,
+      Group<f_clang_Group>, Flags<[CoreOption]>,
+      HelpText<"Disable specified features of coverage instrumentation for "
+               "Sanitizers">;
 def fsanitize_memory_track_origins_EQ : Joined<["-"], "fsanitize-memory-track-origins=">,
                                         Group<f_clang_Group>, Flags<[CC1Option]>,
                                         HelpText<"Enable origins tracking in MemorySanitizer">;
@@ -1309,6 +1315,9 @@ def faltivec : Flag<["-"], "faltivec">, Group<f_Group>, Flags<[CC1Option]>,
 def fno_altivec : Flag<["-"], "fno-altivec">, Group<f_Group>, Flags<[CC1Option]>;
 def maltivec : Flag<["-"], "maltivec">, Alias<faltivec>;
 def mno_altivec : Flag<["-"], "mno-altivec">, Alias<fno_altivec>;
+
+def mvx : Flag<["-"], "mvx">, Group<m_Group>;
+def mno_vx : Flag<["-"], "mno-vx">, Group<m_Group>;
 
 def mno_warn_nonportable_cfstrings : Flag<["-"], "mno-warn-nonportable-cfstrings">, Group<m_Group>;
 def mno_omit_leaf_frame_pointer : Flag<["-"], "mno-omit-leaf-frame-pointer">, Group<m_Group>;

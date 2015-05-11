@@ -166,10 +166,17 @@ bool ContinuationIndenter::mustBreak(const LineState &State) {
       ((Style.AllowShortFunctionsOnASingleLine != FormatStyle::SFS_All) ||
        Style.BreakConstructorInitializersBeforeComma || Style.ColumnLimit != 0))
     return true;
+  if (Current.is(TT_SelectorName) && State.Stack.back().ObjCSelectorNameFound &&
+      State.Stack.back().BreakBeforeParameter)
+    return true;
 
   if (State.Column < getNewLineColumn(State))
     return false;
-  if (Style.BreakBeforeBinaryOperators == FormatStyle::BOS_None) {
+
+  // Using CanBreakBefore here and below takes care of the decision whether the
+  // current style uses wrapping before or after operators for the given
+  // operator.
+  if (Previous.is(TT_BinaryOperator) && Current.CanBreakBefore) {
     // If we need to break somewhere inside the LHS of a binary expression, we
     // should also break after the operator. Otherwise, the formatting would
     // hide the operator precedence, e.g. in:
@@ -185,16 +192,13 @@ bool ContinuationIndenter::mustBreak(const LineState &State) {
                         Previous.Previous->isNot(TT_BinaryOperator); // For >>.
     bool LHSIsBinaryExpr =
         Previous.Previous && Previous.Previous->EndsBinaryExpression;
-    if (Previous.is(TT_BinaryOperator) && (!IsComparison || LHSIsBinaryExpr) &&
-        Current.isNot(TT_BinaryOperator) && // For >>.
-        !Current.isTrailingComment() && !Previous.is(tok::lessless) &&
+    if ((!IsComparison || LHSIsBinaryExpr) && !Current.isTrailingComment() &&
         Previous.getPrecedence() != prec::Assignment &&
         State.Stack.back().BreakBeforeParameter)
       return true;
-  } else {
-    if (Current.is(TT_BinaryOperator) && Previous.EndsBinaryExpression &&
-        State.Stack.back().BreakBeforeParameter)
-      return true;
+  } else if (Current.is(TT_BinaryOperator) && Current.CanBreakBefore &&
+             State.Stack.back().BreakBeforeParameter) {
+    return true;
   }
 
   // Same as above, but for the first "<<" operator.
@@ -203,9 +207,6 @@ bool ContinuationIndenter::mustBreak(const LineState &State) {
       State.Stack.back().FirstLessLess == 0)
     return true;
 
-  if (Current.is(TT_SelectorName) && State.Stack.back().ObjCSelectorNameFound &&
-      State.Stack.back().BreakBeforeParameter)
-    return true;
   if (Current.NestingLevel == 0 && !Current.isTrailingComment()) {
     if (Previous.ClosesTemplateDeclaration)
       return true;
@@ -584,10 +585,16 @@ unsigned ContinuationIndenter::getNewLineColumn(const LineState &State) {
       return State.Stack.back().StartOfArraySubscripts;
     return ContinuationIndent;
   }
+
+  // This ensure that we correctly format ObjC methods calls without inputs,
+  // i.e. where the last element isn't selector like: [callee method];
+  if (NextNonComment->is(tok::identifier) && NextNonComment->FakeRParens == 0 &&
+      NextNonComment->Next && NextNonComment->Next->is(TT_ObjCMethodExpr))
+    return State.Stack.back().Indent;
+
   if (NextNonComment->isOneOf(TT_StartOfName, TT_PointerOrReference) ||
-      Previous.isOneOf(tok::coloncolon, tok::equal)) {
+      Previous.isOneOf(tok::coloncolon, tok::equal))
     return ContinuationIndent;
-  }
   if (PreviousNonComment && PreviousNonComment->is(tok::colon) &&
       PreviousNonComment->isOneOf(TT_ObjCMethodExpr, TT_DictLiteral))
     return ContinuationIndent;

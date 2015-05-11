@@ -33,9 +33,10 @@ public:
   UnwrappedLineFormatter(ContinuationIndenter *Indenter,
                          WhitespaceManager *Whitespaces,
                          const FormatStyle &Style,
-                         const AdditionalKeywords &Keywords)
+                         const AdditionalKeywords &Keywords,
+                         bool *IncompleteFormat)
       : Indenter(Indenter), Whitespaces(Whitespaces), Style(Style),
-        Keywords(Keywords) {}
+        Keywords(Keywords), IncompleteFormat(IncompleteFormat) {}
 
   unsigned format(const SmallVectorImpl<AnnotatedLine *> &Lines, bool DryRun,
                   int AdditionalIndent = 0, bool FixBadIndentation = false);
@@ -105,7 +106,9 @@ private:
         Style.Language == FormatStyle::LK_JavaScript)
       return 0;
     if (RootToken.isAccessSpecifier(false) ||
-        RootToken.isObjCAccessSpecifier() || RootToken.is(Keywords.kw_signals))
+        RootToken.isObjCAccessSpecifier() ||
+        (RootToken.is(Keywords.kw_signals) && RootToken.Next &&
+         RootToken.Next->is(tok::colon)))
       return Style.AccessModifierOffset;
     return 0;
   }
@@ -167,6 +170,8 @@ private:
   // are many nested blocks.
   std::map<std::pair<const SmallVectorImpl<AnnotatedLine *> *, unsigned>,
            unsigned> PenaltyCache;
+
+  bool *IncompleteFormat;
 };
 } // end namespace format
 } // end namespace clang

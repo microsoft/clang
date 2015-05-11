@@ -350,6 +350,13 @@ void CodeGenModule::Release() {
   if (ObjCRuntime)
     if (llvm::Function *ObjCInitFunction = ObjCRuntime->ModuleInitFunction())
       AddGlobalCtor(ObjCInitFunction);
+  if (Context.getLangOpts().CUDA && !Context.getLangOpts().CUDAIsDevice &&
+      CUDARuntime) {
+    if (llvm::Function *CudaCtorFunction = CUDARuntime->makeModuleCtorFunction())
+      AddGlobalCtor(CudaCtorFunction);
+    if (llvm::Function *CudaDtorFunction = CUDARuntime->makeModuleDtorFunction())
+      AddGlobalDtor(CudaDtorFunction);
+  }
   if (PGOReader && PGOStats.hasDiagnostics())
     PGOStats.reportDiagnostics(getDiags(), getCodeGenOpts().MainFileName);
   EmitCtorList(GlobalCtors, "llvm.global_ctors");
@@ -2690,7 +2697,8 @@ CodeGenModule::GetAddrOfConstantCFString(const StringLiteral *Literal) {
   }
 
   // String.
-  Fields[2] = llvm::ConstantExpr::getGetElementPtr(GV->getType(), GV, Zeros);
+  Fields[2] =
+      llvm::ConstantExpr::getGetElementPtr(GV->getValueType(), GV, Zeros);
 
   if (isUTF16)
     // Cast the UTF16 string to the correct type.
@@ -3677,4 +3685,3 @@ void CodeGenModule::EmitOMPThreadPrivateDecl(const OMPThreadPrivateDecl *D) {
       CXXGlobalInits.push_back(InitFunction);
   }
 }
-
