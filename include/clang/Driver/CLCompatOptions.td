@@ -139,6 +139,12 @@ def _SLASH_wd4996 : CLFlag<"wd4996">, Alias<W_Joined>,
   AliasArgs<["no-deprecated-declarations"]>;
 def _SLASH_vd : CLJoined<"vd">, HelpText<"Control vtordisp placement">,
   Alias<vtordisp_mode_EQ>;
+def _SLASH_Zc_sizedDealloc : CLFlag<"Zc:sizedDealloc">,
+  HelpText<"Enable C++14 sized global deallocation functions">,
+  Alias<fsized_deallocation>;
+def _SLASH_Zc_sizedDealloc_ : CLFlag<"Zc:sizedDealloc-">,
+  HelpText<"Disable C++14 sized global deallocation functions">,
+  Alias<fno_sized_deallocation>;
 def _SLASH_Zc_strictStrings : CLFlag<"Zc:strictStrings">,
   HelpText<"Treat string literals as const">, Alias<W_Joined>,
   AliasArgs<["error=c++11-compat-deprecated-writable-strings"]>;
@@ -210,6 +216,12 @@ def _SLASH_o : CLJoinedOrSeparate<"o">,
   HelpText<"Set output file or directory (ends in / or \\)">,
   MetaVarName<"<file or directory>">;
 def _SLASH_P : CLFlag<"P">, HelpText<"Preprocess to file">;
+def _SLASH_Qvec : CLFlag<"Qvec">,
+                  HelpText<"Enable the loop vectorization passes">,
+                  Alias<fvectorize>;
+def _SLASH_Qvec_ : CLFlag<"Qvec-">,
+                   HelpText<"Disable the loop vectorization passes">,
+                   Alias<fno_vectorize>;
 def _SLASH_Tc : CLCompileJoinedOrSeparate<"Tc">,
   HelpText<"Specify a C source file">, MetaVarName<"<filename>">;
 def _SLASH_TC : CLCompileFlag<"TC">, HelpText<"Treat all source files as C">;

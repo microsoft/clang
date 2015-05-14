@@ -421,7 +421,11 @@ unsigned ContinuationIndenter::addTokenOnNewLine(LineState &State,
         State.Stack.back().AlignColons = false;
       } else {
         State.Stack.back().ColonPos =
-            State.Stack.back().Indent + NextNonComment->LongestObjCSelectorName;
+            (Style.IndentWrappedFunctionNames
+                 ? std::max(State.Stack.back().Indent,
+                            State.FirstIndent + Style.ContinuationIndentWidth)
+                 : State.Stack.back().Indent) +
+            NextNonComment->LongestObjCSelectorName;
       }
     } else if (State.Stack.back().AlignColons &&
                State.Stack.back().ColonPos <= NextNonComment->ColumnWidth) {
@@ -542,7 +546,9 @@ unsigned ContinuationIndenter::getNewLineColumn(const LineState &State) {
   if (Current.is(tok::identifier) && Current.Next &&
       Current.Next->is(TT_DictLiteral))
     return State.Stack.back().Indent;
-  if (NextNonComment->isStringLiteral() && State.StartOfStringLiteral != 0)
+  if ((NextNonComment->isStringLiteral() ||
+       NextNonComment->is(TT_ObjCStringLiteral)) &&
+      State.StartOfStringLiteral != 0)
     return State.StartOfStringLiteral;
   if (NextNonComment->is(tok::lessless) &&
       State.Stack.back().FirstLessLess != 0)
@@ -570,7 +576,10 @@ unsigned ContinuationIndenter::getNewLineColumn(const LineState &State) {
     if (!State.Stack.back().ObjCSelectorNameFound) {
       if (NextNonComment->LongestObjCSelectorName == 0)
         return State.Stack.back().Indent;
-      return State.Stack.back().Indent +
+      return (Style.IndentWrappedFunctionNames
+                  ? std::max(State.Stack.back().Indent,
+                             State.FirstIndent + Style.ContinuationIndentWidth)
+                  : State.Stack.back().Indent) +
              NextNonComment->LongestObjCSelectorName -
              NextNonComment->ColumnWidth;
     }
@@ -658,6 +667,9 @@ unsigned ContinuationIndenter::moveStateToNextToken(LineState &State,
       State.Stack.back().AvoidBinPacking = true;
     State.Stack.back().BreakBeforeParameter = false;
   }
+  if (Current.isOneOf(TT_BinaryOperator, TT_ConditionalExpr) && Newline)
+    State.Stack.back().NestedBlockIndent =
+        State.Column + Current.ColumnWidth + 1;
 
   // Insert scopes created by fake parenthesis.
   const FormatToken *Previous = Current.getPreviousNonComment();
@@ -690,7 +702,8 @@ unsigned ContinuationIndenter::moveStateToNextToken(LineState &State,
   moveStatePastScopeCloser(State);
   moveStatePastFakeRParens(State);
 
-  if (Current.isStringLiteral() && State.StartOfStringLiteral == 0) {
+  if ((Current.isStringLiteral() || Current.is(TT_ObjCStringLiteral)) &&
+      State.StartOfStringLiteral == 0) {
     State.StartOfStringLiteral = State.Column;
   } else if (!Current.isOneOf(tok::comment, tok::identifier, tok::hash) &&
              !Current.isStringLiteral()) {

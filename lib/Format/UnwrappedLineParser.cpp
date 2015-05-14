@@ -672,6 +672,7 @@ void UnwrappedLineParser::parseStructuralElement() {
         if (FormatTok->is(tok::r_brace)) {
           FormatTok->Type = TT_InlineASMBrace;
           nextToken();
+          addUnwrappedLine();
           break;
         }
         FormatTok->Finalized = true;
@@ -862,7 +863,13 @@ void UnwrappedLineParser::parseStructuralElement() {
         bool FunctionLike = FormatTok->is(tok::l_paren);
         if (FunctionLike)
           parseParens();
-        if (FormatTok->NewlinesBefore > 0 &&
+
+        bool FollowedByNewline =
+            CommentsBeforeNextToken.empty()
+                ? FormatTok->NewlinesBefore > 0
+                : CommentsBeforeNextToken.front()->NewlinesBefore > 0;
+
+        if (FollowedByNewline &&
             (Text.size() >= 5 || FunctionLike) &&
             tokenCanStartNewLine(FormatTok->Tok) && Text == Text.upper()) {
           addUnwrappedLine();
@@ -1666,14 +1673,19 @@ void UnwrappedLineParser::parseJavaScriptEs6ImportExport() {
   assert(FormatTok->isOneOf(Keywords.kw_import, tok::kw_export));
   nextToken();
 
-  if (FormatTok->isOneOf(tok::kw_const, tok::kw_class, Keywords.kw_function,
-                         Keywords.kw_var))
-    return; // Fall through to parsing the corresponding structure.
+  // Consume the "default" in "export default class/function".
+  if (FormatTok->is(tok::kw_default))
+    nextToken();
 
-  if (FormatTok->is(tok::kw_default)) {
-    nextToken(); // export default ..., fall through after eating 'default'.
+  // Consume "function" and "default function", so that these get parsed as
+  // free-standing JS functions, i.e. do not require a trailing semicolon.
+  if (FormatTok->is(Keywords.kw_function)) {
+    nextToken();
     return;
   }
+
+  if (FormatTok->isOneOf(tok::kw_const, tok::kw_class, Keywords.kw_var))
+    return; // Fall through to parsing the corresponding structure.
 
   if (FormatTok->is(tok::l_brace)) {
     FormatTok->BlockKind = BK_Block;
@@ -1742,14 +1754,12 @@ void UnwrappedLineParser::flushComments(bool NewlineBeforeNext) {
            I = CommentsBeforeNextToken.begin(),
            E = CommentsBeforeNextToken.end();
        I != E; ++I) {
-    if (isOnNewLine(**I) && JustComments) {
+    if (isOnNewLine(**I) && JustComments)
       addUnwrappedLine();
-    }
     pushToken(*I);
   }
-  if (NewlineBeforeNext && JustComments) {
+  if (NewlineBeforeNext && JustComments)
     addUnwrappedLine();
-  }
   CommentsBeforeNextToken.clear();
 }
 

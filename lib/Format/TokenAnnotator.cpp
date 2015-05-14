@@ -125,16 +125,16 @@ private:
          Left->Previous->is(TT_BinaryOperator))) {
       // static_assert, if and while usually contain expressions.
       Contexts.back().IsExpression = true;
-    } else if (Line.InPPDirective &&
-               (!Left->Previous ||
-                !Left->Previous->isOneOf(tok::identifier,
-                                         TT_OverloadedOperator))) {
-      Contexts.back().IsExpression = true;
     } else if (Left->Previous && Left->Previous->is(tok::r_square) &&
                Left->Previous->MatchingParen &&
                Left->Previous->MatchingParen->is(TT_LambdaLSquare)) {
       // This is a parameter list of a lambda expression.
       Contexts.back().IsExpression = false;
+    } else if (Line.InPPDirective &&
+               (!Left->Previous ||
+                !Left->Previous->isOneOf(tok::identifier,
+                                         TT_OverloadedOperator))) {
+      Contexts.back().IsExpression = true;
     } else if (Contexts[Contexts.size() - 2].CaretFound) {
       // This is the parameter list of an ObjC block.
       Contexts.back().IsExpression = false;
@@ -234,6 +234,10 @@ private:
         MightBeObjCForRangeLoop = false;
       if (MightBeObjCForRangeLoop && CurrentToken->is(Keywords.kw_in))
         CurrentToken->Type = TT_ObjCForIn;
+      // When we discover a 'new', we set CanBeExpression to 'false' in order to
+      // parse the type correctly. Reset that after a comma.
+      if (CurrentToken->is(tok::comma))
+        Contexts.back().CanBeExpression = true;
 
       FormatToken *Tok = CurrentToken;
       if (!consumeToken())
@@ -915,17 +919,21 @@ private:
       if (rParenEndsCast(Current))
         Current.Type = TT_CastRParen;
     } else if (Current.is(tok::at) && Current.Next) {
-      switch (Current.Next->Tok.getObjCKeywordID()) {
-      case tok::objc_interface:
-      case tok::objc_implementation:
-      case tok::objc_protocol:
-        Current.Type = TT_ObjCDecl;
-        break;
-      case tok::objc_property:
-        Current.Type = TT_ObjCProperty;
-        break;
-      default:
-        break;
+      if (Current.Next->isStringLiteral()) {
+        Current.Type = TT_ObjCStringLiteral;
+      } else {
+        switch (Current.Next->Tok.getObjCKeywordID()) {
+        case tok::objc_interface:
+        case tok::objc_implementation:
+        case tok::objc_protocol:
+          Current.Type = TT_ObjCDecl;
+          break;
+        case tok::objc_property:
+          Current.Type = TT_ObjCProperty;
+          break;
+        default:
+          break;
+        }
       }
     } else if (Current.is(tok::period)) {
       FormatToken *PreviousNoComment = Current.getPreviousNonComment();
@@ -1589,6 +1597,9 @@ unsigned TokenAnnotator::splitPenalty(const AnnotatedLine &Line,
   if (Right.is(tok::l_square)) {
     if (Style.Language == FormatStyle::LK_Proto)
       return 1;
+    // Slightly prefer formatting local lambda definitions like functions.
+    if (Right.is(TT_LambdaLSquare) && Left.is(tok::equal))
+      return 50;
     if (!Right.isOneOf(TT_ObjCMethodExpr, TT_LambdaLSquare))
       return 500;
   }
@@ -1980,8 +1991,10 @@ bool TokenAnnotator::mustBreakBefore(const AnnotatedLine &Line,
     return Left.BlockKind != BK_BracedInit &&
            Left.isNot(TT_CtorInitializerColon) &&
            (Right.NewlinesBefore > 0 && Right.HasUnescapedNewline);
-  if (Right.Previous->isTrailingComment() ||
-      (Right.isStringLiteral() && Right.Previous->isStringLiteral()))
+  if (Left.isTrailingComment())
+   return true;
+  if (Left.isStringLiteral() &&
+      (Right.isStringLiteral() || Right.is(TT_ObjCStringLiteral)))
     return true;
   if (Right.Previous->IsUnterminatedLiteral)
     return true;
@@ -2102,7 +2115,8 @@ bool TokenAnnotator::canBreakBefore(const AnnotatedLine &Line,
     return false;
   if (Left.is(tok::colon) && (Left.isOneOf(TT_DictLiteral, TT_ObjCMethodExpr)))
     return true;
-  if (Right.is(TT_SelectorName))
+  if (Right.is(TT_SelectorName) || (Right.is(tok::identifier) && Right.Next &&
+                                    Right.Next->is(TT_ObjCMethodExpr)))
     return true;
   if (Left.is(tok::r_paren) && Line.Type == LT_ObjCProperty)
     return true;

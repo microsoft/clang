@@ -1795,9 +1795,12 @@ void VarDecl::setStorageClass(StorageClass SC) {
 VarDecl::TLSKind VarDecl::getTLSKind() const {
   switch (VarDeclBits.TSCSpec) {
   case TSCS_unspecified:
-    if (hasAttr<ThreadAttr>())
-      return TLS_Static;
-    return TLS_None;
+    if (!hasAttr<ThreadAttr>())
+      return TLS_None;
+    return getASTContext().getLangOpts().isCompatibleWithMSVC(
+               LangOptions::MSVC2015)
+               ? TLS_Dynamic
+               : TLS_Static;
   case TSCS___thread: // Fall through.
   case TSCS__Thread_local:
       return TLS_Static;
@@ -1915,9 +1918,12 @@ VarDecl::isThisDeclarationADefinition(ASTContext &C) const {
   if (hasInit())
     return Definition;
 
-  if (hasAttr<AliasAttr>() ||
-      (hasAttr<SelectAnyAttr>() && !getAttr<SelectAnyAttr>()->isInherited()))
+  if (hasAttr<AliasAttr>())
     return Definition;
+
+  if (const auto *SAA = getAttr<SelectAnyAttr>())
+    if (!SAA->isInherited())
+      return Definition;
 
   // A variable template specialization (other than a static data member
   // template or an explicit specialization) is a declaration until we

@@ -562,53 +562,53 @@ static void getARMFPUFeatures(const Driver &D, const Arg *A,
 
   // All other FPU types, valid or invalid.
   switch(llvm::ARMTargetParser::parseFPU(FPU)) {
-  case llvm::ARM::INVALID_FPU:
-  case llvm::ARM::SOFTVFP:
+  case llvm::ARM::FK_INVALID:
+  case llvm::ARM::FK_SOFTVFP:
     Features.push_back("-vfp2");
     Features.push_back("-vfp3");
     Features.push_back("-neon");
     break;
-  case llvm::ARM::VFP:
-  case llvm::ARM::VFPV2:
+  case llvm::ARM::FK_VFP:
+  case llvm::ARM::FK_VFPV2:
     Features.push_back("+vfp2");
     Features.push_back("-neon");
     break;
-  case llvm::ARM::VFPV3_D16:
+  case llvm::ARM::FK_VFPV3_D16:
     Features.push_back("+d16");
     // fall-through
-  case llvm::ARM::VFPV3:
+  case llvm::ARM::FK_VFPV3:
     Features.push_back("+vfp3");
     Features.push_back("-neon");
     break;
-  case llvm::ARM::VFPV4_D16:
+  case llvm::ARM::FK_VFPV4_D16:
     Features.push_back("+d16");
     // fall-through
-  case llvm::ARM::VFPV4:
+  case llvm::ARM::FK_VFPV4:
     Features.push_back("+vfp4");
     Features.push_back("-neon");
     break;
-  case llvm::ARM::FPV5_D16:
+  case llvm::ARM::FK_FPV5_D16:
     Features.push_back("+d16");
     // fall-through
-  case llvm::ARM::FP_ARMV8:
+  case llvm::ARM::FK_FP_ARMV8:
     Features.push_back("+fp-armv8");
     Features.push_back("-neon");
     Features.push_back("-crypto");
     break;
-  case llvm::ARM::NEON_FP_ARMV8:
+  case llvm::ARM::FK_NEON_FP_ARMV8:
     Features.push_back("+fp-armv8");
     Features.push_back("+neon");
     Features.push_back("-crypto");
     break;
-  case llvm::ARM::CRYPTO_NEON_FP_ARMV8:
+  case llvm::ARM::FK_CRYPTO_NEON_FP_ARMV8:
     Features.push_back("+fp-armv8");
     Features.push_back("+neon");
     Features.push_back("+crypto");
     break;
-  case llvm::ARM::NEON:
+  case llvm::ARM::FK_NEON:
     Features.push_back("+neon");
     break;
-  case llvm::ARM::NEON_VFPV4:
+  case llvm::ARM::FK_NEON_VFPV4:
     Features.push_back("+neon");
     Features.push_back("+vfp4");
     break;
@@ -1568,6 +1568,7 @@ static std::string getCPUName(const ArgList &Args, const llvm::Triple &T) {
   }
 
   case llvm::Triple::sparc:
+  case llvm::Triple::sparcel:
   case llvm::Triple::sparcv9:
     if (const Arg *A = Args.getLastArg(options::OPT_mcpu_EQ))
       return A->getValue();
@@ -1946,6 +1947,7 @@ static void getTargetFeatures(const Driver &D, const llvm::Triple &Triple,
     getPPCTargetFeatures(Args, Features);
     break;
   case llvm::Triple::sparc:
+  case llvm::Triple::sparcel:
   case llvm::Triple::sparcv9:
     getSparcTargetFeatures(Args, Features);
     break;
@@ -2833,6 +2835,7 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
     case llvm::Triple::mips64:
     case llvm::Triple::mips64el:
     case llvm::Triple::sparc:
+    case llvm::Triple::sparcel:
     case llvm::Triple::x86:
     case llvm::Triple::x86_64:
       IsPICLevelTwo = false; // "-fpie"
@@ -3269,6 +3272,7 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
     break;
 
   case llvm::Triple::sparc:
+  case llvm::Triple::sparcel:
   case llvm::Triple::sparcv9:
     AddSparcTargetArgs(Args, CmdArgs);
     break;
@@ -6324,6 +6328,11 @@ void darwin::Link::ConstructJob(Compilation &C, const JobAction &JA,
   if (Args.hasArg(options::OPT_fnested_functions))
     CmdArgs.push_back("-allow_stack_execute");
 
+  // TODO: It would be nice to use addProfileRT() here, but darwin's compiler-rt
+  // paths are different enough from other toolchains that this needs a fair
+  // amount of refactoring done first.
+  getMachOToolChain().addProfileRTLibs(Args, CmdArgs);
+
   if (!Args.hasArg(options::OPT_nostdlib) &&
       !Args.hasArg(options::OPT_nodefaultlibs)) {
     if (getToolChain().getDriver().CCCIsCXX())
@@ -6580,6 +6589,7 @@ void openbsd::Assemble::ConstructJob(Compilation &C, const JobAction &JA,
     break;
 
   case llvm::Triple::sparc:
+  case llvm::Triple::sparcel:
     CmdArgs.push_back("-32");
     NeedsKPIC = true;
     break;
@@ -6958,6 +6968,7 @@ void freebsd::Assemble::ConstructJob(Compilation &C, const JobAction &JA,
       CmdArgs.push_back("-matpcs");
     }
   } else if (getToolChain().getArch() == llvm::Triple::sparc ||
+             getToolChain().getArch() == llvm::Triple::sparcel ||
              getToolChain().getArch() == llvm::Triple::sparcv9) {
     if (getToolChain().getArch() == llvm::Triple::sparc)
       CmdArgs.push_back("-Av8plusa");
@@ -7212,6 +7223,7 @@ void netbsd::Assemble::ConstructJob(Compilation &C, const JobAction &JA,
   }
 
   case llvm::Triple::sparc:
+  case llvm::Triple::sparcel:
     CmdArgs.push_back("-32");
     addAssemblerKPIC(Args, CmdArgs);
     break;
@@ -7489,6 +7501,7 @@ void gnutools::Assemble::ConstructJob(Compilation &C, const JobAction &JA,
     CmdArgs.push_back("-mlittle-endian");
     break;
   case llvm::Triple::sparc:
+  case llvm::Triple::sparcel:
     CmdArgs.push_back("-32");
     CmdArgs.push_back("-Av8plusa");
     NeedsKPIC = true;
@@ -7696,7 +7709,8 @@ static std::string getLinuxDynamicLinker(const ArgList &Args,
     else
       return "/system/bin/linker";
   } else if (ToolChain.getArch() == llvm::Triple::x86 ||
-             ToolChain.getArch() == llvm::Triple::sparc)
+             ToolChain.getArch() == llvm::Triple::sparc ||
+             ToolChain.getArch() == llvm::Triple::sparcel)
     return "/lib/ld-linux.so.2";
   else if (ToolChain.getArch() == llvm::Triple::aarch64)
     return "/lib/ld-linux-aarch64.so.1";
@@ -7798,6 +7812,7 @@ static const char *getLDMOption(const llvm::Triple &T, const ArgList &Args) {
   case llvm::Triple::ppc64le:
     return "elf64lppc";
   case llvm::Triple::sparc:
+  case llvm::Triple::sparcel:
     return "elf32_sparc";
   case llvm::Triple::sparcv9:
     return "elf64_sparc";
