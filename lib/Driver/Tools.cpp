@@ -649,7 +649,8 @@ StringRef tools::arm::getARMFloatABI(const Driver &D, const ArgList &Args,
       //
       // FIXME: Factor out an ARM class so we can cache the arch somewhere.
       std::string ArchName =
-        arm::getLLVMArchSuffixForARM(arm::getARMTargetCPU(Args, Triple));
+        arm::getLLVMArchSuffixForARM(arm::getARMTargetCPU(Args, Triple),
+                                     arm::getARMArch(Args, Triple));
       if (StringRef(ArchName).startswith("v6") ||
           StringRef(ArchName).startswith("v7"))
         FloatABI = "softfp";
@@ -692,7 +693,8 @@ StringRef tools::arm::getARMFloatABI(const Driver &D, const ArgList &Args,
         break;
       case llvm::Triple::Android: {
         std::string ArchName =
-          arm::getLLVMArchSuffixForARM(arm::getARMTargetCPU(Args, Triple));
+          arm::getLLVMArchSuffixForARM(arm::getARMTargetCPU(Args, Triple),
+                                       arm::getARMArch(Args, Triple));
         if (StringRef(ArchName).startswith("v7"))
           FloatABI = "softfp";
         else
@@ -767,6 +769,10 @@ static void getARMTargetFeatures(const Driver &D, const llvm::Triple &Triple,
       Features.push_back("+crc");
     else
       Features.push_back("-crc");
+  }
+
+  if (Triple.getSubArch() == llvm::Triple::SubArchType::ARMSubArch_v8_1a) {
+    Features.insert(Features.begin(), "+v8.1a");
   }
 }
 
@@ -1723,39 +1729,17 @@ void Clang::AddX86TargetArgs(const ArgList &Args,
   }
 }
 
-static inline bool HasPICArg(const ArgList &Args) {
-  return Args.hasArg(options::OPT_fPIC)
-    || Args.hasArg(options::OPT_fpic);
-}
-
-static Arg *GetLastSmallDataThresholdArg(const ArgList &Args) {
-  return Args.getLastArg(options::OPT_G,
-                         options::OPT_G_EQ,
-                         options::OPT_msmall_data_threshold_EQ);
-}
-
-static std::string GetHexagonSmallDataThresholdValue(const ArgList &Args) {
-  std::string value;
-  if (HasPICArg(Args))
-    value = "0";
-  else if (Arg *A = GetLastSmallDataThresholdArg(Args)) {
-    value = A->getValue();
-    A->claim();
-  }
-  return value;
-}
-
 void Clang::AddHexagonTargetArgs(const ArgList &Args,
                                  ArgStringList &CmdArgs) const {
   CmdArgs.push_back("-fno-signed-char");
   CmdArgs.push_back("-mqdsp6-compat");
   CmdArgs.push_back("-Wreturn-type");
 
-  std::string SmallDataThreshold = GetHexagonSmallDataThresholdValue(Args);
-  if (!SmallDataThreshold.empty()) {
+  if (const char* v = toolchains::Hexagon_TC::GetSmallDataThreshold(Args)) {
+    std::string SmallDataThreshold="-hexagon-small-data-threshold=";
+    SmallDataThreshold += v;
     CmdArgs.push_back ("-mllvm");
-    CmdArgs.push_back(Args.MakeArgString(
-                        "-hexagon-small-data-threshold=" + SmallDataThreshold));
+    CmdArgs.push_back(Args.MakeArgString(SmallDataThreshold));
   }
 
   if (!Args.hasArg(options::OPT_fno_short_enums))
@@ -5402,10 +5386,8 @@ void hexagon::Assemble::ConstructJob(Compilation &C, const JobAction &JA,
     CmdArgs.push_back("-fsyntax-only");
   }
 
-  std::string SmallDataThreshold = GetHexagonSmallDataThresholdValue(Args);
-  if (!SmallDataThreshold.empty())
-    CmdArgs.push_back(
-      Args.MakeArgString(std::string("-G") + SmallDataThreshold));
+  if (const char* v = toolchains::Hexagon_TC::GetSmallDataThreshold(Args))
+    CmdArgs.push_back(Args.MakeArgString(std::string("-G") + v));
 
   Args.AddAllArgValues(CmdArgs, options::OPT_Wa_COMMA,
                        options::OPT_Xassembler);
@@ -5468,6 +5450,7 @@ static void constructHexagonLinkArgs(Compilation &C, const JobAction &JA,
   bool incStdLib = !Args.hasArg(options::OPT_nostdlib);
   bool incStartFiles = !Args.hasArg(options::OPT_nostartfiles);
   bool incDefLibs = !Args.hasArg(options::OPT_nodefaultlibs);
+  bool useG0 = false;
   bool useShared = buildingLib && !hasStaticArg;
 
   //----------------------------------------------------------------------------
@@ -5501,10 +5484,9 @@ static void constructHexagonLinkArgs(Compilation &C, const JobAction &JA,
   if (buildPIE && !buildingLib)
     CmdArgs.push_back("-pie");
 
-  std::string SmallDataThreshold = GetHexagonSmallDataThresholdValue(Args);
-  if (!SmallDataThreshold.empty()) {
-    CmdArgs.push_back(
-      Args.MakeArgString(std::string("-G") + SmallDataThreshold));
+  if (const char* v = toolchains::Hexagon_TC::GetSmallDataThreshold(Args)) {
+    CmdArgs.push_back(Args.MakeArgString(std::string("-G") + v));
+    useG0 = toolchains::Hexagon_TC::UsesG0(v);
   }
 
   //----------------------------------------------------------------------------
@@ -5520,8 +5502,7 @@ static void constructHexagonLinkArgs(Compilation &C, const JobAction &JA,
       toolchains::Hexagon_TC::GetGnuDir(D.InstalledDir, Args) + "/";
   const std::string StartFilesDir = RootDir
                                     + "hexagon/lib"
-                                    + (buildingLib
-                                       ? MarchG0Suffix : MarchSuffix);
+                                    + (useG0 ? MarchG0Suffix : MarchSuffix);
 
   //----------------------------------------------------------------------------
   // moslib
@@ -5624,9 +5605,8 @@ void hexagon::Link::ConstructJob(Compilation &C, const JobAction &JA,
 }
 // Hexagon tools end.
 
-/// Get the (LLVM) name of the minimum ARM CPU for the arch we are targeting.
-const char *arm::getARMCPUForMArch(const ArgList &Args,
-                                   const llvm::Triple &Triple) {
+const StringRef arm::getARMArch(const ArgList &Args,
+                                const llvm::Triple &Triple) {
   StringRef MArch;
   if (Arg *A = Args.getLastArg(options::OPT_march_EQ)) {
     // Otherwise, if we have -march= choose the base CPU for that arch.
@@ -5635,6 +5615,12 @@ const char *arm::getARMCPUForMArch(const ArgList &Args,
     // Otherwise, use the Arch from the triple.
     MArch = Triple.getArchName();
   }
+  return MArch;
+}
+/// Get the (LLVM) name of the minimum ARM CPU for the arch we are targeting.
+const char *arm::getARMCPUForMArch(const ArgList &Args,
+                                   const llvm::Triple &Triple) {
+  StringRef MArch = getARMArch(Args, Triple);
 
   // Handle -march=native.
   if (MArch == "native") {
@@ -5642,7 +5628,8 @@ const char *arm::getARMCPUForMArch(const ArgList &Args,
     if (CPU != "generic") {
       // Translate the native cpu into the architecture. The switch below will
       // then chose the minimum cpu for that arch.
-      MArch = std::string("arm") + arm::getLLVMArchSuffixForARM(CPU);
+      MArch = std::string("arm") + 
+        arm::getLLVMArchSuffixForARM(CPU, arm::getARMArch(Args, Triple));
     }
   }
 
@@ -5673,12 +5660,20 @@ StringRef arm::getARMTargetCPU(const ArgList &Args,
 }
 
 /// getLLVMArchSuffixForARM - Get the LLVM arch name to use for a particular
-/// CPU.
+/// CPU  (or Arch, if CPU is generic).
 //
 // FIXME: This is redundant with -mcpu, why does LLVM use this.
 // FIXME: tblgen this, or kill it!
 // FIXME: Use ARMTargetParser.
-const char *arm::getLLVMArchSuffixForARM(StringRef CPU) {
+const char *arm::getLLVMArchSuffixForARM(StringRef CPU, StringRef Arch) {
+  // FIXME: Use ARMTargetParser
+  if (CPU == "generic") {
+    if (Arch == "armv8.1a" || Arch == "armv8.1-a" ||
+        Arch == "armebv8.1a" || Arch == "armebv8.1-a") {
+      return "v8.1a";
+    }
+  }
+
   return llvm::StringSwitch<const char *>(CPU)
     .Case("strongarm", "v4")
     .Cases("arm7tdmi", "arm7tdmi-s", "arm710t", "v4t")
@@ -5705,11 +5700,13 @@ const char *arm::getLLVMArchSuffixForARM(StringRef CPU) {
     .Default("");
 }
 
-void arm::appendEBLinkFlags(const ArgList &Args, ArgStringList &CmdArgs, const llvm::Triple &Triple) {
+void arm::appendEBLinkFlags(const ArgList &Args, ArgStringList &CmdArgs, 
+                            const llvm::Triple &Triple) {
   if (Args.hasArg(options::OPT_r))
     return;
 
-  StringRef Suffix = getLLVMArchSuffixForARM(getARMCPUForMArch(Args, Triple));
+  StringRef Suffix = getLLVMArchSuffixForARM(getARMCPUForMArch(Args, Triple), 
+                                             getARMArch(Args, Triple));
   const char *LinkFlag = llvm::StringSwitch<const char *>(Suffix)
     .Cases("v4", "v4t", "v5", "v5e", nullptr)
     .Cases("v6", "v6k", "v6t2", nullptr)
