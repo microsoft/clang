@@ -2439,16 +2439,16 @@ void ASTWriter::WriteSubmodules(Module *WritingModule) {
     }
 
     // Emit the umbrella header, if there is one.
-    if (const FileEntry *UmbrellaHeader = Mod->getUmbrellaHeader()) {
+    if (auto UmbrellaHeader = Mod->getUmbrellaHeader()) {
       Record.clear();
       Record.push_back(SUBMODULE_UMBRELLA_HEADER);
-      Stream.EmitRecordWithBlob(UmbrellaAbbrev, Record, 
-                                UmbrellaHeader->getName());
-    } else if (const DirectoryEntry *UmbrellaDir = Mod->getUmbrellaDir()) {
+      Stream.EmitRecordWithBlob(UmbrellaAbbrev, Record,
+                                UmbrellaHeader.NameAsWritten);
+    } else if (auto UmbrellaDir = Mod->getUmbrellaDir()) {
       Record.clear();
       Record.push_back(SUBMODULE_UMBRELLA_DIR);
       Stream.EmitRecordWithBlob(UmbrellaDirAbbrev, Record, 
-                                UmbrellaDir->getName());      
+                                UmbrellaDir.NameAsWritten);
     }
 
     // Emit the headers.
@@ -5746,6 +5746,8 @@ void ASTWriter::DeclarationMarkedOpenMPThreadPrivate(const Decl *D) {
 void ASTWriter::RedefinedHiddenDefinition(const NamedDecl *D, Module *M) {
   assert(!WritingAST && "Already writing the AST!");
   assert(D->isHidden() && "expected a hidden declaration");
-  assert(D->isFromASTFile() && "hidden decl not from AST file");
+  if (!D->isFromASTFile())
+    return;
+
   DeclUpdates[D].push_back(DeclUpdate(UPD_DECL_EXPORTED, M));
 }

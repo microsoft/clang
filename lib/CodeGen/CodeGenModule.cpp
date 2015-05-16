@@ -752,23 +752,6 @@ void CodeGenModule::SetLLVMFunctionAttributesForDefinition(const Decl *D,
   else if (LangOpts.getStackProtector() == LangOptions::SSPReq)
     B.addAttribute(llvm::Attribute::StackProtectReq);
 
-  // Add sanitizer attributes if function is not blacklisted.
-  if (!isInSanitizerBlacklist(F, D->getLocation())) {
-    // When AddressSanitizer is enabled, set SanitizeAddress attribute
-    // unless __attribute__((no_sanitize_address)) is used.
-    if (LangOpts.Sanitize.has(SanitizerKind::Address) &&
-        !D->hasAttr<NoSanitizeAddressAttr>())
-      B.addAttribute(llvm::Attribute::SanitizeAddress);
-    // Same for ThreadSanitizer and __attribute__((no_sanitize_thread))
-    if (LangOpts.Sanitize.has(SanitizerKind::Thread) &&
-        !D->hasAttr<NoSanitizeThreadAttr>())
-      B.addAttribute(llvm::Attribute::SanitizeThread);
-    // Same for MemorySanitizer and __attribute__((no_sanitize_memory))
-    if (LangOpts.Sanitize.has(SanitizerKind::Memory) &&
-        !D->hasAttr<NoSanitizeMemoryAttr>())
-      B.addAttribute(llvm::Attribute::SanitizeMemory);
-  }
-
   F->addAttributes(llvm::AttributeSet::FunctionIndex,
                    llvm::AttributeSet::get(
                        F->getContext(), llvm::AttributeSet::FunctionIndex, B));
@@ -3376,7 +3359,7 @@ void CodeGenModule::EmitTopLevelDecl(Decl *D) {
     auto *Import = cast<ImportDecl>(D);
 
     // Ignore import declarations that come from imported modules.
-    if (clang::Module *Owner = Import->getOwningModule()) {
+    if (clang::Module *Owner = Import->getImportedOwningModule()) {
       if (getLangOpts().CurrentModule.empty() ||
           Owner->getTopLevelModule()->Name == getLangOpts().CurrentModule)
         break;
