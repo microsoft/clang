@@ -250,7 +250,7 @@ public:
 
   void mangle(const NamedDecl *D, StringRef Prefix = "\01?");
   void mangleName(const NamedDecl *ND);
-  void mangleFunctionEncoding(const FunctionDecl *FD);
+  void mangleFunctionEncoding(const FunctionDecl *FD, bool ShouldMangle);
   void mangleVariableEncoding(const VarDecl *VD);
   void mangleMemberDataPointer(const CXXRecordDecl *RD, const ValueDecl *VD);
   void mangleMemberFunctionPointer(const CXXRecordDecl *RD,
@@ -383,7 +383,7 @@ void MicrosoftCXXNameMangler::mangle(const NamedDecl *D, StringRef Prefix) {
   Out << Prefix;
   mangleName(D);
   if (const FunctionDecl *FD = dyn_cast<FunctionDecl>(D))
-    mangleFunctionEncoding(FD);
+    mangleFunctionEncoding(FD, Context.shouldMangleDeclName(FD));
   else if (const VarDecl *VD = dyn_cast<VarDecl>(D))
     mangleVariableEncoding(VD);
   else {
@@ -396,7 +396,8 @@ void MicrosoftCXXNameMangler::mangle(const NamedDecl *D, StringRef Prefix) {
   }
 }
 
-void MicrosoftCXXNameMangler::mangleFunctionEncoding(const FunctionDecl *FD) {
+void MicrosoftCXXNameMangler::mangleFunctionEncoding(const FunctionDecl *FD,
+                                                     bool ShouldMangle) {
   // <type-encoding> ::= <function-class> <function-type>
 
   // Since MSVC operates on the type as written and not the canonical type, it
@@ -411,13 +412,20 @@ void MicrosoftCXXNameMangler::mangleFunctionEncoding(const FunctionDecl *FD) {
   // extern "C" functions can hold entities that must be mangled.
   // As it stands, these functions still need to get expressed in the full
   // external name.  They have their class and type omitted, replaced with '9'.
-  if (Context.shouldMangleDeclName(FD)) {
-    // First, the function class.
+  if (ShouldMangle) {
+    // We would like to mangle all extern "C" functions using this additional
+    // component but this would break compatibility with MSVC's behavior.
+    // Instead, do this when we know that compatibility isn't important (in
+    // other words, when it is an overloaded extern "C" funciton).
+    if (FD->isExternC() && FD->hasAttr<OverloadableAttr>())
+      Out << "$$J0";
+
     mangleFunctionClass(FD);
 
     mangleFunctionType(FT, FD);
-  } else
+  } else {
     Out << '9';
+  }
 }
 
 void MicrosoftCXXNameMangler::mangleVariableEncoding(const VarDecl *VD) {
@@ -556,7 +564,7 @@ MicrosoftCXXNameMangler::mangleMemberFunctionPointer(const CXXRecordDecl *RD,
       }
     } else {
       mangleName(MD);
-      mangleFunctionEncoding(MD);
+      mangleFunctionEncoding(MD, /*ShouldMangle=*/true);
     }
   } else {
     // Null single inheritance member functions are encoded as a simple nullptr.
@@ -1171,10 +1179,13 @@ void MicrosoftCXXNameMangler::mangleTemplateArg(const TemplateDecl *TD,
           cast<ValueDecl>(ND));
     } else if (const FunctionDecl *FD = dyn_cast<FunctionDecl>(ND)) {
       const CXXMethodDecl *MD = dyn_cast<CXXMethodDecl>(FD);
-      if (MD && MD->isInstance())
+      if (MD && MD->isInstance()) {
         mangleMemberFunctionPointer(MD->getParent()->getMostRecentDecl(), MD);
-      else
-        mangle(FD, "$1?");
+      } else {
+        Out << "$1?";
+        mangleName(FD);
+        mangleFunctionEncoding(FD, /*ShouldMangle=*/true);
+      }
     } else {
       mangle(ND, TA.getParamTypeForDecl()->isReferenceType() ? "$E?" : "$1?");
     }
@@ -1757,8 +1768,9 @@ void MicrosoftCXXNameMangler::mangleFunctionClass(const FunctionDecl *FD) {
         else
           Out << 'Q';
     }
-  } else
+  } else {
     Out << 'Y';
+  }
 }
 void MicrosoftCXXNameMangler::mangleCallingConvention(CallingConv CC) {
   // <calling-convention> ::= A # __cdecl
