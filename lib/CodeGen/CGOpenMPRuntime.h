@@ -232,6 +232,16 @@ private:
   /// \brief Type typedef kmp_int32 (* kmp_routine_entry_t)(kmp_int32, void *);
   llvm::Type *KmpRoutineEntryPtrTy;
   QualType KmpRoutineEntryPtrQTy;
+  /// \brief Type typedef struct kmp_task {
+  ///    void *              shareds; /**< pointer to block of pointers to
+  ///    shared vars   */
+  ///    kmp_routine_entry_t routine; /**< pointer to routine to call for
+  ///    executing task */
+  ///    kmp_int32           part_id; /**< part id for the task */
+  ///    kmp_routine_entry_t destructors; /* pointer to function to invoke
+  ///    deconstructors of firstprivate C++ objects */
+  /// } kmp_task_t;
+  QualType KmpTaskTQTy;
 
   /// \brief Build type kmp_routine_entry_t (if not built yet).
   void emitKmpRoutineEntryT(QualType KmpInt32Ty);
@@ -429,6 +439,7 @@ public:
   /// \param SchedKind Schedule kind, specified by the 'schedule' clause.
   /// \param IVSize Size of the iteration variable in bits.
   /// \param IVSigned Sign of the interation variable.
+  /// \param Ordered true if loop is ordered, false otherwise.
   /// \param IL Address of the output variable in which the flag of the
   /// last iteration is returned.
   /// \param LB Address of the output variable in which the lower iteration
@@ -442,8 +453,8 @@ public:
   ///
   virtual void emitForInit(CodeGenFunction &CGF, SourceLocation Loc,
                            OpenMPScheduleClauseKind SchedKind, unsigned IVSize,
-                           bool IVSigned, llvm::Value *IL, llvm::Value *LB,
-                           llvm::Value *UB, llvm::Value *ST,
+                           bool IVSigned, bool Ordered, llvm::Value *IL,
+                           llvm::Value *LB, llvm::Value *UB, llvm::Value *ST,
                            llvm::Value *Chunk = nullptr);
 
   /// \brief Call the appropriate runtime routine to notify that we finished
@@ -454,10 +465,9 @@ public:
   /// \param IVSize Size of the iteration variable in bits.
   /// \param IVSigned Sign of the interation variable.
   ///
-  virtual void emitForOrderedDynamicIterationEnd(CodeGenFunction &CGF,
-                                                 SourceLocation Loc,
-                                                 unsigned IVSize,
-                                                 bool IVSigned);
+  virtual void emitForOrderedIterationEnd(CodeGenFunction &CGF,
+                                          SourceLocation Loc, unsigned IVSize,
+                                          bool IVSigned);
 
   /// \brief Call the appropriate runtime routine to notify that we finished
   /// all the work with current loop.

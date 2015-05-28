@@ -5030,7 +5030,7 @@ def err_typecheck_unary_expr : Error<
   "invalid argument type %0 to unary expression">;
 def err_typecheck_indirection_requires_pointer : Error<
   "indirection requires pointer operand (%0 invalid)">;
-def ext_typecheck_indirection_through_void_pointer : Extension<
+def ext_typecheck_indirection_through_void_pointer : ExtWarn<
   "ISO C++ does not allow indirection on operand of type %0">,
   InGroup<DiagGroup<"void-ptr-dereference">>;
 def warn_indirection_through_null : Warning<
@@ -5516,7 +5516,12 @@ def err_delete_explicit_conversion : Error<
   "conversion function">;
 def note_delete_conversion : Note<"conversion to pointer type %0">;
 def warn_delete_array_type : Warning<
-  "'delete' applied to a pointer-to-array type %0 treated as delete[]">;
+  "'delete' applied to a pointer-to-array type %0 treated as 'delete[]'">;
+def warn_mismatched_delete_new : Warning<
+  "'delete%select{|[]}0' applied to a pointer that was allocated with "
+  "'new%select{[]|}0'; did you mean 'delete%select{[]|}0'?">,
+  InGroup<DiagGroup<"mismatched-new-delete">>;
+def note_allocated_here : Note<"allocated with 'new%select{[]|}0' here">;
 def err_no_suitable_delete_member_function_found : Error<
   "no suitable member %0 in %1">;
 def err_ambiguous_suitable_delete_member_function_found : Error<
@@ -7413,6 +7418,8 @@ def err_omp_no_dsa_for_variable : Error<
   "variable %0 must have explicitly specified data sharing attributes">;
 def err_omp_wrong_dsa : Error<
   "%0 variable cannot be %1">;
+def err_omp_variably_modified_type_not_supported : Error<
+  "arguments of OpenMP clause '%0' in '#pragma omp %2' directive cannot be of variably-modified type %1">;
 def note_omp_explicit_dsa : Note<
   "defined as %0">;
 def note_omp_predetermined_dsa : Note<

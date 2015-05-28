@@ -143,11 +143,10 @@ bool ContinuationIndenter::mustBreak(const LineState &State) {
   if (Previous.is(tok::semi) && State.LineContainsContinuedForLoopSection)
     return true;
   if ((startsNextParameter(Current, Style) || Previous.is(tok::semi) ||
-       (Style.BreakBeforeTernaryOperators &&
-        (Current.is(tok::question) ||
-         (Current.is(TT_ConditionalExpr) && Previous.isNot(tok::question)))) ||
+       (Style.BreakBeforeTernaryOperators && Current.is(TT_ConditionalExpr) &&
+        Previous.isNot(tok::question)) ||
        (!Style.BreakBeforeTernaryOperators &&
-        (Previous.is(tok::question) || Previous.is(TT_ConditionalExpr)))) &&
+        Previous.is(TT_ConditionalExpr))) &&
       State.Stack.back().BreakBeforeParameter && !Current.isTrailingComment() &&
       !Current.isOneOf(tok::r_paren, tok::r_brace))
     return true;
@@ -208,7 +207,12 @@ bool ContinuationIndenter::mustBreak(const LineState &State) {
     return true;
 
   if (Current.NestingLevel == 0 && !Current.isTrailingComment()) {
+    // Always break after "template <...>" and leading annotations. This is only
+    // for cases where the entire line does not fit on a single line as a
+    // different LineFormatter would be used otherwise.
     if (Previous.ClosesTemplateDeclaration)
+      return true;
+    if (Previous.is(TT_FunctionAnnotationRParen))
       return true;
     if (Previous.is(TT_LeadingJavaAnnotation) && Current.isNot(tok::l_paren) &&
         Current.isNot(TT_LeadingJavaAnnotation))
@@ -487,8 +491,9 @@ unsigned ContinuationIndenter::addTokenOnNewLine(LineState &State,
       !PreviousNonComment->isOneOf(tok::comma, tok::semi) &&
       (PreviousNonComment->isNot(TT_TemplateCloser) ||
        Current.NestingLevel != 0) &&
-      !PreviousNonComment->isOneOf(TT_BinaryOperator, TT_JavaAnnotation,
-                                   TT_LeadingJavaAnnotation) &&
+      !PreviousNonComment->isOneOf(
+          TT_BinaryOperator, TT_FunctionAnnotationRParen, TT_JavaAnnotation,
+          TT_LeadingJavaAnnotation) &&
       Current.isNot(TT_BinaryOperator) && !PreviousNonComment->opensScope())
     State.Stack.back().BreakBeforeParameter = true;
 
@@ -568,8 +573,9 @@ unsigned ContinuationIndenter::getNewLineColumn(const LineState &State) {
     return State.Stack.back().VariablePos;
   if ((PreviousNonComment &&
        (PreviousNonComment->ClosesTemplateDeclaration ||
-        PreviousNonComment->isOneOf(TT_AttributeParen, TT_JavaAnnotation,
-                                    TT_LeadingJavaAnnotation))) ||
+        PreviousNonComment->isOneOf(
+            TT_AttributeParen, TT_FunctionAnnotationRParen, TT_JavaAnnotation,
+            TT_LeadingJavaAnnotation))) ||
       (!Style.IndentWrappedFunctionNames &&
        NextNonComment->isOneOf(tok::kw_operator, TT_FunctionDeclarationName)))
     return std::max(State.Stack.back().LastSpace, State.Stack.back().Indent);
@@ -849,7 +855,7 @@ void ContinuationIndenter::moveStatePastScopeOpener(LineState &State,
     const FormatToken *NextNoComment = Current.getNextNonComment();
     AvoidBinPacking =
         Current.isOneOf(TT_ArrayInitializerLSquare, TT_DictLiteral) ||
-        Style.Language == FormatStyle::LK_Proto || !Style.BinPackParameters ||
+        Style.Language == FormatStyle::LK_Proto || !Style.BinPackArguments ||
         (NextNoComment && NextNoComment->is(TT_DesignatedInitializerPeriod));
   } else {
     NewIndent = Style.ContinuationIndentWidth +

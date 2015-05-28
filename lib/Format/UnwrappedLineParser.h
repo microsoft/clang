@@ -107,13 +107,18 @@ private:
   bool tryToParseLambda();
   bool tryToParseLambdaIntroducer();
   void tryToParseJSFunction();
+  /// \brief Parses tokens until encountering the CloseKind token, but balances
+  /// tokens when encountering more OpenKind tokens. Useful for e.g. parsing a
+  /// curly brace delimited block that can contain nested blocks.
+  /// The parser must be positioned on a token of OpenKind.
+  void parseBalanced(tok::TokenKind OpenKind, tok::TokenKind CloseKind);
   void addUnwrappedLine();
   bool eof() const;
   void nextToken();
   void readToken();
   void flushComments(bool NewlineBeforeNext);
   void pushToken(FormatToken *Tok);
-  void calculateBraceTypes();
+  void calculateBraceTypes(bool ExpectClassBody = false);
 
   // Marks a conditional compilation edge (for example, an '#if', '#ifdef',
   // '#else' or merge conflict marker). If 'Unreachable' is true, assumes

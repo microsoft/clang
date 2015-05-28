@@ -203,9 +203,9 @@ int LocalScope::const_iterator::distance(LocalScope::const_iterator L) {
   return D;
 }
 
-/// BlockScopePosPair - Structure for specifying position in CFG during its
-/// build process. It consists of CFGBlock that specifies position in CFG graph
-/// and  LocalScope::const_iterator that specifies position in LocalScope graph.
+/// Structure for specifying position in CFG during its build process. It
+/// consists of CFGBlock that specifies position in CFG and
+/// LocalScope::const_iterator that specifies position in LocalScope graph.
 struct BlockScopePosPair {
   BlockScopePosPair() : block(nullptr) {}
   BlockScopePosPair(CFGBlock *b, LocalScope::const_iterator scopePos)
@@ -1179,8 +1179,7 @@ void CFGBuilder::addAutomaticObjDtors(LocalScope::const_iterator B,
     }
     Ty = Context->getBaseElementType(Ty);
 
-    const CXXDestructorDecl *Dtor = Ty->getAsCXXRecordDecl()->getDestructor();
-    if (Dtor->isNoReturn())
+    if (Ty->getAsCXXRecordDecl()->isAnyDestructorNoReturn())
       Block = createNoReturnBlock();
     else
       autoCreateBlock();
@@ -3682,7 +3681,7 @@ CFGBlock *CFGBuilder::VisitCXXBindTemporaryExprForTemporaryDtors(
 
     const CXXDestructorDecl *Dtor = E->getTemporary()->getDestructor();
 
-    if (Dtor->isNoReturn()) {
+    if (Dtor->getParent()->isAnyDestructorNoReturn()) {
       // If the destructor is marked as a no-return destructor, we need to
       // create a new block for the destructor which does not have as a
       // successor anything built thus far. Control won't flow out of this

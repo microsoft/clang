@@ -108,6 +108,10 @@ bool ABIInfo::isHomogeneousAggregateSmallEnough(const Type *Base,
   return false;
 }
 
+bool ABIInfo::shouldSignExtUnsignedType(QualType Ty) const {
+  return false;
+}
+
 void ABIArgInfo::dump() const {
   raw_ostream &OS = llvm::errs();
   OS << "(ABIArgInfo Kind=";
@@ -406,8 +410,16 @@ llvm::Value *DefaultABIInfo::EmitVAArg(llvm::Value *VAListAddr, QualType Ty,
 }
 
 ABIArgInfo DefaultABIInfo::classifyArgumentType(QualType Ty) const {
-  if (isAggregateTypeForABI(Ty))
+  Ty = useFirstFieldIfTransparentUnion(Ty);
+
+  if (isAggregateTypeForABI(Ty)) {
+    // Records with non-trivial destructors/copy-constructors should not be
+    // passed by value.
+    if (CGCXXABI::RecordArgABI RAA = getRecordArgABI(Ty, getCXXABI()))
+      return ABIArgInfo::getIndirect(0, RAA == CGCXXABI::RAA_DirectInMemory);
+
     return ABIArgInfo::getIndirect(0);
+  }
 
   // Treat an enum type as its underlying type.
   if (const EnumType *EnumTy = Ty->getAs<EnumType>())
@@ -1483,14 +1495,13 @@ class X86_64ABIInfo : public ABIInfo {
     return !getTarget().getTriple().isOSDarwin();
   }
 
-  bool HasAVX;
   // Some ABIs (e.g. X32 ABI and Native Client OS) use 32 bit pointers on
   // 64-bit hardware.
   bool Has64BitPointers;
 
 public:
-  X86_64ABIInfo(CodeGen::CodeGenTypes &CGT, bool hasavx) :
-      ABIInfo(CGT), HasAVX(hasavx),
+  X86_64ABIInfo(CodeGen::CodeGenTypes &CGT) :
+      ABIInfo(CGT),
       Has64BitPointers(CGT.getDataLayout().getPointerSize(0) == 8) {
   }
 
@@ -1514,6 +1525,10 @@ public:
 
   bool has64BitPointers() const {
     return Has64BitPointers;
+  }
+
+  bool hasAVX() const {
+    return getTarget().getABI() == "avx";
   }
 };
 
@@ -1544,10 +1559,9 @@ public:
 };
 
 class X86_64TargetCodeGenInfo : public TargetCodeGenInfo {
-  bool HasAVX;
 public:
-  X86_64TargetCodeGenInfo(CodeGen::CodeGenTypes &CGT, bool HasAVX)
-      : TargetCodeGenInfo(new X86_64ABIInfo(CGT, HasAVX)), HasAVX(HasAVX) {}
+  X86_64TargetCodeGenInfo(CodeGen::CodeGenTypes &CGT)
+      : TargetCodeGenInfo(new X86_64ABIInfo(CGT)) {}
 
   const X86_64ABIInfo &getABIInfo() const {
     return static_cast<const X86_64ABIInfo&>(TargetCodeGenInfo::getABIInfo());
@@ -1615,14 +1629,14 @@ public:
   }
 
   unsigned getOpenMPSimdDefaultAlignment(QualType) const override {
-    return HasAVX ? 32 : 16;
+    return getABIInfo().hasAVX() ? 32 : 16;
   }
 };
 
 class PS4TargetCodeGenInfo : public X86_64TargetCodeGenInfo {
 public:
-  PS4TargetCodeGenInfo(CodeGen::CodeGenTypes &CGT, bool HasAVX)
-    : X86_64TargetCodeGenInfo(CGT, HasAVX) {}
+  PS4TargetCodeGenInfo(CodeGen::CodeGenTypes &CGT)
+    : X86_64TargetCodeGenInfo(CGT) {}
 
   void getDependentLibraryOption(llvm::StringRef Lib,
                                  llvm::SmallString<24> &Opt) const override {
@@ -1687,10 +1701,11 @@ void WinX86_32TargetCodeGenInfo::SetTargetAttributes(const Decl *D,
 }
 
 class WinX86_64TargetCodeGenInfo : public TargetCodeGenInfo {
-  bool HasAVX;
+  bool hasAVX() const { return getABIInfo().getTarget().getABI() == "avx"; }
+
 public:
-  WinX86_64TargetCodeGenInfo(CodeGen::CodeGenTypes &CGT, bool HasAVX)
-    : TargetCodeGenInfo(new WinX86_64ABIInfo(CGT)), HasAVX(HasAVX) {}
+  WinX86_64TargetCodeGenInfo(CodeGen::CodeGenTypes &CGT)
+    : TargetCodeGenInfo(new WinX86_64ABIInfo(CGT)) {}
 
   void SetTargetAttributes(const Decl *D, llvm::GlobalValue *GV,
                            CodeGen::CodeGenModule &CGM) const override;
@@ -1722,7 +1737,7 @@ public:
   }
 
   unsigned getOpenMPSimdDefaultAlignment(QualType) const override {
-    return HasAVX ? 32 : 16;
+    return hasAVX() ? 32 : 16;
   }
 };
 
@@ -1911,7 +1926,7 @@ void X86_64ABIInfo::classify(QualType Ty, uint64_t OffsetBase,
       // split.
       if (OffsetBase && OffsetBase != 64)
         Hi = Lo;
-    } else if (Size == 128 || (HasAVX && isNamedArg && Size == 256)) {
+    } else if (Size == 128 || (hasAVX() && isNamedArg && Size == 256)) {
       // Arguments of 256-bits are split into four eightbyte chunks. The
       // least significant one belongs to class SSE and all the others to class
       // SSEUP. The original Lo and Hi design considers that types can't be
@@ -2133,7 +2148,7 @@ ABIArgInfo X86_64ABIInfo::getIndirectReturnResult(QualType Ty) const {
 bool X86_64ABIInfo::IsIllegalVectorType(QualType Ty) const {
   if (const VectorType *VecTy = Ty->getAs<VectorType>()) {
     uint64_t Size = getContext().getTypeSize(VecTy);
-    unsigned LargestVector = HasAVX ? 256 : 128;
+    unsigned LargestVector = hasAVX() ? 256 : 128;
     if (Size <= 64 || Size > LargestVector)
       return true;
   }
@@ -5536,6 +5551,7 @@ public:
   void computeInfo(CGFunctionInfo &FI) const override;
   llvm::Value *EmitVAArg(llvm::Value *VAListAddr, QualType Ty,
                          CodeGenFunction &CGF) const override;
+  bool shouldSignExtUnsignedType(QualType Ty) const override;
 };
 
 class MIPSTargetCodeGenInfo : public TargetCodeGenInfo {
@@ -5836,6 +5852,16 @@ llvm::Value* MipsABIInfo::EmitVAArg(llvm::Value *VAListAddr, QualType Ty,
   Builder.CreateStore(NextAddr, VAListAddrAsBPP);
   
   return AddrTyped;
+}
+
+bool MipsABIInfo::shouldSignExtUnsignedType(QualType Ty) const {
+  int TySize = getContext().getTypeSize(Ty);
+  
+  // MIPS64 ABI requires unsigned 32 bit integers to be sign extended.
+  if (Ty->isUnsignedIntegerOrEnumerationType() && TySize == 32)
+    return true;
+  
+  return false;
 }
 
 bool
@@ -7144,17 +7170,13 @@ const TargetCodeGenInfo &CodeGenModule::getTargetCodeGenInfo() {
   }
 
   case llvm::Triple::x86_64: {
-    bool HasAVX = getTarget().getABI() == "avx";
-
     switch (Triple.getOS()) {
     case llvm::Triple::Win32:
-      return *(TheTargetCodeGenInfo =
-                   new WinX86_64TargetCodeGenInfo(Types, HasAVX));
+      return *(TheTargetCodeGenInfo = new WinX86_64TargetCodeGenInfo(Types));
     case llvm::Triple::PS4:
-      return *(TheTargetCodeGenInfo = new PS4TargetCodeGenInfo(Types, HasAVX));
+      return *(TheTargetCodeGenInfo = new PS4TargetCodeGenInfo(Types));
     default:
-      return *(TheTargetCodeGenInfo =
-                   new X86_64TargetCodeGenInfo(Types, HasAVX));
+      return *(TheTargetCodeGenInfo = new X86_64TargetCodeGenInfo(Types));
     }
   }
   case llvm::Triple::hexagon:

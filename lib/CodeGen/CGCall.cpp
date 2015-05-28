@@ -1588,8 +1588,12 @@ void CodeGenModule::ConstructAttributeList(const CGFunctionInfo &FI,
     case ABIArgInfo::Extend:
       if (ParamType->isSignedIntegerOrEnumerationType())
         Attrs.addAttribute(llvm::Attribute::SExt);
-      else if (ParamType->isUnsignedIntegerOrEnumerationType())
-        Attrs.addAttribute(llvm::Attribute::ZExt);
+      else if (ParamType->isUnsignedIntegerOrEnumerationType()) {
+        if (getTypes().getABIInfo().shouldSignExtUnsignedType(ParamType))
+          Attrs.addAttribute(llvm::Attribute::SExt);
+        else
+          Attrs.addAttribute(llvm::Attribute::ZExt);
+      }
       // FALL THROUGH
     case ABIArgInfo::Direct:
       if (ArgNo == 0 && FI.isChainCall())
@@ -2692,7 +2696,7 @@ void CallArgList::allocateArgumentMemory(CodeGenFunction &CGF) {
 
   // Save the stack.
   llvm::Function *F = CGF.CGM.getIntrinsic(llvm::Intrinsic::stacksave);
-  StackBase = CGF.Builder.CreateCall(F, "inalloca.save");
+  StackBase = CGF.Builder.CreateCall(F, {}, "inalloca.save");
 
   // Control gets really tied up in landing pads, so we have to spill the
   // stacksave to an alloca to avoid violating SSA form.

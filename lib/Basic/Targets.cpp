@@ -27,6 +27,7 @@
 #include "llvm/ADT/Triple.h"
 #include "llvm/MC/MCSectionMachO.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/TargetParser.h"
 #include <algorithm>
 #include <memory>
 using namespace clang;
@@ -3595,11 +3596,8 @@ public:
 };
 } // end anonymous namespace
 
-static void addMinGWDefines(const LangOptions &Opts, MacroBuilder &Builder) {
-  Builder.defineMacro("__MSVCRT__");
-  Builder.defineMacro("__MINGW32__");
-
-  // Mingw defines __declspec(a) to __attribute__((a)).  Clang supports
+static void addCygMingDefines(const LangOptions &Opts, MacroBuilder &Builder) {
+  // Mingw and cygwin define __declspec(a) to __attribute__((a)).  Clang supports
   // __declspec natively under -fms-extensions, but we define a no-op __declspec
   // macro anyway for pre-processor compatibility.
   if (Opts.MicrosoftExt)
@@ -3620,6 +3618,12 @@ static void addMinGWDefines(const LangOptions &Opts, MacroBuilder &Builder) {
       Builder.defineMacro(Twine("__") + CC, GCCSpelling);
     }
   }
+}
+
+static void addMinGWDefines(const LangOptions &Opts, MacroBuilder &Builder) {
+  Builder.defineMacro("__MSVCRT__");
+  Builder.defineMacro("__MINGW32__");
+  addCygMingDefines(Opts, Builder);
 }
 
 namespace {
@@ -3654,6 +3658,7 @@ public:
     Builder.defineMacro("_X86_");
     Builder.defineMacro("__CYGWIN__");
     Builder.defineMacro("__CYGWIN32__");
+    addCygMingDefines(Opts, Builder);
     DefineStd(Builder, "unix", Opts);
     if (Opts.CPlusPlus)
       Builder.defineMacro("_GNU_SOURCE");
@@ -4180,8 +4185,15 @@ public:
     return false;
   }
 
+  // FIXME: This should be based on Arch attributes, not CPU names.
   void getDefaultFeatures(llvm::StringMap<bool> &Features) const override {
     StringRef ArchName = getTriple().getArchName();
+    unsigned ArchKind =
+                llvm::ARMTargetParser::parseArch(
+                llvm::ARMTargetParser::getCanonicalArchName(ArchName));
+    bool IsV8 = (ArchKind == llvm::ARM::AK_ARMV8A ||
+                 ArchKind == llvm::ARM::AK_ARMV8_1A);
+
     if (CPU == "arm1136jf-s" || CPU == "arm1176jzf-s" || CPU == "mpcore")
       Features["vfp2"] = true;
     else if (CPU == "cortex-a8" || CPU == "cortex-a9") {
@@ -4206,17 +4218,7 @@ public:
       Features["hwdiv-arm"] = true;
       Features["crc"] = true;
       Features["crypto"] = true;
-    } else if (CPU == "cortex-r5" || CPU == "cortex-r7" ||
-               // Enable the hwdiv extension for all v8a AArch32 cores by
-               // default.
-               // FIXME: Use ARMTargetParser. This would require Triple::arm/thumb
-               // to be recogniseable universally.
-               ArchName == "armv8.1a"  || ArchName == "thumbv8.1a" || //v8.1a
-               ArchName == "armebv8.1a" || ArchName == "thumbebv8.1a" ||
-               ArchName == "armv8a" || ArchName == "armv8" ||           //v8a
-               ArchName == "armebv8a" || ArchName == "armebv8" ||
-               ArchName == "thumbv8a" || ArchName == "thumbv8" ||
-               ArchName == "thumbebv8a" || ArchName == "thumbebv8") {
+    } else if (CPU == "cortex-r5" || CPU == "cortex-r7" || IsV8) {
       Features["hwdiv"] = true;
       Features["hwdiv-arm"] = true;
     } else if (CPU == "cortex-m3" || CPU == "cortex-m4" || CPU == "cortex-m7" ||
@@ -4295,9 +4297,7 @@ public:
         .Case("hwdiv-arm", HWDiv & HWDivARM)
         .Default(false);
   }
-  // FIXME: Should we actually have some table instead of these switches?
   const char *getCPUDefineSuffix(StringRef Name) const {
-    // FIXME: Use ARMTargetParser
     if(Name == "generic") {
       auto subarch = getTriple().getSubArch();
       switch (subarch) {
@@ -4308,34 +4308,32 @@ public:
       }
     }
 
-    return llvm::StringSwitch<const char *>(Name)
-        .Cases("arm8", "arm810", "4")
-        .Cases("strongarm", "strongarm110", "strongarm1100", "strongarm1110",
-               "4")
-        .Cases("arm7tdmi", "arm7tdmi-s", "arm710t", "arm720t", "arm9", "4T")
-        .Cases("arm9tdmi", "arm920", "arm920t", "arm922t", "arm940t", "4T")
-        .Case("ep9312", "4T")
-        .Cases("arm10tdmi", "arm1020t", "5T")
-        .Cases("arm9e", "arm946e-s", "arm966e-s", "arm968e-s", "5TE")
-        .Case("arm926ej-s", "5TEJ")
-        .Cases("arm10e", "arm1020e", "arm1022e", "5TE")
-        .Cases("xscale", "iwmmxt", "5TE")
-        .Case("arm1136j-s", "6J")
-        .Case("arm1136jf-s", "6")
-        .Cases("mpcorenovfp", "mpcore", "6K")
-        .Cases("arm1176jz-s", "arm1176jzf-s", "6K")
-        .Cases("arm1156t2-s", "arm1156t2f-s", "6T2")
-        .Cases("cortex-a5", "cortex-a7", "cortex-a8", "7A")
-        .Cases("cortex-a9", "cortex-a12", "cortex-a15", "cortex-a17", "krait",
-               "7A")
-        .Cases("cortex-r4", "cortex-r4f", "cortex-r5", "cortex-r7", "7R")
-        .Case("swift", "7S")
-        .Case("cyclone", "8A")
-        .Cases("sc300", "cortex-m3", "7M")
-        .Cases("cortex-m4", "cortex-m7", "7EM")
-        .Cases("sc000", "cortex-m0", "cortex-m0plus", "cortex-m1", "6M")
-        .Cases("cortex-a53", "cortex-a57", "cortex-a72", "8A")
-        .Default(nullptr);
+    unsigned ArchKind = llvm::ARMTargetParser::parseCPUArch(Name);
+    if (ArchKind == llvm::ARM::AK_INVALID)
+      return "";
+
+    // For most sub-arches, the build attribute CPU name is enough.
+    // For Cortex variants, it's slightly different.
+    switch(ArchKind) {
+    default:
+      return llvm::ARMTargetParser::getCPUAttr(ArchKind);
+    case llvm::ARM::AK_ARMV6M:
+    case llvm::ARM::AK_ARMV6SM:
+      return "6M";
+    case llvm::ARM::AK_ARMV7:
+    case llvm::ARM::AK_ARMV7A:
+      return "7A";
+    case llvm::ARM::AK_ARMV7R:
+      return "7R";
+    case llvm::ARM::AK_ARMV7M:
+      return "7M";
+    case llvm::ARM::AK_ARMV7EM:
+      return "7EM";
+    case llvm::ARM::AK_ARMV8A:
+      return "8A";
+    case llvm::ARM::AK_ARMV8_1A:
+      return "8_1A";
+    }
   }
   const char *getCPUProfile(StringRef Name) const {
     if(Name == "generic") {
@@ -4348,16 +4346,21 @@ public:
       }
     }
 
-    // FIXME: Use ARMTargetParser
-    return llvm::StringSwitch<const char *>(Name)
-        .Cases("cortex-a5", "cortex-a7", "cortex-a8", "A")
-        .Cases("cortex-a9", "cortex-a12", "cortex-a15", "cortex-a17", "krait",
-               "A")
-        .Cases("cortex-a53", "cortex-a57", "cortex-a72", "A")
-        .Cases("cortex-m3", "cortex-m4", "cortex-m0", "cortex-m0plus", "M")
-        .Cases("cortex-m1", "cortex-m7", "sc000", "sc300", "M")
-        .Cases("cortex-r4",  "cortex-r4f", "cortex-r5", "cortex-r7", "R")
-        .Default("");
+    unsigned CPUArch = llvm::ARMTargetParser::parseCPUArch(Name);
+    if (CPUArch == llvm::ARM::AK_INVALID)
+      return "";
+
+    StringRef ArchName = llvm::ARMTargetParser::getArchName(CPUArch);
+    switch(llvm::ARMTargetParser::parseArchProfile(ArchName)) {
+      case llvm::ARM::PK_A:
+        return "A";
+      case llvm::ARM::PK_R:
+        return "R";
+      case llvm::ARM::PK_M:
+        return "M";
+      default:
+        return "";
+    }
   }
   bool setCPU(const std::string &Name) override {
     if (!getCPUDefineSuffix(Name))

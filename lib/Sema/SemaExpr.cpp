@@ -6528,6 +6528,8 @@ ExprResult Sema::ActOnConditionalOp(SourceLocation QuestionLoc,
   DiagnoseConditionalPrecedence(*this, QuestionLoc, Cond.get(), LHS.get(),
                                 RHS.get());
 
+  CheckBoolLikeConversion(Cond.get(), QuestionLoc);
+
   if (!commonExpr)
     return new (Context)
         ConditionalOperator(Cond.get(), QuestionLoc, LHS.get(), ColonLoc,
@@ -9198,6 +9200,9 @@ static bool CheckForModifiableLvalue(Expr *E, SourceLocation Loc, Sema &S) {
     }
 
     break;
+  case Expr::MLV_ConstAddrSpace:
+    DiagnoseConstAssignment(S, E, Loc);
+    return true;
   case Expr::MLV_ArrayType:
   case Expr::MLV_ArrayTemporary:
     DiagID = diag::err_typecheck_array_not_modifiable_lvalue;
