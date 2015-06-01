@@ -753,12 +753,13 @@ static void getARMTargetFeatures(const Driver &D, const llvm::Triple &Triple,
   if (const Arg *A = Args.getLastArg(options::OPT_mhwdiv_EQ))
     getARMHWDivFeatures(D, A, Args, Features);
 
-  // Check if -march is valid by checking if it can be canonicalised. getARMArch
-  // is used here instead of just checking the -march value in order to handle
-  // -march=native correctly.
+  // Check if -march is valid by checking if it can be canonicalised and parsed.
+  // getARMArch is used here instead of just checking the -march value in order
+  // to handle -march=native correctly.
   if (const Arg *A = Args.getLastArg(options::OPT_march_EQ)) {
     StringRef Arch = arm::getARMArch(Args, Triple);
-    if (llvm::ARMTargetParser::getCanonicalArchName(Arch).empty())
+    Arch = llvm::ARMTargetParser::getCanonicalArchName(Arch);
+    if (llvm::ARMTargetParser::parseArch(Arch) == llvm::ARM::AK_INVALID)
       D.Diag(diag::err_drv_clang_unsupported) << A->getAsString(Args);
   }
 
@@ -2293,7 +2294,7 @@ enum OpenMPRuntimeKind {
   /// runtime library itself.
   OMPRT_GOMP,
 
-  /// The legacy name for the LLVM OpenMP runtim from when it was the Intel
+  /// The legacy name for the LLVM OpenMP runtime from when it was the Intel
   /// OpenMP runtime. We support this mode for users with existing dependencies
   /// on this runtime library name.
   OMPRT_IOMP5
@@ -2301,7 +2302,8 @@ enum OpenMPRuntimeKind {
 }
 
 /// Compute the desired OpenMP runtime from the flag provided.
-static OpenMPRuntimeKind getOpenMPRuntime(const ToolChain &TC, const ArgList &Args) {
+static OpenMPRuntimeKind getOpenMPRuntime(const ToolChain &TC,
+                                          const ArgList &Args) {
   StringRef RuntimeName(CLANG_DEFAULT_OPENMP_RUNTIME);
 
   const Arg *A = Args.getLastArg(options::OPT_fopenmp_EQ);
@@ -5606,7 +5608,7 @@ static void constructHexagonLinkArgs(Compilation &C, const JobAction &JA,
   for (arg_iterator it = Args.filtered_begin(options::OPT_moslib_EQ),
          ie = Args.filtered_end(); it != ie; ++it) {
     (*it)->claim();
-    oslibs.push_back((*it)->getValue());
+    oslibs.emplace_back((*it)->getValue());
     hasStandalone = hasStandalone || (oslibs.back() == "standalone");
   }
   if (oslibs.empty()) {

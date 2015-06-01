@@ -275,6 +275,9 @@ private:
     if (Left->is(TT_Unknown)) {
       if (StartsObjCMethodExpr) {
         Left->Type = TT_ObjCMethodExpr;
+      } else if (Style.Language == FormatStyle::LK_JavaScript && Parent &&
+                 Parent->isOneOf(tok::l_brace, tok::comma)) {
+        Left->Type = TT_JsComputedPropertyName;
       } else if (Parent && Parent->isOneOf(tok::at, tok::equal, tok::comma)) {
         Left->Type = TT_ArrayInitializerLSquare;
       } else {
@@ -1318,7 +1321,7 @@ private:
       else if (Current->is(TT_LambdaArrow))
         return prec::Comma;
       else if (Current->isOneOf(tok::semi, TT_InlineASMColon,
-                                TT_SelectorName) ||
+                                TT_SelectorName, TT_JsComputedPropertyName) ||
                (Current->is(tok::comment) && NextNonComment &&
                 NextNonComment->is(TT_SelectorName)))
         return 0;

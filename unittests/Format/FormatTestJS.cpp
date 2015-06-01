@@ -151,6 +151,14 @@ TEST_F(FormatTestJS, ContainerLiterals) {
   // Arrow functions in object literals.
   verifyFormat("var x = {y: (a) => { return a; }};");
   verifyFormat("var x = {y: (a) => a};");
+
+  // Computed keys.
+  verifyFormat("var x = {[a]: 1, b: 2, [c]: 3};");
+  verifyFormat("var x = {\n"
+               "  [a]: 1,\n"
+               "  b: 2,\n"
+               "  [c]: 3,\n"
+               "};");
 }
 
 TEST_F(FormatTestJS, MethodsInObjectLiterals) {
