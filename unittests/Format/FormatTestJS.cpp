@@ -151,6 +151,14 @@ TEST_F(FormatTestJS, ContainerLiterals) {
   // Arrow functions in object literals.
   verifyFormat("var x = {y: (a) => { return a; }};");
   verifyFormat("var x = {y: (a) => a};");
+
+  // Computed keys.
+  verifyFormat("var x = {[a]: 1, b: 2, [c]: 3};");
+  verifyFormat("var x = {\n"
+               "  [a]: 1,\n"
+               "  b: 2,\n"
+               "  [c]: 3,\n"
+               "};");
 }
 
 TEST_F(FormatTestJS, MethodsInObjectLiterals) {
@@ -244,6 +252,22 @@ TEST_F(FormatTestJS, ArrayLiterals) {
                "  new SomeThingAAAAAAAAAAAA(),\n"
                "  new SomeThingBBBBBBBBB()\n"
                "];");
+  verifyFormat("var someVariable = SomeFuntion([\n"
+               "  aaaaaaaaaaaaaaaaaaaaaaaaaaa,\n"
+               "  bbbbbbbbbbbbbbbbbbbbbbbbbbb,\n"
+               "  ccccccccccccccccccccccccccc\n"
+               "]);");
+  verifyFormat("var someVariable = SomeFuntion([\n"
+               "  [aaaaaaaaaaaaaaaaaaaaaa, bbbbbbbbbbbbbbbbbbbbbb],\n"
+               "]);",
+               getGoogleJSStyleWithColumns(51));
+  verifyFormat("var someVariable = SomeFuntion(aaaa, [\n"
+               "  aaaaaaaaaaaaaaaaaaaaaaaaaaa,\n"
+               "  bbbbbbbbbbbbbbbbbbbbbbbbbbb,\n"
+               "  ccccccccccccccccccccccccccc\n"
+               "]);");
+
+  verifyFormat("someFunction([], {a: a});");
 }
 
 TEST_F(FormatTestJS, FunctionLiterals) {
@@ -329,6 +353,14 @@ TEST_F(FormatTestJS, FunctionLiterals) {
                "               doSomething();\n"
                "               doSomething();\n"
                "             }, this));");
+
+  // FIXME: This is bad, we should be wrapping before "function() {".
+  verifyFormat("someFunction(function() {\n"
+               "  doSomething();  // break\n"
+               "})\n"
+               "    .doSomethingElse(\n"
+               "        // break\n"
+               "        );");
 }
 
 TEST_F(FormatTestJS, InliningFunctionLiterals) {
@@ -447,7 +479,14 @@ TEST_F(FormatTestJS, ArrowFunctions) {
                "  return a;\n"
                "};");
   verifyFormat("var x = (a) => a;");
-  verifyFormat("var x = (a) => a;");
+
+  // FIXME: This is bad, we should be wrapping before "() => {".
+  verifyFormat("someFunction(() => {\n"
+               "  doSomething();  // break\n"
+               "})\n"
+               "    .doSomethingElse(\n"
+               "        // break\n"
+               "        );");
 }
 
 TEST_F(FormatTestJS, ReturnStatements) {

@@ -275,7 +275,13 @@ private:
     if (Left->is(TT_Unknown)) {
       if (StartsObjCMethodExpr) {
         Left->Type = TT_ObjCMethodExpr;
-      } else if (Parent && Parent->isOneOf(tok::at, tok::equal, tok::comma)) {
+      } else if (Style.Language == FormatStyle::LK_JavaScript && Parent &&
+                 Contexts.back().ContextKind == tok::l_brace &&
+                 Parent->isOneOf(tok::l_brace, tok::comma)) {
+        Left->Type = TT_JsComputedPropertyName;
+      } else if (Parent &&
+                 Parent->isOneOf(tok::at, tok::equal, tok::comma, tok::l_paren,
+                                 tok::l_square, tok::question, tok::colon)) {
         Left->Type = TT_ArrayInitializerLSquare;
       } else {
         BindingIncrease = 10;
@@ -746,8 +752,8 @@ private:
     // recovered from an error (e.g. failure to find the matching >).
     if (!CurrentToken->isOneOf(TT_LambdaLSquare, TT_ForEachMacro,
                                TT_FunctionLBrace, TT_ImplicitStringLiteral,
-                               TT_InlineASMBrace, TT_RegexLiteral,
-                               TT_TrailingReturnArrow))
+                               TT_InlineASMBrace, TT_JsFatArrow,
+                               TT_RegexLiteral, TT_TrailingReturnArrow))
       CurrentToken->Type = TT_Unknown;
     CurrentToken->Role.reset();
     CurrentToken->MatchingParen = nullptr;
@@ -1318,7 +1324,7 @@ private:
       else if (Current->is(TT_LambdaArrow))
         return prec::Comma;
       else if (Current->isOneOf(tok::semi, TT_InlineASMColon,
-                                TT_SelectorName) ||
+                                TT_SelectorName, TT_JsComputedPropertyName) ||
                (Current->is(tok::comment) && NextNonComment &&
                 NextNonComment->is(TT_SelectorName)))
         return 0;

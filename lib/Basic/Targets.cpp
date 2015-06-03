@@ -389,7 +389,7 @@ protected:
     if (Triple.getEnvironment() == llvm::Triple::Android) {
       Builder.defineMacro("__ANDROID__", "1");
       unsigned Maj, Min, Rev;
-      Triple.getOSVersion(Maj, Min, Rev);
+      Triple.getEnvironmentVersion(Maj, Min, Rev);
       this->PlatformName = "android";
       this->PlatformMinVersion = VersionTuple(Maj, Min, Rev);
     }
@@ -4322,6 +4322,7 @@ public:
       return "6M";
     case llvm::ARM::AK_ARMV7:
     case llvm::ARM::AK_ARMV7A:
+    case llvm::ARM::AK_ARMV7S:
       return "7A";
     case llvm::ARM::AK_ARMV7R:
       return "7R";
