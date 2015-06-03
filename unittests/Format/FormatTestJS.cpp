@@ -252,6 +252,11 @@ TEST_F(FormatTestJS, ArrayLiterals) {
                "  new SomeThingAAAAAAAAAAAA(),\n"
                "  new SomeThingBBBBBBBBB()\n"
                "];");
+  verifyFormat("return [\n"
+               "  aaaaaaaaaaaaaaaaaaaaaaaaaaa,\n"
+               "  bbbbbbbbbbbbbbbbbbbbbbbbbbb,\n"
+               "  ccccccccccccccccccccccccccc\n"
+               "];");
   verifyFormat("var someVariable = SomeFuntion([\n"
                "  aaaaaaaaaaaaaaaaaaaaaaaaaaa,\n"
                "  bbbbbbbbbbbbbbbbbbbbbbbbbbb,\n"
@@ -479,6 +484,7 @@ TEST_F(FormatTestJS, ArrowFunctions) {
                "  return a;\n"
                "};");
   verifyFormat("var x = (a) => a;");
+  verifyFormat("return () => [];");
 
   // FIXME: This is bad, we should be wrapping before "() => {".
   verifyFormat("someFunction(() => {\n"
