@@ -248,10 +248,9 @@ TEST_F(FormatTestJS, FormatsFreestandingFunctions) {
 }
 
 TEST_F(FormatTestJS, ArrayLiterals) {
-  verifyFormat("var aaaaa: List<SomeThing> = [\n"
-               "  new SomeThingAAAAAAAAAAAA(),\n"
-               "  new SomeThingBBBBBBBBB()\n"
-               "];");
+  verifyFormat(
+      "var aaaaa: List<SomeThing> =\n"
+      "    [new SomeThingAAAAAAAAAAAA(), new SomeThingBBBBBBBBB()];");
   verifyFormat("return [\n"
                "  aaaaaaaaaaaaaaaaaaaaaaaaaaa,\n"
                "  bbbbbbbbbbbbbbbbbbbbbbbbbbb,\n"
@@ -485,6 +484,12 @@ TEST_F(FormatTestJS, ArrowFunctions) {
                "};");
   verifyFormat("var x = (a) => a;");
   verifyFormat("return () => [];");
+  verifyFormat("var aaaaaaaaaaaaaaaaaaaa = {\n"
+               "  aaaaaaaaaaaaaaaaaaaaaaaaaaaa:\n"
+               "      (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,\n"
+               "       aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa) =>\n"
+               "              aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,\n"
+               "};");
 
   // FIXME: This is bad, we should be wrapping before "() => {".
   verifyFormat("someFunction(() => {\n"
@@ -631,6 +636,15 @@ TEST_F(FormatTestJS, ClassDeclarations) {
   verifyFormat("class C {\n  static x(): string { return 'asd'; }\n}");
   verifyFormat("class C extends P implements I {}");
   verifyFormat("class C extends p.P implements i.I {}");
+
+  // ':' is not a type declaration here.
+  verifyFormat("class X {\n"
+               "  subs = {\n"
+               "    'b': {\n"
+               "      'c': 1,\n"
+               "    },\n"
+               "  };\n"
+               "}");
 }
 
 TEST_F(FormatTestJS, InterfaceDeclarations) {
