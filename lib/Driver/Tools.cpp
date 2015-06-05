@@ -758,7 +758,6 @@ static void getARMTargetFeatures(const Driver &D, const llvm::Triple &Triple,
   // to handle -march=native correctly.
   if (const Arg *A = Args.getLastArg(options::OPT_march_EQ)) {
     StringRef Arch = arm::getARMArch(Args, Triple);
-    Arch = llvm::ARMTargetParser::getCanonicalArchName(Arch);
     if (llvm::ARMTargetParser::parseArch(Arch) == llvm::ARM::AK_INVALID)
       D.Diag(diag::err_drv_clang_unsupported) << A->getAsString(Args);
   }
@@ -767,7 +766,7 @@ static void getARMTargetFeatures(const Driver &D, const llvm::Triple &Triple,
   // the only function we have to check if a cpu is valid is
   // getLLVMArchSuffixForARM which also needs an architecture.
   if (const Arg *A = Args.getLastArg(options::OPT_mcpu_EQ)) {
-    StringRef CPU = arm::getARMTargetCPU(Args, Triple);
+    std::string CPU = arm::getARMTargetCPU(Args, Triple);
     StringRef Arch = arm::getARMArch(Args, Triple);
     if (strcmp(arm::getLLVMArchSuffixForARM(CPU, Arch), "") == 0)
       D.Diag(diag::err_drv_clang_unsupported) << A->getAsString(Args);
@@ -2883,7 +2882,6 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
     switch (getToolChain().getArch()) {
     case llvm::Triple::mips64:
     case llvm::Triple::mips64el:
-    case llvm::Triple::sparc:
     case llvm::Triple::sparcel:
     case llvm::Triple::x86:
     case llvm::Triple::x86_64:
@@ -2891,6 +2889,7 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
       break;
 
     case llvm::Triple::ppc:
+    case llvm::Triple::sparc:
     case llvm::Triple::sparcv9:
       IsPICLevelTwo = true; // "-fPIE"
       break;
@@ -5748,12 +5747,12 @@ const char *arm::getARMCPUForMArch(const ArgList &Args,
 }
 
 /// getARMTargetCPU - Get the (LLVM) name of the ARM cpu we are targeting.
-StringRef arm::getARMTargetCPU(const ArgList &Args,
+std::string arm::getARMTargetCPU(const ArgList &Args,
                                const llvm::Triple &Triple) {
   // FIXME: Warn on inconsistent use of -mcpu and -march.
   // If we have -mcpu=, use that.
   if (Arg *A = Args.getLastArg(options::OPT_mcpu_EQ)) {
-    StringRef MCPU = A->getValue();
+    std::string MCPU = StringRef(A->getValue()).lower();
     // Handle -mcpu=native.
     if (MCPU == "native")
       return llvm::sys::getHostCPUName();
@@ -5768,12 +5767,9 @@ StringRef arm::getARMTargetCPU(const ArgList &Args,
 /// CPU  (or Arch, if CPU is generic).
 // FIXME: This is redundant with -mcpu, why does LLVM use this.
 const char *arm::getLLVMArchSuffixForARM(StringRef CPU, StringRef Arch) {
-  if (CPU == "generic") {
-    unsigned ArchKind = llvm::ARMTargetParser::parseArch(
-                        llvm::ARMTargetParser::getCanonicalArchName(Arch));
-    if (ArchKind == llvm::ARM::AK_ARMV8_1A)
-      return "v8.1a";
-  }
+  if (CPU == "generic" &&
+      llvm::ARMTargetParser::parseArch(Arch) == llvm::ARM::AK_ARMV8_1A)
+    return "v8.1a";
 
   unsigned ArchKind = llvm::ARMTargetParser::parseCPUArch(CPU);
   if (ArchKind == llvm::ARM::AK_INVALID)
@@ -7255,7 +7251,7 @@ void netbsd::Assemble::ConstructJob(Compilation &C, const JobAction &JA,
   case llvm::Triple::armeb:
   case llvm::Triple::thumb:
   case llvm::Triple::thumbeb: {
-    std::string MArch(arm::getARMTargetCPU(Args, getToolChain().getTriple()));
+    std::string MArch = arm::getARMTargetCPU(Args, getToolChain().getTriple());
     CmdArgs.push_back(Args.MakeArgString("-mcpu=" + MArch));
     break;
   }
@@ -7602,7 +7598,7 @@ void gnutools::Assemble::ConstructJob(Compilation &C, const JobAction &JA,
     // march from being picked in the absence of a cpu flag.
     Arg *A;
     if ((A = Args.getLastArg(options::OPT_mcpu_EQ)) &&
-      StringRef(A->getValue()) == "krait")
+      StringRef(A->getValue()).lower() == "krait")
         CmdArgs.push_back("-march=armv7-a");
     else
       Args.AddLastArg(CmdArgs, options::OPT_mcpu_EQ);
