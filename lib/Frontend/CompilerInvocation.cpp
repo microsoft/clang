@@ -425,7 +425,7 @@ static bool ParseCodeGenArgs(CodeGenOptions &Opts, ArgList &Args, InputKind IK,
   Opts.Autolink = !Args.hasArg(OPT_fno_autolink);
   Opts.SampleProfileFile = Args.getLastArgValue(OPT_fprofile_sample_use_EQ);
   Opts.ProfileInstrGenerate = Args.hasArg(OPT_fprofile_instr_generate) ||
-      Args.hasArg(OPT_fprofile_instr_generate_EQ);;
+      Args.hasArg(OPT_fprofile_instr_generate_EQ);
   Opts.InstrProfileOutput = Args.getLastArgValue(OPT_fprofile_instr_generate_EQ);
   Opts.InstrProfileInput = Args.getLastArgValue(OPT_fprofile_instr_use_EQ);
   Opts.CoverageMapping = Args.hasArg(OPT_fcoverage_mapping);
@@ -484,6 +484,8 @@ static bool ParseCodeGenArgs(CodeGenOptions &Opts, ArgList &Args, InputKind IK,
                                          OPT_fno_unique_section_names, true);
 
   Opts.MergeFunctions = Args.hasArg(OPT_fmerge_functions);
+
+  Opts.PrepareForLTO = Args.hasArg(OPT_flto);
 
   Opts.MSVolatile = Args.hasArg(OPT_fms_volatile);
 
