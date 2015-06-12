@@ -173,14 +173,14 @@ void f() {
 // CHECK64: }
 
 // CHECK32: define linkonce_odr x86_thiscallcc void @"\01??_9C@@$BBE@AE"(%struct.C* %this, ...) {{.*}} comdat align 2 {
-// CHECK32: [[VPTR:%.*]] = getelementptr inbounds void (%struct.C*, ...)*, void (%struct.C*, ...)** %vtable, i64 5
+// CHECK32: [[VPTR:%.*]] = getelementptr inbounds void (%struct.C*, ...)*, void (%struct.C*, ...)** %{{.*}}, i64 5
 // CHECK32: [[CALLEE:%.*]] = load void (%struct.C*, ...)*, void (%struct.C*, ...)** [[VPTR]]
 // CHECK32: musttail call x86_thiscallcc void (%struct.C*, ...) [[CALLEE]](%struct.C* %{{.*}}, ...)
 // CHECK32: ret void
 // CHECK32: }
 
 // CHECK64: define linkonce_odr void @"\01??_9C@@$BCI@AA"(%struct.C* %this, ...) {{.*}} comdat align 2 {
-// CHECK64: [[VPTR:%.*]] = getelementptr inbounds void (%struct.C*, ...)*, void (%struct.C*, ...)** %vtable, i64 5
+// CHECK64: [[VPTR:%.*]] = getelementptr inbounds void (%struct.C*, ...)*, void (%struct.C*, ...)** %{{.*}}, i64 5
 // CHECK64: [[CALLEE:%.*]] = load void (%struct.C*, ...)*, void (%struct.C*, ...)** [[VPTR]]
 // CHECK64: musttail call void (%struct.C*, ...) [[CALLEE]](%struct.C* %{{.*}}, ...)
 // CHECK64: ret void

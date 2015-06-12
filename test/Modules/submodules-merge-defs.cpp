@@ -13,8 +13,8 @@
 
 A pre_a; // expected-error {{must be imported}} expected-error {{must use 'struct'}}
 // expected-note@defs.h:1 +{{here}}
-// FIXME: We should warn that use_a is being used without being imported.
-int pre_use_a = use_a(pre_a); // expected-error {{'A' must be imported}}
+// expected-note@defs.h:2 +{{here}}
+int pre_use_a = use_a(pre_a); // expected-error {{'A' must be imported}} expected-error {{'use_a' must be imported}}
 
 B::Inner2 pre_bi; // expected-error +{{must be imported}}
 // expected-note@defs.h:4 +{{here}}
@@ -39,6 +39,9 @@ int pre_e = E(0); // expected-error {{must be imported}}
 int pre_ff = F<int>().f(); // expected-error +{{must be imported}}
 int pre_fg = F<int>().g<int>(); // expected-error +{{must be imported}}
 // expected-note@defs.h:26 +{{here}}
+
+J<> pre_j; // expected-error {{must be imported}} expected-error {{too few}}
+// expected-note@defs.h:49 +{{here}}
 
 // Make definitions from second module visible.
 #ifdef TEXTUAL
@@ -65,3 +68,6 @@ int post_fg = F<char>().g<int>();
 // expected-error@-5 {{no matching member function}}
 // expected-note@defs.h:34 {{substitution failure}}
 #endif
+J<> post_j;
+template<typename T, int N, template<typename> class K> struct J;
+J<> post_j2;

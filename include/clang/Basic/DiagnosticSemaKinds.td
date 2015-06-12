@@ -1974,8 +1974,11 @@ def err_attribute_too_few_arguments : Error<
 def err_attribute_invalid_vector_type : Error<"invalid vector element type %0">;
 def err_attribute_bad_neon_vector_size : Error<
   "Neon vector size must be 64 or 128 bits">;
-def err_attribute_unsupported : Error<
-  "%0 attribute is not supported for this target">;
+def warn_unsupported_target_attribute
+    : Warning<"Ignoring unsupported %0 in the target attribute string">,
+    InGroup<IgnoredAttributes>;
+def err_attribute_unsupported
+    : Error<"%0 attribute is not supported for this target">;
 // The err_*_attribute_argument_not_int are seperate because they're used by
 // VerifyIntegerConstantExpression.
 def err_aligned_attribute_argument_not_int : Error<
@@ -2249,7 +2252,7 @@ def warn_attribute_dllimport_static_field_definition : Warning<
   InGroup<DiagGroup<"dllimport-static-field-def">>;
 def warn_attribute_dllexport_explicit_instantiation_decl : Warning<
   "explicit instantiation declaration should not be 'dllexport'">,
-  InGroup<DiagGroup<"dllexport-explicit-instantation-decl">>;
+  InGroup<DiagGroup<"dllexport-explicit-instantiation-decl">>;
 def warn_invalid_initializer_from_system_header : Warning<
   "invalid constructor form class in system header, should not be explicit">,
   InGroup<DiagGroup<"invalid-initializer-from-system-header">>;

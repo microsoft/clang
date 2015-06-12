@@ -558,7 +558,7 @@ private:
       break;
     case tok::question:
       if (Style.Language == FormatStyle::LK_JavaScript && Tok->Next &&
-          Tok->Next->isOneOf(tok::semi, tok::colon, tok::r_paren,
+          Tok->Next->isOneOf(tok::semi, tok::comma, tok::colon, tok::r_paren,
                              tok::r_brace)) {
         // Question marks before semicolons, colons, etc. indicate optional
         // types (fields, parameters), e.g.
@@ -1081,7 +1081,7 @@ private:
     // there is also an identifier before the ().
     else if (LeftOfParens && Tok.Next &&
              (LeftOfParens->Tok.getIdentifierInfo() == nullptr ||
-              LeftOfParens->is(tok::kw_return)) &&
+              LeftOfParens->isOneOf(tok::kw_return, tok::kw_case)) &&
              !LeftOfParens->isOneOf(TT_OverloadedOperator, tok::at,
                                     TT_TemplateCloser)) {
       if (Tok.Next->isOneOf(tok::identifier, tok::numeric_constant)) {
