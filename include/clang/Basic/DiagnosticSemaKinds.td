@@ -108,6 +108,7 @@ def err_ice_ambiguous_conversion : Error<
 def err_ice_too_large : Error<
   "integer constant expression evaluates to value %0 that cannot be "
   "represented in a %1-bit %select{signed|unsigned}2 integer type">;
+def err_expr_not_string_literal : Error<"expression is not a string literal">;
 
 // Semantic analysis of constant literals.
 def ext_predef_outside_function : Warning<
@@ -424,6 +425,7 @@ def warn_redecl_library_builtin : Warning<
   "incompatible redeclaration of library function %0">,
   InGroup<DiagGroup<"incompatible-library-redeclaration">>;
 def err_builtin_definition : Error<"definition of builtin function %0">;
+def err_arm_invalid_specialreg : Error<"invalid special register for builtin">;
 def warn_builtin_unknown : Warning<"use of unknown builtin %0">,
   InGroup<ImplicitFunctionDeclare>, DefaultError;
 def warn_dyn_class_memaccess : Warning<
@@ -7635,9 +7637,11 @@ def err_module_private_local_class : Error<
   "local %select{struct|interface|union|class|enum}0 cannot be declared "
   "__module_private__">;
 def err_module_private_declaration : Error<
-  "declaration of %0 must be imported from module '%1' before it is required">;
-def err_module_private_definition : Error<
-  "definition of %0 must be imported from module '%1' before it is required">;
+  "%select{declaration|definition}0 of %1 must be imported from "
+  "module '%2' before it is required">;
+def err_module_private_declaration_multiple : Error<
+  "%select{declaration|definition}0 of %1 must be imported from "
+  "one of the following modules before it is required:%2">;
 def err_module_import_in_extern_c : Error<
   "import of C++ module '%0' appears within extern \"C\" language linkage "
   "specification">;
