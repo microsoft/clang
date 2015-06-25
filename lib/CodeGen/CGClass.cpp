@@ -29,13 +29,12 @@
 using namespace clang;
 using namespace CodeGen;
 
-static CharUnits
-ComputeNonVirtualBaseClassOffset(ASTContext &Context,
-                                 const CXXRecordDecl *DerivedClass,
-                                 CastExpr::path_const_iterator Start,
-                                 CastExpr::path_const_iterator End) {
+CharUnits CodeGenModule::computeNonVirtualBaseClassOffset(
+    const CXXRecordDecl *DerivedClass, CastExpr::path_const_iterator Start,
+    CastExpr::path_const_iterator End) {
   CharUnits Offset = CharUnits::Zero();
 
+  const ASTContext &Context = getContext();
   const CXXRecordDecl *RD = DerivedClass;
 
   for (CastExpr::path_const_iterator I = Start; I != End; ++I) {
@@ -64,8 +63,7 @@ CodeGenModule::GetNonVirtualBaseClassOffset(const CXXRecordDecl *ClassDecl,
   assert(PathBegin != PathEnd && "Base path should not be empty!");
 
   CharUnits Offset =
-    ComputeNonVirtualBaseClassOffset(getContext(), ClassDecl,
-                                     PathBegin, PathEnd);
+      computeNonVirtualBaseClassOffset(ClassDecl, PathBegin, PathEnd);
   if (Offset.isZero())
     return nullptr;
 
@@ -158,9 +156,8 @@ llvm::Value *CodeGenFunction::GetAddressOfBaseClass(
   // Compute the static offset of the ultimate destination within its
   // allocating subobject (the virtual base, if there is one, or else
   // the "complete" object that we see).
-  CharUnits NonVirtualOffset =
-    ComputeNonVirtualBaseClassOffset(getContext(), VBase ? VBase : Derived,
-                                     Start, PathEnd);
+  CharUnits NonVirtualOffset = CGM.computeNonVirtualBaseClassOffset(
+      VBase ? VBase : Derived, Start, PathEnd);
 
   // If there's a virtual step, we can sometimes "devirtualize" it.
   // For now, that's limited to when the derived type is final.
@@ -1297,6 +1294,10 @@ HasTrivialDestructorBody(ASTContext &Context,
   if (BaseClassDecl->hasTrivialDestructor())
     return true;
 
+  // Give up if the destructor is not accessible.
+  if (!BaseClassDecl->getDestructor())
+    return false;
+
   if (!BaseClassDecl->getDestructor()->hasTrivialBody())
     return false;
 
@@ -2134,17 +2135,21 @@ LeastDerivedClassWithSameLayout(const CXXRecordDecl *RD) {
 }
 
 void CodeGenFunction::EmitVTablePtrCheckForCall(const CXXMethodDecl *MD,
-                                                llvm::Value *VTable) {
+                                                llvm::Value *VTable,
+                                                CFITypeCheckKind TCK,
+                                                SourceLocation Loc) {
   const CXXRecordDecl *ClassDecl = MD->getParent();
   if (!SanOpts.has(SanitizerKind::CFICastStrict))
     ClassDecl = LeastDerivedClassWithSameLayout(ClassDecl);
 
-  EmitVTablePtrCheck(ClassDecl, VTable);
+  EmitVTablePtrCheck(ClassDecl, VTable, TCK, Loc);
 }
 
 void CodeGenFunction::EmitVTablePtrCheckForCast(QualType T,
                                                 llvm::Value *Derived,
-                                                bool MayBeNull) {
+                                                bool MayBeNull,
+                                                CFITypeCheckKind TCK,
+                                                SourceLocation Loc) {
   if (!getLangOpts().CPlusPlus)
     return;
 
@@ -2184,7 +2189,7 @@ void CodeGenFunction::EmitVTablePtrCheckForCast(QualType T,
   }
 
   llvm::Value *VTable = GetVTablePtr(Derived, Int8PtrTy);
-  EmitVTablePtrCheck(ClassDecl, VTable);
+  EmitVTablePtrCheck(ClassDecl, VTable, TCK, Loc);
 
   if (MayBeNull) {
     Builder.CreateBr(ContBlock);
@@ -2193,10 +2198,14 @@ void CodeGenFunction::EmitVTablePtrCheckForCast(QualType T,
 }
 
 void CodeGenFunction::EmitVTablePtrCheck(const CXXRecordDecl *RD,
-                                         llvm::Value *VTable) {
+                                         llvm::Value *VTable,
+                                         CFITypeCheckKind TCK,
+                                         SourceLocation Loc) {
   // FIXME: Add blacklisting scheme.
   if (RD->isInStdNamespace())
     return;
+
+  SanitizerScope SanScope(this);
 
   std::string OutName;
   llvm::raw_string_ostream Out(OutName);
@@ -2205,20 +2214,34 @@ void CodeGenFunction::EmitVTablePtrCheck(const CXXRecordDecl *RD,
   llvm::Value *BitSetName = llvm::MetadataAsValue::get(
       getLLVMContext(), llvm::MDString::get(getLLVMContext(), Out.str()));
 
-  llvm::Value *BitSetTest = Builder.CreateCall(
-      CGM.getIntrinsic(llvm::Intrinsic::bitset_test),
-      {Builder.CreateBitCast(VTable, CGM.Int8PtrTy), BitSetName});
+  llvm::Value *CastedVTable = Builder.CreateBitCast(VTable, Int8PtrTy);
+  llvm::Value *BitSetTest =
+      Builder.CreateCall(CGM.getIntrinsic(llvm::Intrinsic::bitset_test),
+                         {CastedVTable, BitSetName});
 
-  llvm::BasicBlock *ContBlock = createBasicBlock("vtable.check.cont");
-  llvm::BasicBlock *TrapBlock = createBasicBlock("vtable.check.trap");
+  SanitizerMask M;
+  switch (TCK) {
+  case CFITCK_VCall:
+    M = SanitizerKind::CFIVCall;
+    break;
+  case CFITCK_NVCall:
+    M = SanitizerKind::CFINVCall;
+    break;
+  case CFITCK_DerivedCast:
+    M = SanitizerKind::CFIDerivedCast;
+    break;
+  case CFITCK_UnrelatedCast:
+    M = SanitizerKind::CFIUnrelatedCast;
+    break;
+  }
 
-  Builder.CreateCondBr(BitSetTest, ContBlock, TrapBlock);
-
-  EmitBlock(TrapBlock);
-  Builder.CreateCall(CGM.getIntrinsic(llvm::Intrinsic::trap), {});
-  Builder.CreateUnreachable();
-
-  EmitBlock(ContBlock);
+  llvm::Constant *StaticData[] = {
+    EmitCheckSourceLocation(Loc),
+    EmitCheckTypeDescriptor(QualType(RD->getTypeForDecl(), 0)),
+    llvm::ConstantInt::get(Int8Ty, TCK),
+  };
+  EmitCheck(std::make_pair(BitSetTest, M), "cfi_bad_type", StaticData,
+            CastedVTable);
 }
 
 // FIXME: Ideally Expr::IgnoreParenNoopCasts should do this, but it doesn't do

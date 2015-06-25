@@ -42,10 +42,6 @@ using namespace llvm::opt;
 MachO::MachO(const Driver &D, const llvm::Triple &Triple,
                        const ArgList &Args)
   : ToolChain(D, Triple, Args) {
-  getProgramPaths().push_back(getDriver().getInstalledDir());
-  if (getDriver().getInstalledDir() != getDriver().Dir)
-    getProgramPaths().push_back(getDriver().Dir);
-
   // We expect 'as', 'ld', etc. to be adjacent to our install dir.
   getProgramPaths().push_back(getDriver().getInstalledDir());
   if (getDriver().getInstalledDir() != getDriver().Dir)
@@ -53,28 +49,8 @@ MachO::MachO(const Driver &D, const llvm::Triple &Triple,
 }
 
 /// Darwin - Darwin tool chain for i386 and x86_64.
-Darwin::Darwin(const Driver & D, const llvm::Triple & Triple,
-               const ArgList & Args)
-  : MachO(D, Triple, Args), TargetInitialized(false) {
-  // Compute the initial Darwin version from the triple
-  unsigned Major, Minor, Micro;
-  if (!Triple.getMacOSXVersion(Major, Minor, Micro))
-    getDriver().Diag(diag::err_drv_invalid_darwin_version) <<
-      Triple.getOSName();
-  llvm::raw_string_ostream(MacosxVersionMin)
-    << Major << '.' << Minor << '.' << Micro;
-
-  // FIXME: DarwinVersion is only used to find GCC's libexec directory.
-  // It should be removed when we stop supporting that.
-  DarwinVersion[0] = Minor + 4;
-  DarwinVersion[1] = Micro;
-  DarwinVersion[2] = 0;
-
-  // Compute the initial iOS version from the triple
-  Triple.getiOSVersion(Major, Minor, Micro);
-  llvm::raw_string_ostream(iOSVersionMin)
-    << Major << '.' << Minor << '.' << Micro;
-}
+Darwin::Darwin(const Driver &D, const llvm::Triple &Triple, const ArgList &Args)
+    : MachO(D, Triple, Args), TargetInitialized(false) {}
 
 types::ID MachO::LookupTypeForExtension(const char *Ext) const {
   types::ID Ty = types::lookupTypeForExtension(Ext);
@@ -235,18 +211,15 @@ Tool *MachO::getTool(Action::ActionClass AC) const {
   }
 }
 
-Tool *MachO::buildLinker() const {
-  return new tools::darwin::Link(*this);
-}
+Tool *MachO::buildLinker() const { return new tools::darwin::Linker(*this); }
 
 Tool *MachO::buildAssembler() const {
-  return new tools::darwin::Assemble(*this);
+  return new tools::darwin::Assembler(*this);
 }
 
-DarwinClang::DarwinClang(const Driver &D, const llvm::Triple& Triple,
+DarwinClang::DarwinClang(const Driver &D, const llvm::Triple &Triple,
                          const ArgList &Args)
-  : Darwin(D, Triple, Args) {
-}
+    : Darwin(D, Triple, Args) {}
 
 void DarwinClang::addClangWarningOptions(ArgStringList &CC1Args) const {
   // For iOS, 64-bit, promote certain warnings to errors.
@@ -403,26 +376,10 @@ void DarwinClang::AddLinkRuntimeLibArgs(const ArgList &Args,
 
 
   const SanitizerArgs &Sanitize = getSanitizerArgs();
-
-  if (Sanitize.needsAsanRt()) {
-    if (!isTargetMacOS() && !isTargetIOSSimulator()) {
-      // FIXME: Move this check to SanitizerArgs::filterUnsupportedKinds.
-      getDriver().Diag(diag::err_drv_clang_unsupported_per_platform)
-          << "-fsanitize=address";
-    } else {
-      AddLinkSanitizerLibArgs(Args, CmdArgs, "asan");
-    }
-  }
-
-  if (Sanitize.needsUbsanRt()) {
-    if (!isTargetMacOS() && !isTargetIOSSimulator()) {
-      // FIXME: Move this check to SanitizerArgs::filterUnsupportedKinds.
-      getDriver().Diag(diag::err_drv_clang_unsupported_per_platform)
-          << "-fsanitize=undefined";
-    } else {
-      AddLinkSanitizerLibArgs(Args, CmdArgs, "ubsan");
-    }
-  }
+  if (Sanitize.needsAsanRt())
+    AddLinkSanitizerLibArgs(Args, CmdArgs, "asan");
+  if (Sanitize.needsUbsanRt())
+    AddLinkSanitizerLibArgs(Args, CmdArgs, "ubsan");
 
   // Otherwise link libSystem, then the dynamic runtime library, and finally any
   // target specific static runtime library.
@@ -499,8 +456,8 @@ void Darwin::AddDeploymentTarget(DerivedArgList &Args) const {
   } else if (!OSXVersion && !iOSVersion) {
     // If no deployment target was specified on the command line, check for
     // environment defines.
-    StringRef OSXTarget;
-    StringRef iOSTarget;
+    std::string OSXTarget;
+    std::string iOSTarget;
     if (char *env = ::getenv("MACOSX_DEPLOYMENT_TARGET"))
       OSXTarget = env;
     if (char *env = ::getenv("IPHONEOS_DEPLOYMENT_TARGET"))
@@ -519,13 +476,26 @@ void Darwin::AddDeploymentTarget(DerivedArgList &Args) const {
       }
     }
 
-    // If no OSX or iOS target has been specified and we're compiling for armv7,
-    // go ahead as assume we're targeting iOS.
-    StringRef MachOArchName = getMachOArchName(Args);
-    if (OSXTarget.empty() && iOSTarget.empty() &&
-        (MachOArchName == "armv7" || MachOArchName == "armv7s" ||
-         MachOArchName == "arm64"))
-        iOSTarget = iOSVersionMin;
+    // If no OSX or iOS target has been specified, try to guess platform
+    // from arch name and compute the version from the triple.
+    if (OSXTarget.empty() && iOSTarget.empty()) {
+      StringRef MachOArchName = getMachOArchName(Args);
+      unsigned Major, Minor, Micro;
+      if (MachOArchName == "armv7" || MachOArchName == "armv7s" ||
+          MachOArchName == "arm64") {
+        getTriple().getiOSVersion(Major, Minor, Micro);
+        llvm::raw_string_ostream(iOSTarget) << Major << '.' << Minor << '.'
+                                            << Micro;
+      } else if (MachOArchName != "armv6m" && MachOArchName != "armv7m" &&
+                 MachOArchName != "armv7em") {
+        if (!getTriple().getMacOSXVersion(Major, Minor, Micro)) {
+          getDriver().Diag(diag::err_drv_invalid_darwin_version)
+              << getTriple().getOSName();
+        }
+        llvm::raw_string_ostream(OSXTarget) << Major << '.' << Minor << '.'
+                                            << Micro;
+      }
+    }
 
     // Allow conflicts among OSX and iOS for historical reasons, but choose the
     // default platform.
@@ -546,12 +516,6 @@ void Darwin::AddDeploymentTarget(DerivedArgList &Args) const {
       const Option O = Opts.getOption(options::OPT_miphoneos_version_min_EQ);
       iOSVersion = Args.MakeJoinedArg(nullptr, O, iOSTarget);
       Args.append(iOSVersion);
-    } else if (MachOArchName != "armv6m" && MachOArchName != "armv7m" &&
-               MachOArchName != "armv7em") {
-      // Otherwise, assume we are targeting OS X.
-      const Option O = Opts.getOption(options::OPT_mmacosx_version_min_EQ);
-      OSXVersion = Args.MakeJoinedArg(nullptr, O, MacosxVersionMin);
-      Args.append(OSXVersion);
     }
   }
 
@@ -1099,6 +1063,18 @@ void Darwin::CheckObjCARC() const {
   if (isTargetIOSBased()|| (isTargetMacOS() && !isMacosxVersionLT(10, 6)))
     return;
   getDriver().Diag(diag::err_arc_unsupported_on_toolchain);
+}
+
+SanitizerMask Darwin::getSupportedSanitizers() const {
+  SanitizerMask Res = ToolChain::getSupportedSanitizers();
+  if (isTargetMacOS() || isTargetIOSSimulator()) {
+    // ASan and UBSan are available on Mac OS and on iOS simulator.
+    Res |= SanitizerKind::Address;
+    Res |= SanitizerKind::Vptr;
+  }
+  if (isTargetMacOS())
+    Res |= SanitizerKind::SafeStack;
+  return Res;
 }
 
 /// Generic_GCC - A tool chain using the 'gcc' command to perform
@@ -2036,11 +2012,11 @@ Tool *Generic_GCC::getTool(Action::ActionClass AC) const {
   switch (AC) {
   case Action::PreprocessJobClass:
     if (!Preprocess)
-      Preprocess.reset(new tools::gcc::Preprocess(*this));
+      Preprocess.reset(new tools::gcc::Preprocessor(*this));
     return Preprocess.get();
   case Action::CompileJobClass:
     if (!Compile)
-      Compile.reset(new tools::gcc::Compile(*this));
+      Compile.reset(new tools::gcc::Compiler(*this));
     return Compile.get();
   default:
     return ToolChain::getTool(AC);
@@ -2048,12 +2024,10 @@ Tool *Generic_GCC::getTool(Action::ActionClass AC) const {
 }
 
 Tool *Generic_GCC::buildAssembler() const {
-  return new tools::gnutools::Assemble(*this);
+  return new tools::gnutools::Assembler(*this);
 }
 
-Tool *Generic_GCC::buildLinker() const {
-  return new tools::gcc::Link(*this);
-}
+Tool *Generic_GCC::buildLinker() const { return new tools::gcc::Linker(*this); }
 
 void Generic_GCC::printVerboseInfo(raw_ostream &OS) const {
   // Print the information about how we detected the GCC installation.
@@ -2249,15 +2223,14 @@ Hexagon_TC::Hexagon_TC(const Driver &D, const llvm::Triple &Triple,
     LibPaths);
 }
 
-Hexagon_TC::~Hexagon_TC() {
-}
+Hexagon_TC::~Hexagon_TC() {}
 
 Tool *Hexagon_TC::buildAssembler() const {
-  return new tools::hexagon::Assemble(*this);
+  return new tools::hexagon::Assembler(*this);
 }
 
 Tool *Hexagon_TC::buildLinker() const {
-  return new tools::hexagon::Link(*this);
+  return new tools::hexagon::Linker(*this);
 }
 
 void Hexagon_TC::AddClangSystemIncludeArgs(const ArgList &DriverArgs,
@@ -2422,13 +2395,17 @@ void NaCl_TC::AddClangSystemIncludeArgs(const ArgList &DriverArgs,
     return;
 
   SmallString<128> P(D.Dir + "/../");
-  if (getTriple().getArch() == llvm::Triple::arm) {
+  switch (getTriple().getArch()) {
+  case llvm::Triple::arm:
     llvm::sys::path::append(P, "arm-nacl/usr/include");
-  } else if (getTriple().getArch() == llvm::Triple::x86) {
+    break;
+  case llvm::Triple::x86:
     llvm::sys::path::append(P, "x86_64-nacl/usr/include");
-  } else if (getTriple().getArch() == llvm::Triple::x86_64) {
+    break;
+  case llvm::Triple::x86_64:
     llvm::sys::path::append(P, "x86_64-nacl/usr/include");
-  } else {
+    break;
+  default:
     return;
   }
 
@@ -2458,18 +2435,22 @@ void NaCl_TC::AddClangCXXStdlibIncludeArgs(const ArgList &DriverArgs,
   // if the value is libc++, and emits an error for other values.
   GetCXXStdlibType(DriverArgs);
 
-  if (getTriple().getArch() == llvm::Triple::arm) {
-    SmallString<128> P(D.Dir + "/../");
+  SmallString<128> P(D.Dir + "/../");
+  switch (getTriple().getArch()) {
+  case llvm::Triple::arm:
     llvm::sys::path::append(P, "arm-nacl/include/c++/v1");
     addSystemInclude(DriverArgs, CC1Args, P.str());
-  } else if (getTriple().getArch() == llvm::Triple::x86) {
-    SmallString<128> P(D.Dir + "/../");
+    break;
+  case llvm::Triple::x86:
     llvm::sys::path::append(P, "x86_64-nacl/include/c++/v1");
     addSystemInclude(DriverArgs, CC1Args, P.str());
-  } else if (getTriple().getArch() == llvm::Triple::x86_64) {
-    SmallString<128> P(D.Dir + "/../");
+    break;
+  case llvm::Triple::x86_64:
     llvm::sys::path::append(P, "x86_64-nacl/include/c++/v1");
     addSystemInclude(DriverArgs, CC1Args, P.str());
+    break;
+  default:
+    break;
   }
 }
 
@@ -2495,13 +2476,13 @@ std::string NaCl_TC::ComputeEffectiveClangTriple(
 }
 
 Tool *NaCl_TC::buildLinker() const {
-  return new tools::nacltools::Link(*this);
+  return new tools::nacltools::Linker(*this);
 }
 
 Tool *NaCl_TC::buildAssembler() const {
   if (getTriple().getArch() == llvm::Triple::arm)
-    return new tools::nacltools::AssembleARM(*this);
-  return new tools::gnutools::Assemble(*this);
+    return new tools::nacltools::AssemblerARM(*this);
+  return new tools::gnutools::Assembler(*this);
 }
 // End NaCl
 
@@ -2566,7 +2547,9 @@ void CloudABI::AddCXXStdlibLibArgs(const ArgList &Args,
   CmdArgs.push_back("-lunwind");
 }
 
-Tool *CloudABI::buildLinker() const { return new tools::cloudabi::Link(*this); }
+Tool *CloudABI::buildLinker() const {
+  return new tools::cloudabi::Linker(*this);
+}
 
 /// OpenBSD - OpenBSD tool chain which can call as(1) and ld(1) directly.
 
@@ -2577,12 +2560,10 @@ OpenBSD::OpenBSD(const Driver &D, const llvm::Triple& Triple, const ArgList &Arg
 }
 
 Tool *OpenBSD::buildAssembler() const {
-  return new tools::openbsd::Assemble(*this);
+  return new tools::openbsd::Assembler(*this);
 }
 
-Tool *OpenBSD::buildLinker() const {
-  return new tools::openbsd::Link(*this);
-}
+Tool *OpenBSD::buildLinker() const { return new tools::openbsd::Linker(*this); }
 
 /// Bitrig - Bitrig tool chain which can call as(1) and ld(1) directly.
 
@@ -2593,15 +2574,12 @@ Bitrig::Bitrig(const Driver &D, const llvm::Triple& Triple, const ArgList &Args)
 }
 
 Tool *Bitrig::buildAssembler() const {
-  return new tools::bitrig::Assemble(*this);
+  return new tools::bitrig::Assembler(*this);
 }
 
-Tool *Bitrig::buildLinker() const {
-  return new tools::bitrig::Link(*this);
-}
+Tool *Bitrig::buildLinker() const { return new tools::bitrig::Linker(*this); }
 
-ToolChain::CXXStdlibType
-Bitrig::GetCXXStdlibType(const ArgList &Args) const {
+ToolChain::CXXStdlibType Bitrig::GetCXXStdlibType(const ArgList &Args) const {
   if (Arg *A = Args.getLastArg(options::OPT_stdlib_EQ)) {
     StringRef Value = A->getValue();
     if (Value == "libstdc++")
@@ -2712,12 +2690,10 @@ void FreeBSD::AddClangCXXStdlibIncludeArgs(const ArgList &DriverArgs,
 }
 
 Tool *FreeBSD::buildAssembler() const {
-  return new tools::freebsd::Assemble(*this);
+  return new tools::freebsd::Assembler(*this);
 }
 
-Tool *FreeBSD::buildLinker() const {
-  return new tools::freebsd::Link(*this);
-}
+Tool *FreeBSD::buildLinker() const { return new tools::freebsd::Linker(*this); }
 
 bool FreeBSD::UseSjLjExceptions() const {
   // FreeBSD uses SjLj exceptions on ARM oabi.
@@ -2739,6 +2715,24 @@ bool FreeBSD::HasNativeLLVMSupport() const {
 
 bool FreeBSD::isPIEDefault() const {
   return getSanitizerArgs().requiresPIE();
+}
+
+SanitizerMask FreeBSD::getSupportedSanitizers() const {
+  const bool IsX86 = getTriple().getArch() == llvm::Triple::x86;
+  const bool IsX86_64 = getTriple().getArch() == llvm::Triple::x86_64;
+  const bool IsMIPS64 = getTriple().getArch() == llvm::Triple::mips64 ||
+                        getTriple().getArch() == llvm::Triple::mips64el;
+  SanitizerMask Res = ToolChain::getSupportedSanitizers();
+  Res |= SanitizerKind::Address;
+  Res |= SanitizerKind::Vptr;
+  if (IsX86_64 || IsMIPS64) {
+    Res |= SanitizerKind::Leak;
+    Res |= SanitizerKind::Thread;
+  }
+  if (IsX86 || IsX86_64) {
+    Res |= SanitizerKind::SafeStack;
+  }
+  return Res;
 }
 
 /// NetBSD - NetBSD tool chain which can call as(1) and ld(1) directly.
@@ -2796,15 +2790,12 @@ NetBSD::NetBSD(const Driver &D, const llvm::Triple& Triple, const ArgList &Args)
 }
 
 Tool *NetBSD::buildAssembler() const {
-  return new tools::netbsd::Assemble(*this);
+  return new tools::netbsd::Assembler(*this);
 }
 
-Tool *NetBSD::buildLinker() const {
-  return new tools::netbsd::Link(*this);
-}
+Tool *NetBSD::buildLinker() const { return new tools::netbsd::Linker(*this); }
 
-ToolChain::CXXStdlibType
-NetBSD::GetCXXStdlibType(const ArgList &Args) const {
+ToolChain::CXXStdlibType NetBSD::GetCXXStdlibType(const ArgList &Args) const {
   if (Arg *A = Args.getLastArg(options::OPT_stdlib_EQ)) {
     StringRef Value = A->getValue();
     if (Value == "libstdc++")
@@ -2867,12 +2858,10 @@ Minix::Minix(const Driver &D, const llvm::Triple& Triple, const ArgList &Args)
 }
 
 Tool *Minix::buildAssembler() const {
-  return new tools::minix::Assemble(*this);
+  return new tools::minix::Assembler(*this);
 }
 
-Tool *Minix::buildLinker() const {
-  return new tools::minix::Link(*this);
-}
+Tool *Minix::buildLinker() const { return new tools::minix::Linker(*this); }
 
 /// Solaris - Solaris tool chain which can call as(1) and ld(1) directly.
 
@@ -2889,16 +2878,17 @@ Solaris::Solaris(const Driver &D, const llvm::Triple& Triple,
 }
 
 Tool *Solaris::buildAssembler() const {
-  return new tools::solaris::Assemble(*this);
+  return new tools::solaris::Assembler(*this);
 }
 
-Tool *Solaris::buildLinker() const {
-  return new tools::solaris::Link(*this);
-}
+Tool *Solaris::buildLinker() const { return new tools::solaris::Linker(*this); }
 
 /// Distribution (very bare-bones at the moment).
 
 enum Distro {
+  // NB: Releases of a particular Linux distro should be kept together
+  // in this enum, because some tests are done by integer comparison against
+  // the first and last known member in the family, e.g. IsRedHat().
   ArchLinux,
   DebianLenny,
   DebianSqueeze,
@@ -3337,12 +3327,10 @@ bool Linux::HasNativeLLVMSupport() const {
   return true;
 }
 
-Tool *Linux::buildLinker() const {
-  return new tools::gnutools::Link(*this);
-}
+Tool *Linux::buildLinker() const { return new tools::gnutools::Linker(*this); }
 
 Tool *Linux::buildAssembler() const {
-  return new tools::gnutools::Assemble(*this);
+  return new tools::gnutools::Assembler(*this);
 }
 
 std::string Linux::computeSysRoot() const {
@@ -3479,36 +3467,52 @@ void Linux::AddClangSystemIncludeArgs(const ArgList &DriverArgs,
     "/usr/include/sparc64-linux-gnu"
   };
   ArrayRef<StringRef> MultiarchIncludeDirs;
-  if (getTriple().getArch() == llvm::Triple::x86_64) {
+  switch (getTriple().getArch()) {
+  case llvm::Triple::x86_64:
     MultiarchIncludeDirs = X86_64MultiarchIncludeDirs;
-  } else if (getTriple().getArch() == llvm::Triple::x86) {
+    break;
+  case llvm::Triple::x86:
     MultiarchIncludeDirs = X86MultiarchIncludeDirs;
-  } else if (getTriple().getArch() == llvm::Triple::aarch64 ||
-             getTriple().getArch() == llvm::Triple::aarch64_be) {
+    break;
+  case llvm::Triple::aarch64:
+  case llvm::Triple::aarch64_be:
     MultiarchIncludeDirs = AArch64MultiarchIncludeDirs;
-  } else if (getTriple().getArch() == llvm::Triple::arm) {
+    break;
+  case llvm::Triple::arm:
     if (getTriple().getEnvironment() == llvm::Triple::GNUEABIHF)
       MultiarchIncludeDirs = ARMHFMultiarchIncludeDirs;
     else
       MultiarchIncludeDirs = ARMMultiarchIncludeDirs;
-  } else if (getTriple().getArch() == llvm::Triple::mips) {
+    break;
+  case llvm::Triple::mips:
     MultiarchIncludeDirs = MIPSMultiarchIncludeDirs;
-  } else if (getTriple().getArch() == llvm::Triple::mipsel) {
+    break;
+  case llvm::Triple::mipsel:
     MultiarchIncludeDirs = MIPSELMultiarchIncludeDirs;
-  } else if (getTriple().getArch() == llvm::Triple::mips64) {
+    break;
+  case llvm::Triple::mips64:
     MultiarchIncludeDirs = MIPS64MultiarchIncludeDirs;
-  } else if (getTriple().getArch() == llvm::Triple::mips64el) {
+    break;
+  case llvm::Triple::mips64el:
     MultiarchIncludeDirs = MIPS64ELMultiarchIncludeDirs;
-  } else if (getTriple().getArch() == llvm::Triple::ppc) {
+    break;
+  case llvm::Triple::ppc:
     MultiarchIncludeDirs = PPCMultiarchIncludeDirs;
-  } else if (getTriple().getArch() == llvm::Triple::ppc64) {
+    break;
+  case llvm::Triple::ppc64:
     MultiarchIncludeDirs = PPC64MultiarchIncludeDirs;
-  } else if (getTriple().getArch() == llvm::Triple::ppc64le) {
+    break;
+  case llvm::Triple::ppc64le:
     MultiarchIncludeDirs = PPC64LEMultiarchIncludeDirs;
-  } else if (getTriple().getArch() == llvm::Triple::sparc) {
+    break;
+  case llvm::Triple::sparc:
     MultiarchIncludeDirs = SparcMultiarchIncludeDirs;
-  } else if (getTriple().getArch() == llvm::Triple::sparcv9) {
+    break;
+  case llvm::Triple::sparcv9:
     MultiarchIncludeDirs = Sparc64MultiarchIncludeDirs;
+    break;
+  default:
+    break;
   }
   for (StringRef Dir : MultiarchIncludeDirs) {
     if (llvm::sys::fs::exists(SysRoot + Dir)) {
@@ -3645,6 +3649,28 @@ bool Linux::isPIEDefault() const {
   return getSanitizerArgs().requiresPIE();
 }
 
+SanitizerMask Linux::getSupportedSanitizers() const {
+  const bool IsX86 = getTriple().getArch() == llvm::Triple::x86;
+  const bool IsX86_64 = getTriple().getArch() == llvm::Triple::x86_64;
+  const bool IsMIPS64 = getTriple().getArch() == llvm::Triple::mips64 ||
+                        getTriple().getArch() == llvm::Triple::mips64el;
+  SanitizerMask Res = ToolChain::getSupportedSanitizers();
+  Res |= SanitizerKind::Address;
+  Res |= SanitizerKind::KernelAddress;
+  Res |= SanitizerKind::Vptr;
+  if (IsX86_64 || IsMIPS64) {
+    Res |= SanitizerKind::DataFlow;
+    Res |= SanitizerKind::Leak;
+    Res |= SanitizerKind::Memory;
+    Res |= SanitizerKind::Thread;
+  }
+  if (IsX86 || IsX86_64) {
+    Res |= SanitizerKind::Function;
+    Res |= SanitizerKind::SafeStack;
+  }
+  return Res;
+}
+
 /// DragonFly - DragonFly tool chain which can call as(1) and ld(1) directly.
 
 DragonFly::DragonFly(const Driver &D, const llvm::Triple& Triple, const ArgList &Args)
@@ -3664,13 +3690,12 @@ DragonFly::DragonFly(const Driver &D, const llvm::Triple& Triple, const ArgList 
 }
 
 Tool *DragonFly::buildAssembler() const {
-  return new tools::dragonfly::Assemble(*this);
+  return new tools::dragonfly::Assembler(*this);
 }
 
 Tool *DragonFly::buildLinker() const {
-  return new tools::dragonfly::Link(*this);
+  return new tools::dragonfly::Linker(*this);
 }
-
 
 /// XCore tool chain
 XCore::XCore(const Driver &D, const llvm::Triple &Triple,
@@ -3679,16 +3704,12 @@ XCore::XCore(const Driver &D, const llvm::Triple &Triple,
 }
 
 Tool *XCore::buildAssembler() const {
-  return new tools::XCore::Assemble(*this);
+  return new tools::XCore::Assembler(*this);
 }
 
-Tool *XCore::buildLinker() const {
-  return new tools::XCore::Link(*this);
-}
+Tool *XCore::buildLinker() const { return new tools::XCore::Linker(*this); }
 
-bool XCore::isPICDefault() const {
-  return false;
-}
+bool XCore::isPICDefault() const { return false; }
 
 bool XCore::isPIEDefault() const {
   return false;
@@ -3743,4 +3764,47 @@ void XCore::AddClangCXXStdlibIncludeArgs(const ArgList &DriverArgs,
 void XCore::AddCXXStdlibLibArgs(const ArgList &Args,
                                 ArgStringList &CmdArgs) const {
   // We don't output any lib args. This is handled by xcc.
+}
+
+// SHAVEToolChain does not call Clang's C compiler.
+// We override SelectTool to avoid testing ShouldUseClangCompiler().
+Tool *SHAVEToolChain::SelectTool(const JobAction &JA) const {
+  switch (JA.getKind()) {
+  case Action::CompileJobClass:
+    if (!Compiler)
+      Compiler.reset(new tools::SHAVE::Compiler(*this));
+    return Compiler.get();
+  case Action::AssembleJobClass:
+    if (!Assembler)
+      Assembler.reset(new tools::SHAVE::Assembler(*this));
+    return Assembler.get();
+  default:
+    return ToolChain::getTool(JA.getKind());
+  }
+}
+
+SHAVEToolChain::SHAVEToolChain(const Driver &D, const llvm::Triple &Triple,
+                     const ArgList &Args)
+    : Generic_GCC(D, Triple, Args) {}
+
+SHAVEToolChain::~SHAVEToolChain() {}
+
+/// Following are methods necessary to avoid having moviClang be an abstract
+/// class.
+
+Tool *SHAVEToolChain::getTool(Action::ActionClass AC) const {
+  // SelectTool() must find a tool using the method in the superclass.
+  // There's nothing we can do if that fails.
+  llvm_unreachable("SHAVEToolChain can't getTool");
+}
+
+Tool *SHAVEToolChain::buildLinker() const {
+  // SHAVEToolChain executables can not be linked except by the vendor tools.
+  llvm_unreachable("SHAVEToolChain can't buildLinker");
+}
+
+Tool *SHAVEToolChain::buildAssembler() const {
+  // This one you'd think should be reachable since we expose an
+  // assembler to the driver, except not the way it expects.
+  llvm_unreachable("SHAVEToolChain can't buildAssembler");
 }

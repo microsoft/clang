@@ -222,6 +222,9 @@ void CodeGenFunction::EmitStmt(const Stmt *S) {
   case Stmt::OMPTaskwaitDirectiveClass:
     EmitOMPTaskwaitDirective(cast<OMPTaskwaitDirective>(*S));
     break;
+  case Stmt::OMPTaskgroupDirectiveClass:
+    EmitOMPTaskgroupDirective(cast<OMPTaskgroupDirective>(*S));
+    break;
   case Stmt::OMPFlushDirectiveClass:
     EmitOMPFlushDirective(cast<OMPFlushDirective>(*S));
     break;
@@ -2146,7 +2149,7 @@ CodeGenFunction::EmitCapturedStmt(const CapturedStmt &S, CapturedRegionKind K) {
 
   // Emit the CapturedDecl
   CodeGenFunction CGF(CGM, true);
-  CGF.CapturedStmtInfo = new CGCapturedStmtInfo(S, K);
+  CGCapturedStmtRAII CapInfoRAII(CGF, new CGCapturedStmtInfo(S, K));
   llvm::Function *F = CGF.GenerateCapturedStmtFunction(S);
   delete CGF.CapturedStmtInfo;
 

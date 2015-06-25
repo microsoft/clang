@@ -1218,8 +1218,9 @@ bool CodeGenModule::isInSanitizerBlacklist(llvm::Function *Fn,
 bool CodeGenModule::isInSanitizerBlacklist(llvm::GlobalVariable *GV,
                                            SourceLocation Loc, QualType Ty,
                                            StringRef Category) const {
-  // For now globals can be blacklisted only in ASan.
-  if (!LangOpts.Sanitize.has(SanitizerKind::Address))
+  // For now globals can be blacklisted only in ASan and KASan.
+  if (!LangOpts.Sanitize.hasOneOf(
+          SanitizerKind::Address | SanitizerKind::KernelAddress))
     return false;
   const auto &SanitizerBL = getContext().getSanitizerBlacklist();
   if (SanitizerBL.isBlacklistedGlobal(GV->getName(), Category))
@@ -3658,4 +3659,18 @@ void CodeGenModule::EmitOMPThreadPrivateDecl(const OMPThreadPrivateDecl *D) {
             VD, GetAddrOfGlobalVar(VD), RefExpr->getLocStart(), PerformInit))
       CXXGlobalInits.push_back(InitFunction);
   }
+}
+
+llvm::MDTuple *CodeGenModule::CreateVTableBitSetEntry(
+    llvm::GlobalVariable *VTable, CharUnits Offset, const CXXRecordDecl *RD) {
+  std::string OutName;
+  llvm::raw_string_ostream Out(OutName);
+  getCXXABI().getMangleContext().mangleCXXVTableBitSet(RD, Out);
+
+  llvm::Metadata *BitsetOps[] = {
+      llvm::MDString::get(getLLVMContext(), Out.str()),
+      llvm::ConstantAsMetadata::get(VTable),
+      llvm::ConstantAsMetadata::get(
+          llvm::ConstantInt::get(Int64Ty, Offset.getQuantity()))};
+  return llvm::MDTuple::get(getLLVMContext(), BitsetOps);
 }

@@ -1906,6 +1906,16 @@ void OMPClauseWriter::VisitOMPFlushClause(OMPFlushClause *C) {
     Writer->Writer.AddStmt(VE);
 }
 
+void OMPClauseWriter::VisitOMPDependClause(OMPDependClause *C) {
+  Record.push_back(C->varlist_size());
+  Writer->Writer.AddSourceLocation(C->getLParenLoc(), Record);
+  Record.push_back(C->getDependencyKind());
+  Writer->Writer.AddSourceLocation(C->getDependencyLoc(), Record);
+  Writer->Writer.AddSourceLocation(C->getColonLoc(), Record);
+  for (auto *VE : C->varlists())
+    Writer->Writer.AddStmt(VE);
+}
+
 //===----------------------------------------------------------------------===//
 // OpenMP Directives.
 //===----------------------------------------------------------------------===//
@@ -1929,8 +1939,7 @@ void ASTStmtWriter::VisitOMPLoopDirective(OMPLoopDirective *D) {
   Writer.AddStmt(D->getLastIteration());
   Writer.AddStmt(D->getCalcLastIteration());
   Writer.AddStmt(D->getPreCond());
-  Writer.AddStmt(D->getCond(/* SeparateIter */ false));
-  Writer.AddStmt(D->getCond(/* SeparateIter */ true));
+  Writer.AddStmt(D->getCond());
   Writer.AddStmt(D->getInit());
   Writer.AddStmt(D->getInc());
   if (isOpenMPWorksharingDirective(D->getDirectiveKind())) {
@@ -2070,6 +2079,12 @@ void ASTStmtWriter::VisitOMPTaskwaitDirective(OMPTaskwaitDirective *D) {
   VisitStmt(D);
   VisitOMPExecutableDirective(D);
   Code = serialization::STMT_OMP_TASKWAIT_DIRECTIVE;
+}
+
+void ASTStmtWriter::VisitOMPTaskgroupDirective(OMPTaskgroupDirective *D) {
+  VisitStmt(D);
+  VisitOMPExecutableDirective(D);
+  Code = serialization::STMT_OMP_TASKGROUP_DIRECTIVE;
 }
 
 void ASTStmtWriter::VisitOMPFlushDirective(OMPFlushDirective *D) {

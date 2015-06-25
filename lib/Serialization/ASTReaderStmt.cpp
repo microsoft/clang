@@ -1785,6 +1785,9 @@ OMPClause *OMPClauseReader::readClause() {
   case OMPC_flush:
     C = OMPFlushClause::CreateEmpty(Context, Record[Idx++]);
     break;
+  case OMPC_depend:
+    C = OMPDependClause::CreateEmpty(Context, Record[Idx++]);
+    break;
   }
   Visit(C);
   C->setLocStart(Reader->ReadSourceLocation(Record, Idx));
@@ -2049,6 +2052,19 @@ void OMPClauseReader::VisitOMPFlushClause(OMPFlushClause *C) {
   C->setVarRefs(Vars);
 }
 
+void OMPClauseReader::VisitOMPDependClause(OMPDependClause *C) {
+  C->setLParenLoc(Reader->ReadSourceLocation(Record, Idx));
+  C->setDependencyKind(static_cast<OpenMPDependClauseKind>(Record[Idx++]));
+  C->setDependencyLoc(Reader->ReadSourceLocation(Record, Idx));
+  C->setColonLoc(Reader->ReadSourceLocation(Record, Idx));
+  unsigned NumVars = C->varlist_size();
+  SmallVector<Expr *, 16> Vars;
+  Vars.reserve(NumVars);
+  for (unsigned i = 0; i != NumVars; ++i)
+    Vars.push_back(Reader->Reader.ReadSubExpr());
+  C->setVarRefs(Vars);
+}
+
 //===----------------------------------------------------------------------===//
 // OpenMP Directives.
 //===----------------------------------------------------------------------===//
@@ -2073,9 +2089,7 @@ void ASTStmtReader::VisitOMPLoopDirective(OMPLoopDirective *D) {
   D->setLastIteration(Reader.ReadSubExpr());
   D->setCalcLastIteration(Reader.ReadSubExpr());
   D->setPreCond(Reader.ReadSubExpr());
-  auto Fst = Reader.ReadSubExpr();
-  auto Snd = Reader.ReadSubExpr();
-  D->setCond(Fst, Snd);
+  D->setCond(Reader.ReadSubExpr());
   D->setInit(Reader.ReadSubExpr());
   D->setInc(Reader.ReadSubExpr());
   if (isOpenMPWorksharingDirective(D->getDirectiveKind())) {
@@ -2187,6 +2201,11 @@ void ASTStmtReader::VisitOMPBarrierDirective(OMPBarrierDirective *D) {
 }
 
 void ASTStmtReader::VisitOMPTaskwaitDirective(OMPTaskwaitDirective *D) {
+  VisitStmt(D);
+  VisitOMPExecutableDirective(D);
+}
+
+void ASTStmtReader::VisitOMPTaskgroupDirective(OMPTaskgroupDirective *D) {
   VisitStmt(D);
   VisitOMPExecutableDirective(D);
 }
@@ -2803,6 +2822,10 @@ Stmt *ASTReader::ReadStmtFromStream(ModuleFile &F) {
 
     case STMT_OMP_TASKWAIT_DIRECTIVE:
       S = OMPTaskwaitDirective::CreateEmpty(Context, Empty);
+      break;
+
+    case STMT_OMP_TASKGROUP_DIRECTIVE:
+      S = OMPTaskgroupDirective::CreateEmpty(Context, Empty);
       break;
 
     case STMT_OMP_FLUSH_DIRECTIVE:

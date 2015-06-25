@@ -1879,6 +1879,7 @@ public:
   void VisitOMPTaskyieldDirective(const OMPTaskyieldDirective *D);
   void VisitOMPBarrierDirective(const OMPBarrierDirective *D);
   void VisitOMPTaskwaitDirective(const OMPTaskwaitDirective *D);
+  void VisitOMPTaskgroupDirective(const OMPTaskgroupDirective *D);
   void VisitOMPFlushDirective(const OMPFlushDirective *D);
   void VisitOMPOrderedDirective(const OMPOrderedDirective *D);
   void VisitOMPAtomicDirective(const OMPAtomicDirective *D);
@@ -2095,6 +2096,9 @@ OMPClauseEnqueue::VisitOMPCopyprivateClause(const OMPCopyprivateClause *C) {
   }
 }
 void OMPClauseEnqueue::VisitOMPFlushClause(const OMPFlushClause *C) {
+  VisitOMPClauseList(C);
+}
+void OMPClauseEnqueue::VisitOMPDependClause(const OMPDependClause *C) {
   VisitOMPClauseList(C);
 }
 }
@@ -2475,6 +2479,11 @@ void EnqueueVisitor::VisitOMPBarrierDirective(const OMPBarrierDirective *D) {
 }
 
 void EnqueueVisitor::VisitOMPTaskwaitDirective(const OMPTaskwaitDirective *D) {
+  VisitOMPExecutableDirective(D);
+}
+
+void EnqueueVisitor::VisitOMPTaskgroupDirective(
+    const OMPTaskgroupDirective *D) {
   VisitOMPExecutableDirective(D);
 }
 
@@ -2883,7 +2892,8 @@ enum CXErrorCode clang_createTranslationUnit2(CXIndex CIdx,
   IntrusiveRefCntPtr<DiagnosticsEngine> Diags =
       CompilerInstance::createDiagnostics(new DiagnosticOptions());
   std::unique_ptr<ASTUnit> AU = ASTUnit::LoadFromASTFile(
-      ast_filename, Diags, FileSystemOpts, CXXIdx->getOnlyLocalDecls(), None,
+      ast_filename, CXXIdx->getPCHContainerOperations(), Diags, FileSystemOpts,
+      CXXIdx->getOnlyLocalDecls(), None,
       /*CaptureDiagnostics=*/true,
       /*AllowPCHWithCompilerErrors=*/true,
       /*UserFilesAreVolatile=*/true);
@@ -3021,7 +3031,8 @@ static void clang_parseTranslationUnit_Impl(void *UserData) {
   unsigned NumErrors = Diags->getClient()->getNumErrors();
   std::unique_ptr<ASTUnit> ErrUnit;
   std::unique_ptr<ASTUnit> Unit(ASTUnit::LoadFromCommandLine(
-      Args->data(), Args->data() + Args->size(), Diags,
+      Args->data(), Args->data() + Args->size(),
+      CXXIdx->getPCHContainerOperations(), Diags,
       CXXIdx->getClangResourcesPath(), CXXIdx->getOnlyLocalDecls(),
       /*CaptureDiagnostics=*/true, *RemappedFiles.get(),
       /*RemappedFilesKeepOriginalName=*/true, PrecompilePreamble, TUKind,
@@ -3262,7 +3273,8 @@ static void clang_reparseTranslationUnit_Impl(void *UserData) {
     RemappedFiles->push_back(std::make_pair(UF.Filename, MB.release()));
   }
 
-  if (!CXXUnit->Reparse(*RemappedFiles.get()))
+  if (!CXXUnit->Reparse(CXXIdx->getPCHContainerOperations(),
+                        *RemappedFiles.get()))
     RTUI->result = CXError_Success;
   else if (isASTReadError(CXXUnit))
     RTUI->result = CXError_ASTReadError;
@@ -3818,12 +3830,11 @@ CXString clang_Cursor_getMangling(CXCursor C) {
   // Now apply backend mangling.
   std::unique_ptr<llvm::DataLayout> DL(
       new llvm::DataLayout(Ctx.getTargetInfo().getTargetDescription()));
-  llvm::Mangler BackendMangler(DL.get());
 
   std::string FinalBuf;
   llvm::raw_string_ostream FinalBufOS(FinalBuf);
-  BackendMangler.getNameWithPrefix(FinalBufOS,
-                                   llvm::Twine(FrontendBufOS.str()));
+  llvm::Mangler::getNameWithPrefix(FinalBufOS, llvm::Twine(FrontendBufOS.str()),
+                                   *DL);
 
   return cxstring::createDup(FinalBufOS.str());
 }
@@ -4260,6 +4271,8 @@ CXString clang_getCursorKindSpelling(enum CXCursorKind Kind) {
     return cxstring::createRef("OMPBarrierDirective");
   case CXCursor_OMPTaskwaitDirective:
     return cxstring::createRef("OMPTaskwaitDirective");
+  case CXCursor_OMPTaskgroupDirective:
+    return cxstring::createRef("OMPTaskgroupDirective");
   case CXCursor_OMPFlushDirective:
     return cxstring::createRef("OMPFlushDirective");
   case CXCursor_OMPOrderedDirective:

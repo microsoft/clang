@@ -1877,7 +1877,7 @@ Value *CodeGenFunction::EmitTargetBuiltinExpr(unsigned BuiltinID,
     return EmitPPCBuiltinExpr(BuiltinID, E);
   case llvm::Triple::r600:
   case llvm::Triple::amdgcn:
-    return EmitR600BuiltinExpr(BuiltinID, E);
+    return EmitAMDGPUBuiltinExpr(BuiltinID, E);
   case llvm::Triple::systemz:
     return EmitSystemZBuiltinExpr(BuiltinID, E);
   default:
@@ -3339,6 +3339,42 @@ static Value *EmitSpecialRegisterBuiltin(CodeGenFunction &CGF,
   return Builder.CreateCall(F, { Metadata, ArgValue });
 }
 
+/// Return true if BuiltinID is an overloaded Neon intrinsic with an extra
+/// argument that specifies the vector type.
+static bool HasExtraNeonArgument(unsigned BuiltinID) {
+  switch (BuiltinID) {
+  default: break;
+  case NEON::BI__builtin_neon_vget_lane_i8:
+  case NEON::BI__builtin_neon_vget_lane_i16:
+  case NEON::BI__builtin_neon_vget_lane_i32:
+  case NEON::BI__builtin_neon_vget_lane_i64:
+  case NEON::BI__builtin_neon_vget_lane_f32:
+  case NEON::BI__builtin_neon_vgetq_lane_i8:
+  case NEON::BI__builtin_neon_vgetq_lane_i16:
+  case NEON::BI__builtin_neon_vgetq_lane_i32:
+  case NEON::BI__builtin_neon_vgetq_lane_i64:
+  case NEON::BI__builtin_neon_vgetq_lane_f32:
+  case NEON::BI__builtin_neon_vset_lane_i8:
+  case NEON::BI__builtin_neon_vset_lane_i16:
+  case NEON::BI__builtin_neon_vset_lane_i32:
+  case NEON::BI__builtin_neon_vset_lane_i64:
+  case NEON::BI__builtin_neon_vset_lane_f32:
+  case NEON::BI__builtin_neon_vsetq_lane_i8:
+  case NEON::BI__builtin_neon_vsetq_lane_i16:
+  case NEON::BI__builtin_neon_vsetq_lane_i32:
+  case NEON::BI__builtin_neon_vsetq_lane_i64:
+  case NEON::BI__builtin_neon_vsetq_lane_f32:
+  case NEON::BI__builtin_neon_vsha1h_u32:
+  case NEON::BI__builtin_neon_vsha1cq_u32:
+  case NEON::BI__builtin_neon_vsha1pq_u32:
+  case NEON::BI__builtin_neon_vsha1mq_u32:
+  case ARM::BI_MoveToCoprocessor:
+  case ARM::BI_MoveToCoprocessor2:
+    return false;
+  }
+  return true;
+}
+
 Value *CodeGenFunction::EmitARMBuiltinExpr(unsigned BuiltinID,
                                            const CallExpr *E) {
   if (auto Hint = GetValueForARMHint(BuiltinID))
@@ -3591,7 +3627,9 @@ Value *CodeGenFunction::EmitARMBuiltinExpr(unsigned BuiltinID,
 
   SmallVector<Value*, 4> Ops;
   llvm::Value *Align = nullptr;
-  for (unsigned i = 0, e = E->getNumArgs() - 1; i != e; i++) {
+  bool HasExtraArg = HasExtraNeonArgument(BuiltinID);
+  unsigned NumArgs = E->getNumArgs() - (HasExtraArg ? 1 : 0);
+  for (unsigned i = 0, e = NumArgs; i != e; i++) {
     if (i == 0) {
       switch (BuiltinID) {
       case NEON::BI__builtin_neon_vld1_v:
@@ -3666,8 +3704,7 @@ Value *CodeGenFunction::EmitARMBuiltinExpr(unsigned BuiltinID,
 
   switch (BuiltinID) {
   default: break;
-  // vget_lane and vset_lane are not overloaded and do not have an extra
-  // argument that specifies the vector type.
+
   case NEON::BI__builtin_neon_vget_lane_i8:
   case NEON::BI__builtin_neon_vget_lane_i16:
   case NEON::BI__builtin_neon_vget_lane_i32:
@@ -3678,8 +3715,8 @@ Value *CodeGenFunction::EmitARMBuiltinExpr(unsigned BuiltinID,
   case NEON::BI__builtin_neon_vgetq_lane_i32:
   case NEON::BI__builtin_neon_vgetq_lane_i64:
   case NEON::BI__builtin_neon_vgetq_lane_f32:
-    return Builder.CreateExtractElement(Ops[0], EmitScalarExpr(E->getArg(1)),
-                                        "vget_lane");
+    return Builder.CreateExtractElement(Ops[0], Ops[1], "vget_lane");
+
   case NEON::BI__builtin_neon_vset_lane_i8:
   case NEON::BI__builtin_neon_vset_lane_i16:
   case NEON::BI__builtin_neon_vset_lane_i32:
@@ -3690,29 +3727,34 @@ Value *CodeGenFunction::EmitARMBuiltinExpr(unsigned BuiltinID,
   case NEON::BI__builtin_neon_vsetq_lane_i32:
   case NEON::BI__builtin_neon_vsetq_lane_i64:
   case NEON::BI__builtin_neon_vsetq_lane_f32:
-    Ops.push_back(EmitScalarExpr(E->getArg(2)));
     return Builder.CreateInsertElement(Ops[1], Ops[0], Ops[2], "vset_lane");
 
-  // Non-polymorphic crypto instructions also not overloaded
   case NEON::BI__builtin_neon_vsha1h_u32:
-    Ops.push_back(EmitScalarExpr(E->getArg(0)));
     return EmitNeonCall(CGM.getIntrinsic(Intrinsic::arm_neon_sha1h), Ops,
                         "vsha1h");
   case NEON::BI__builtin_neon_vsha1cq_u32:
-    Ops.push_back(EmitScalarExpr(E->getArg(2)));
     return EmitNeonCall(CGM.getIntrinsic(Intrinsic::arm_neon_sha1c), Ops,
                         "vsha1h");
   case NEON::BI__builtin_neon_vsha1pq_u32:
-    Ops.push_back(EmitScalarExpr(E->getArg(2)));
     return EmitNeonCall(CGM.getIntrinsic(Intrinsic::arm_neon_sha1p), Ops,
                         "vsha1h");
   case NEON::BI__builtin_neon_vsha1mq_u32:
-    Ops.push_back(EmitScalarExpr(E->getArg(2)));
     return EmitNeonCall(CGM.getIntrinsic(Intrinsic::arm_neon_sha1m), Ops,
                         "vsha1h");
+
+  // The ARM _MoveToCoprocessor builtins put the input register value as
+  // the first argument, but the LLVM intrinsic expects it as the third one.
+  case ARM::BI_MoveToCoprocessor:
+  case ARM::BI_MoveToCoprocessor2: {
+    Function *F = CGM.getIntrinsic(BuiltinID == ARM::BI_MoveToCoprocessor ? 
+                                   Intrinsic::arm_mcr : Intrinsic::arm_mcr2);
+    return Builder.CreateCall(F, {Ops[1], Ops[2], Ops[0],
+                                  Ops[3], Ops[4], Ops[5]});
+  }
   }
 
   // Get the last argument, which specifies the vector type.
+  assert(HasExtraArg);
   llvm::APSInt Result;
   const Expr *Arg = E->getArg(E->getNumArgs()-1);
   if (!Arg->isIntegerConstantExpr(Result, getContext()))
@@ -6548,11 +6590,11 @@ static Value *emitFPIntBuiltin(CodeGenFunction &CGF,
   return CGF.Builder.CreateCall(F, {Src0, Src1});
 }
 
-Value *CodeGenFunction::EmitR600BuiltinExpr(unsigned BuiltinID,
-                                            const CallExpr *E) {
+Value *CodeGenFunction::EmitAMDGPUBuiltinExpr(unsigned BuiltinID,
+                                              const CallExpr *E) {
   switch (BuiltinID) {
-  case R600::BI__builtin_amdgpu_div_scale:
-  case R600::BI__builtin_amdgpu_div_scalef: {
+  case AMDGPU::BI__builtin_amdgpu_div_scale:
+  case AMDGPU::BI__builtin_amdgpu_div_scalef: {
     // Translate from the intrinsics's struct return to the builtin's out
     // argument.
 
@@ -6579,8 +6621,8 @@ Value *CodeGenFunction::EmitR600BuiltinExpr(unsigned BuiltinID,
     FlagStore->setAlignment(FlagOutPtr.second);
     return Result;
   }
-  case R600::BI__builtin_amdgpu_div_fmas:
-  case R600::BI__builtin_amdgpu_div_fmasf: {
+  case AMDGPU::BI__builtin_amdgpu_div_fmas:
+  case AMDGPU::BI__builtin_amdgpu_div_fmasf: {
     llvm::Value *Src0 = EmitScalarExpr(E->getArg(0));
     llvm::Value *Src1 = EmitScalarExpr(E->getArg(1));
     llvm::Value *Src2 = EmitScalarExpr(E->getArg(2));
@@ -6591,26 +6633,26 @@ Value *CodeGenFunction::EmitR600BuiltinExpr(unsigned BuiltinID,
     llvm::Value *Src3ToBool = Builder.CreateIsNotNull(Src3);
     return Builder.CreateCall(F, {Src0, Src1, Src2, Src3ToBool});
   }
-  case R600::BI__builtin_amdgpu_div_fixup:
-  case R600::BI__builtin_amdgpu_div_fixupf:
+  case AMDGPU::BI__builtin_amdgpu_div_fixup:
+  case AMDGPU::BI__builtin_amdgpu_div_fixupf:
     return emitTernaryFPBuiltin(*this, E, Intrinsic::AMDGPU_div_fixup);
-  case R600::BI__builtin_amdgpu_trig_preop:
-  case R600::BI__builtin_amdgpu_trig_preopf:
+  case AMDGPU::BI__builtin_amdgpu_trig_preop:
+  case AMDGPU::BI__builtin_amdgpu_trig_preopf:
     return emitFPIntBuiltin(*this, E, Intrinsic::AMDGPU_trig_preop);
-  case R600::BI__builtin_amdgpu_rcp:
-  case R600::BI__builtin_amdgpu_rcpf:
+  case AMDGPU::BI__builtin_amdgpu_rcp:
+  case AMDGPU::BI__builtin_amdgpu_rcpf:
     return emitUnaryFPBuiltin(*this, E, Intrinsic::AMDGPU_rcp);
-  case R600::BI__builtin_amdgpu_rsq:
-  case R600::BI__builtin_amdgpu_rsqf:
+  case AMDGPU::BI__builtin_amdgpu_rsq:
+  case AMDGPU::BI__builtin_amdgpu_rsqf:
     return emitUnaryFPBuiltin(*this, E, Intrinsic::AMDGPU_rsq);
-  case R600::BI__builtin_amdgpu_rsq_clamped:
-  case R600::BI__builtin_amdgpu_rsq_clampedf:
+  case AMDGPU::BI__builtin_amdgpu_rsq_clamped:
+  case AMDGPU::BI__builtin_amdgpu_rsq_clampedf:
     return emitUnaryFPBuiltin(*this, E, Intrinsic::AMDGPU_rsq_clamped);
-  case R600::BI__builtin_amdgpu_ldexp:
-  case R600::BI__builtin_amdgpu_ldexpf:
+  case AMDGPU::BI__builtin_amdgpu_ldexp:
+  case AMDGPU::BI__builtin_amdgpu_ldexpf:
     return emitFPIntBuiltin(*this, E, Intrinsic::AMDGPU_ldexp);
-  case R600::BI__builtin_amdgpu_class:
-  case R600::BI__builtin_amdgpu_classf:
+  case AMDGPU::BI__builtin_amdgpu_class:
+  case AMDGPU::BI__builtin_amdgpu_classf:
     return emitFPIntBuiltin(*this, E, Intrinsic::AMDGPU_class);
    default:
     return nullptr;

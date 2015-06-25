@@ -195,7 +195,8 @@ class CXX11<string namespace, string name, int version = 1>
     : Spelling<name, "CXX11"> {
   string Namespace = namespace;
   int Version = version;
-} class Keyword<string name> : Spelling<name, "Keyword">;
+}
+class Keyword<string name> : Spelling<name, "Keyword">;
 class Pragma<string namespace, string name> : Spelling<name, "Pragma"> {
   string Namespace = namespace;
 }
@@ -949,14 +950,30 @@ def NonNull : InheritableAttr {
   } }];
   // FIXME: We should merge duplicates into a single nonnull attribute.
   let DuplicatesAllowedWhileMerging = 1;
-  let Documentation = [Undocumented];
+  let Documentation = [NonNullDocs];
 }
 
 def ReturnsNonNull : InheritableAttr {
   let Spellings = [GCC<"returns_nonnull">];
   let Subjects = SubjectList<[ObjCMethod, Function], WarnDiag,
                              "ExpectedFunctionOrMethod">;
-  let Documentation = [Undocumented];
+  let Documentation = [ReturnsNonNullDocs];
+}
+
+// Nullability type attributes.
+def TypeNonNull : TypeAttr {
+  let Spellings = [Keyword<"__nonnull">];
+  let Documentation = [TypeNonNullDocs];
+}
+
+def TypeNullable : TypeAttr {
+  let Spellings = [Keyword<"__nullable">];
+  let Documentation = [TypeNullableDocs];
+}
+
+def TypeNullUnspecified : TypeAttr {
+  let Spellings = [Keyword<"__null_unspecified">];
+  let Documentation = [TypeNullUnspecifiedDocs];
 }
 
 def AssumeAligned : InheritableAttr {

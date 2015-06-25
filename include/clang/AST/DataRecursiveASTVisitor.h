@@ -2355,6 +2355,9 @@ DEF_TRAVERSE_STMT(OMPBarrierDirective,
 DEF_TRAVERSE_STMT(OMPTaskwaitDirective,
                   { TRY_TO(TraverseOMPExecutableDirective(S)); })
 
+DEF_TRAVERSE_STMT(OMPTaskgroupDirective,
+                  { TRY_TO(TraverseOMPExecutableDirective(S)); })
+
 DEF_TRAVERSE_STMT(OMPFlushDirective,
                   { TRY_TO(TraverseOMPExecutableDirective(S)); })
 
@@ -2615,6 +2618,12 @@ RecursiveASTVisitor<Derived>::VisitOMPReductionClause(OMPReductionClause *C) {
 
 template <typename Derived>
 bool RecursiveASTVisitor<Derived>::VisitOMPFlushClause(OMPFlushClause *C) {
+  TRY_TO(VisitOMPClauseList(C));
+  return true;
+}
+
+template <typename Derived>
+bool RecursiveASTVisitor<Derived>::VisitOMPDependClause(OMPDependClause *C) {
   TRY_TO(VisitOMPClauseList(C));
   return true;
 }

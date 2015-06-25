@@ -23,13 +23,13 @@ class ToolChain;
 class SanitizerArgs {
   SanitizerSet Sanitizers;
   SanitizerSet RecoverableSanitizers;
+  SanitizerSet TrapSanitizers;
 
   std::vector<std::string> BlacklistFiles;
   int CoverageFeatures;
   int MsanTrackOrigins;
   int AsanFieldPadding;
   bool AsanZeroBaseShadow;
-  bool UbsanTrapOnError;
   bool AsanSharedRuntime;
   bool LinkCXXRuntimes;
 
@@ -53,7 +53,6 @@ class SanitizerArgs {
 
   bool requiresPIE() const;
   bool needsUnwindTables() const;
-  bool needsLTO() const;
   bool linkCXXRuntimes() const { return LinkCXXRuntimes; }
   void addArgs(const llvm::opt::ArgList &Args,
                llvm::opt::ArgStringList &CmdArgs) const;

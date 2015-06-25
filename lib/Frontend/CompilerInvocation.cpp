@@ -555,8 +555,6 @@ static bool ParseCodeGenArgs(CodeGenOptions &Opts, ArgList &Args, InputKind IK,
       Args.hasArg(OPT_fsanitize_coverage_8bit_counters);
   Opts.SanitizeMemoryTrackOrigins =
       getLastArgIntValue(Args, OPT_fsanitize_memory_track_origins_EQ, 0, Diags);
-  Opts.SanitizeUndefinedTrapOnError =
-      Args.hasArg(OPT_fsanitize_undefined_trap_on_error);
   Opts.SSPBufferSize =
       getLastArgIntValue(Args, OPT_stack_protector_buffer_size, 8, Diags);
   Opts.StackRealignment = Args.hasArg(OPT_mstackrealign);
@@ -666,6 +664,9 @@ static bool ParseCodeGenArgs(CodeGenOptions &Opts, ArgList &Args, InputKind IK,
   parseSanitizerKinds("-fsanitize-recover=",
                       Args.getAllArgValues(OPT_fsanitize_recover_EQ), Diags,
                       Opts.SanitizeRecover);
+  parseSanitizerKinds("-fsanitize-trap=",
+                      Args.getAllArgValues(OPT_fsanitize_trap_EQ), Diags,
+                      Opts.SanitizeTrap);
 
   Opts.CudaGpuBinaryFileNames =
       Args.getAllArgValues(OPT_fcuda_include_gpubinary);
@@ -1520,6 +1521,8 @@ static void ParseLangArgs(LangOptions &Opts, ArgList &Args, InputKind IK,
       Args.hasArg(OPT_fmodules_decluse) || Opts.ModulesStrictDeclUse;
   Opts.ModulesLocalVisibility =
       Args.hasArg(OPT_fmodules_local_submodule_visibility);
+  Opts.ModulesHideInternalLinkage =
+      !Args.hasArg(OPT_fno_modules_hide_internal_linkage);
   Opts.ModulesSearchAll = Opts.Modules &&
     !Args.hasArg(OPT_fno_modules_search_all) &&
     Args.hasArg(OPT_fmodules_search_all);
@@ -1585,6 +1588,7 @@ static void ParseLangArgs(LangOptions &Opts, ArgList &Args, InputKind IK,
   Opts.ImplementationOfModule =
       Args.getLastArgValue(OPT_fmodule_implementation_of);
   Opts.ModuleFeatures = Args.getAllArgValues(OPT_fmodule_feature);
+  std::sort(Opts.ModuleFeatures.begin(), Opts.ModuleFeatures.end());
   Opts.NativeHalfType |= Args.hasArg(OPT_fnative_half_type);
   Opts.HalfArgsAndReturns = Args.hasArg(OPT_fallow_half_arguments_and_returns);
   Opts.GNUAsm = !Args.hasArg(OPT_fno_gnu_inline_asm);
@@ -1846,37 +1850,37 @@ bool CompilerInvocation::CreateFromArgs(CompilerInvocation &Res,
   std::unique_ptr<OptTable> Opts(createDriverOptTable());
   const unsigned IncludedFlagsBitmask = options::CC1Option;
   unsigned MissingArgIndex, MissingArgCount;
-  std::unique_ptr<InputArgList> Args(
-      Opts->ParseArgs(ArgBegin, ArgEnd, MissingArgIndex, MissingArgCount,
-                      IncludedFlagsBitmask));
+  InputArgList Args =
+      Opts->ParseArgs(llvm::makeArrayRef(ArgBegin, ArgEnd), MissingArgIndex,
+                      MissingArgCount, IncludedFlagsBitmask);
 
   // Check for missing argument error.
   if (MissingArgCount) {
     Diags.Report(diag::err_drv_missing_argument)
-      << Args->getArgString(MissingArgIndex) << MissingArgCount;
+        << Args.getArgString(MissingArgIndex) << MissingArgCount;
     Success = false;
   }
 
   // Issue errors on unknown arguments.
-  for (const Arg *A : Args->filtered(OPT_UNKNOWN)) {
-    Diags.Report(diag::err_drv_unknown_argument) << A->getAsString(*Args);
+  for (const Arg *A : Args.filtered(OPT_UNKNOWN)) {
+    Diags.Report(diag::err_drv_unknown_argument) << A->getAsString(Args);
     Success = false;
   }
 
-  Success &= ParseAnalyzerArgs(*Res.getAnalyzerOpts(), *Args, Diags);
-  Success &= ParseMigratorArgs(Res.getMigratorOpts(), *Args);
-  ParseDependencyOutputArgs(Res.getDependencyOutputOpts(), *Args);
-  Success &= ParseDiagnosticArgs(Res.getDiagnosticOpts(), *Args, &Diags);
-  ParseCommentArgs(Res.getLangOpts()->CommentOpts, *Args);
-  ParseFileSystemArgs(Res.getFileSystemOpts(), *Args);
+  Success &= ParseAnalyzerArgs(*Res.getAnalyzerOpts(), Args, Diags);
+  Success &= ParseMigratorArgs(Res.getMigratorOpts(), Args);
+  ParseDependencyOutputArgs(Res.getDependencyOutputOpts(), Args);
+  Success &= ParseDiagnosticArgs(Res.getDiagnosticOpts(), Args, &Diags);
+  ParseCommentArgs(Res.getLangOpts()->CommentOpts, Args);
+  ParseFileSystemArgs(Res.getFileSystemOpts(), Args);
   // FIXME: We shouldn't have to pass the DashX option around here
-  InputKind DashX = ParseFrontendArgs(Res.getFrontendOpts(), *Args, Diags);
-  ParseTargetArgs(Res.getTargetOpts(), *Args);
-  Success &= ParseCodeGenArgs(Res.getCodeGenOpts(), *Args, DashX, Diags,
+  InputKind DashX = ParseFrontendArgs(Res.getFrontendOpts(), Args, Diags);
+  ParseTargetArgs(Res.getTargetOpts(), Args);
+  Success &= ParseCodeGenArgs(Res.getCodeGenOpts(), Args, DashX, Diags,
                               Res.getTargetOpts());
-  ParseHeaderSearchArgs(Res.getHeaderSearchOpts(), *Args);
+  ParseHeaderSearchArgs(Res.getHeaderSearchOpts(), Args);
   if (DashX != IK_AST && DashX != IK_LLVM_IR) {
-    ParseLangArgs(*Res.getLangOpts(), *Args, DashX, Diags);
+    ParseLangArgs(*Res.getLangOpts(), Args, DashX, Diags);
     if (Res.getFrontendOpts().ProgramAction == frontend::RewriteObjC)
       Res.getLangOpts()->ObjCExceptions = 1;
   }
@@ -1885,8 +1889,8 @@ bool CompilerInvocation::CreateFromArgs(CompilerInvocation &Res,
   // ParsePreprocessorArgs and remove the FileManager 
   // parameters from the function and the "FileManager.h" #include.
   FileManager FileMgr(Res.getFileSystemOpts());
-  ParsePreprocessorArgs(Res.getPreprocessorOpts(), *Args, FileMgr, Diags);
-  ParsePreprocessorOutputArgs(Res.getPreprocessorOutputOpts(), *Args,
+  ParsePreprocessorArgs(Res.getPreprocessorOpts(), Args, FileMgr, Diags);
+  ParsePreprocessorOutputArgs(Res.getPreprocessorOutputOpts(), Args,
                               Res.getFrontendOpts().ProgramAction);
   return Success;
 }
@@ -1964,6 +1968,9 @@ std::string CompilerInvocation::getModuleHash() const {
 #define BENIGN_LANGOPT(Name, Bits, Default, Description)
 #define BENIGN_ENUM_LANGOPT(Name, Type, Bits, Default, Description)
 #include "clang/Basic/LangOptions.def"
+
+  for (StringRef Feature : LangOpts->ModuleFeatures)
+    code = hash_combine(code, Feature);
   
   // Extend the signature with the target options.
   code = hash_combine(code, TargetOpts->Triple, TargetOpts->CPU,

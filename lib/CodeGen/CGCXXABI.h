@@ -172,7 +172,7 @@ public:
   virtual llvm::Constant *EmitNullMemberPointer(const MemberPointerType *MPT);
 
   /// Create a member pointer for the given method.
-  virtual llvm::Constant *EmitMemberPointer(const CXXMethodDecl *MD);
+  virtual llvm::Constant *EmitMemberFunctionPointer(const CXXMethodDecl *MD);
 
   /// Create a member pointer for the given field.
   virtual llvm::Constant *EmitMemberDataPointer(const MemberPointerType *MPT,
@@ -366,7 +366,8 @@ public:
   virtual llvm::Value *getVirtualFunctionPointer(CodeGenFunction &CGF,
                                                  GlobalDecl GD,
                                                  llvm::Value *This,
-                                                 llvm::Type *Ty) = 0;
+                                                 llvm::Type *Ty,
+                                                 SourceLocation Loc) = 0;
 
   /// Emit the ABI-specific virtual destructor call.
   virtual llvm::Value *
