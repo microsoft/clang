@@ -2472,13 +2472,15 @@ static void mergeParamDeclTypes(ParmVarDecl *NewParam,
   if (auto Oldnullability = OldParam->getType()->getNullability(S.Context)) {
     if (auto Newnullability = NewParam->getType()->getNullability(S.Context)) {
       if (*Oldnullability != *Newnullability) {
-        unsigned unsNewnullability = static_cast<unsigned>(*Newnullability);
-        unsigned unsOldnullability = static_cast<unsigned>(*Oldnullability);
         S.Diag(NewParam->getLocation(), diag::warn_mismatched_nullability_attr)
-          << unsNewnullability
-          << ((NewParam->getObjCDeclQualifier() & Decl::OBJC_TQ_CSNullability) != 0)
-          << unsOldnullability
-          << ((OldParam->getObjCDeclQualifier() & Decl::OBJC_TQ_CSNullability) != 0);
+          << DiagNullabilityKind(
+               *Newnullability,
+               ((NewParam->getObjCDeclQualifier() & Decl::OBJC_TQ_CSNullability)
+                != 0))
+          << DiagNullabilityKind(
+               *Oldnullability,
+               ((OldParam->getObjCDeclQualifier() & Decl::OBJC_TQ_CSNullability)
+                != 0));
         S.Diag(OldParam->getLocation(), diag::note_previous_declaration);
       }
     } else {
@@ -5523,6 +5525,19 @@ bool Sema::adjustContextForLocalExternDecl(DeclContext *&DC) {
   return true;
 }
 
+/// \brief Returns true if given declaration is TU-scoped and externally
+/// visible.
+static bool isDeclTUScopedExternallyVisible(const Decl *D) {
+  if (auto *FD = dyn_cast<FunctionDecl>(D))
+    return (FD->getDeclContext()->isTranslationUnit() || FD->isExternC()) &&
+           FD->hasExternalFormalLinkage();
+  else if (auto *VD = dyn_cast<VarDecl>(D))
+    return (VD->getDeclContext()->isTranslationUnit() || VD->isExternC()) &&
+           VD->hasExternalFormalLinkage();
+
+  llvm_unreachable("Unknown type of decl!");
+}
+
 NamedDecl *
 Sema::ActOnVariableDeclarator(Scope *S, Declarator &D, DeclContext *DC,
                               TypeSourceInfo *TInfo, LookupResult &Previous,
@@ -5947,7 +5962,8 @@ Sema::ActOnVariableDeclarator(Scope *S, Declarator &D, DeclContext *DC,
 
     NewVD->addAttr(::new (Context) AsmLabelAttr(SE->getStrTokenLoc(0),
                                                 Context, Label, 0));
-  } else if (!ExtnameUndeclaredIdentifiers.empty()) {
+  } else if (!ExtnameUndeclaredIdentifiers.empty() &&
+             isDeclTUScopedExternallyVisible(NewVD)) {
     llvm::DenseMap<IdentifierInfo*,AsmLabelAttr*>::iterator I =
       ExtnameUndeclaredIdentifiers.find(NewVD->getIdentifier());
     if (I != ExtnameUndeclaredIdentifiers.end()) {
@@ -7469,7 +7485,8 @@ Sema::ActOnFunctionDeclarator(Scope *S, Declarator &D, DeclContext *DC,
     StringLiteral *SE = cast<StringLiteral>(E);
     NewFD->addAttr(::new (Context) AsmLabelAttr(SE->getStrTokenLoc(0), Context,
                                                 SE->getString(), 0));
-  } else if (!ExtnameUndeclaredIdentifiers.empty()) {
+  } else if (!ExtnameUndeclaredIdentifiers.empty() &&
+             isDeclTUScopedExternallyVisible(NewFD)) {
     llvm::DenseMap<IdentifierInfo*,AsmLabelAttr*>::iterator I =
       ExtnameUndeclaredIdentifiers.find(NewFD->getIdentifier());
     if (I != ExtnameUndeclaredIdentifiers.end()) {

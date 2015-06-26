@@ -702,8 +702,14 @@ public:
   /// \brief The declaration of the Objective-C NSNumber class.
   ObjCInterfaceDecl *NSNumberDecl;
 
+  /// \brief The declaration of the Objective-C NSValue class.
+  ObjCInterfaceDecl *NSValueDecl;
+
   /// \brief Pointer to NSNumber type (NSNumber *).
   QualType NSNumberPointer;
+
+  /// \brief Pointer to NSValue type (NSValue *).
+  QualType NSValuePointer;
 
   /// \brief The Objective-C NSNumber methods used to create NSNumber literals.
   ObjCMethodDecl *NSNumberLiteralMethods[NSAPI::NumNSNumberLiteralMethods];
@@ -716,6 +722,9 @@ public:
 
   /// \brief The declaration of the stringWithUTF8String: method.
   ObjCMethodDecl *StringWithUTF8StringMethod;
+
+  /// \brief The declaration of the valueWithBytes:objCType: method.
+  ObjCMethodDecl *ValueWithBytesObjCTypeMethod;
 
   /// \brief The declaration of the Objective-C NSArray class.
   ObjCInterfaceDecl *NSArrayDecl;
@@ -2978,7 +2987,7 @@ public:
                                        bool SynthesizeProperties);
 
   /// Diagnose any null-resettable synthesized setters.
-  void diagnoseNullResettableSynthesizedSetters(ObjCImplDecl *impDecl);
+  void diagnoseNullResettableSynthesizedSetters(const ObjCImplDecl *impDecl);
 
   /// DefaultSynthesizeProperties - This routine default synthesizes all
   /// properties which must be synthesized in the class's \@implementation.
@@ -5027,9 +5036,9 @@ public:
 
   /// BuildObjCBoxedExpr - builds an ObjCBoxedExpr AST node for the
   /// '@' prefixed parenthesized expression. The type of the expression will
-  /// either be "NSNumber *" or "NSString *" depending on the type of
-  /// ValueType, which is allowed to be a built-in numeric type or
-  /// "char *" or "const char *".
+  /// either be "NSNumber *", "NSString *" or "NSValue *" depending on the type
+  /// of ValueType, which is allowed to be a built-in numeric type, "char *",
+  /// "const char *" or C structure with attribute 'objc_boxable'.
   ExprResult BuildObjCBoxedExpr(SourceRange SR, Expr *ValueExpr);
 
   ExprResult BuildObjCSubscriptExpression(SourceLocation RB, Expr *BaseExpr,
@@ -8854,9 +8863,9 @@ private:
   mutable IdentifierInfo *Ident___float128;
 
   /// Nullability type specifiers.
-  IdentifierInfo *Ident___nonnull = nullptr;
-  IdentifierInfo *Ident___nullable = nullptr;
-  IdentifierInfo *Ident___null_unspecified = nullptr;
+  IdentifierInfo *Ident__Nonnull = nullptr;
+  IdentifierInfo *Ident__Nullable = nullptr;
+  IdentifierInfo *Ident__Null_unspecified = nullptr;
 
   IdentifierInfo *Ident_NSError = nullptr;
 
