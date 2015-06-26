@@ -463,16 +463,31 @@ void Darwin::AddDeploymentTarget(DerivedArgList &Args) const {
     if (char *env = ::getenv("IPHONEOS_DEPLOYMENT_TARGET"))
       iOSTarget = env;
 
-    // If no '-miphoneos-version-min' specified on the command line and
-    // IPHONEOS_DEPLOYMENT_TARGET is not defined, see if we can set the default
-    // based on -isysroot.
-    if (iOSTarget.empty()) {
+    // If there is no command-line argument to specify the Target version and
+    // no environment variable defined, see if we can set the default based
+    // on -isysroot.
+    if (iOSTarget.empty() && OSXTarget.empty() &&
+        Args.hasArg(options::OPT_isysroot)) {
       if (const Arg *A = Args.getLastArg(options::OPT_isysroot)) {
-        StringRef first, second;
         StringRef isysroot = A->getValue();
-        std::tie(first, second) = isysroot.split(StringRef("SDKs/iPhoneOS"));
-        if (second != "")
-          iOSTarget = second.substr(0,3);
+        // Assume SDK has path: SOME_PATH/SDKs/PlatformXX.YY.sdk
+        size_t BeginSDK = isysroot.rfind("SDKs/");
+        size_t EndSDK = isysroot.rfind(".sdk");
+        if (BeginSDK != StringRef::npos && EndSDK != StringRef::npos) {
+          StringRef SDK = isysroot.slice(BeginSDK + 5, EndSDK);
+          // Slice the version number out.
+          // Version number is between the first and the last number.
+          size_t StartVer = SDK.find_first_of("0123456789");
+          size_t EndVer = SDK.find_last_of("0123456789");
+          if (StartVer != StringRef::npos && EndVer > StartVer) {
+            StringRef Version = SDK.slice(StartVer, EndVer + 1);
+            if (SDK.startswith("iPhoneOS") ||
+                SDK.startswith("iPhoneSimulator"))
+              iOSTarget = Version;
+            else if (SDK.startswith("MacOSX"))
+              OSXTarget = Version;
+          }
+        }
       }
     }
 
@@ -682,11 +697,9 @@ DerivedArgList *MachO::TranslateArgs(const DerivedArgList &Args,
       // "input arguments".
       if (A->getOption().hasFlag(options::LinkerInput)) {
         // Convert the argument into individual Zlinker_input_args.
-        for (unsigned i = 0, e = A->getNumValues(); i != e; ++i) {
-          DAL->AddSeparateArg(OriginalArg,
-                              Opts.getOption(options::OPT_Zlinker_input),
-                              A->getValue(i));
-
+        for (const char *Value : A->getValues()) {
+          DAL->AddSeparateArg(
+              OriginalArg, Opts.getOption(options::OPT_Zlinker_input), Value);
         }
         continue;
       }
@@ -1067,13 +1080,13 @@ void Darwin::CheckObjCARC() const {
 
 SanitizerMask Darwin::getSupportedSanitizers() const {
   SanitizerMask Res = ToolChain::getSupportedSanitizers();
-  if (isTargetMacOS() || isTargetIOSSimulator()) {
-    // ASan and UBSan are available on Mac OS and on iOS simulator.
+  if (isTargetMacOS() || isTargetIOSSimulator())
     Res |= SanitizerKind::Address;
-    Res |= SanitizerKind::Vptr;
-  }
-  if (isTargetMacOS())
+  if (isTargetMacOS()) {
+    if (!isMacosxVersionLT(10, 9))
+      Res |= SanitizerKind::Vptr;
     Res |= SanitizerKind::SafeStack;
+  }
   return Res;
 }
 
@@ -1216,25 +1229,22 @@ Generic_GCC::GCCInstallationDetector::init(
   // Loop over the various components which exist and select the best GCC
   // installation available. GCC installs are ranked by version number.
   Version = GCCVersion::Parse("0.0.0");
-  for (unsigned i = 0, ie = Prefixes.size(); i < ie; ++i) {
-    if (!llvm::sys::fs::exists(Prefixes[i]))
+  for (const std::string &Prefix : Prefixes) {
+    if (!llvm::sys::fs::exists(Prefix))
       continue;
-    for (unsigned j = 0, je = CandidateLibDirs.size(); j < je; ++j) {
-      const std::string LibDir = Prefixes[i] + CandidateLibDirs[j].str();
+    for (const StringRef Suffix : CandidateLibDirs) {
+      const std::string LibDir = Prefix + Suffix.str();
       if (!llvm::sys::fs::exists(LibDir))
         continue;
-      for (unsigned k = 0, ke = CandidateTripleAliases.size(); k < ke; ++k)
-        ScanLibDirForGCCTriple(TargetTriple, Args, LibDir,
-                               CandidateTripleAliases[k]);
+      for (const StringRef Candidate : CandidateTripleAliases)
+        ScanLibDirForGCCTriple(TargetTriple, Args, LibDir, Candidate);
     }
-    for (unsigned j = 0, je = CandidateBiarchLibDirs.size(); j < je; ++j) {
-      const std::string LibDir = Prefixes[i] + CandidateBiarchLibDirs[j].str();
+    for (const StringRef Suffix : CandidateBiarchLibDirs) {
+      const std::string LibDir = Prefix + Suffix.str();
       if (!llvm::sys::fs::exists(LibDir))
         continue;
-      for (unsigned k = 0, ke = CandidateBiarchTripleAliases.size(); k < ke;
-           ++k)
-        ScanLibDirForGCCTriple(TargetTriple, Args, LibDir,
-                               CandidateBiarchTripleAliases[k],
+      for (const StringRef Candidate : CandidateBiarchTripleAliases)
+        ScanLibDirForGCCTriple(TargetTriple, Args, LibDir, Candidate,
                                /*NeedsBiarchSuffix=*/ true);
     }
   }
@@ -2150,9 +2160,9 @@ static void GetHexagonLibraryPaths(
   //----------------------------------------------------------------------------
   // -L Args
   //----------------------------------------------------------------------------
-  for (const Arg *A : Args.filtered(options::OPT_L))
-    for (unsigned i = 0, e = A->getNumValues(); i != e; ++i)
-      LibPaths->push_back(A->getValue(i));
+  for (Arg *A : Args.filtered(options::OPT_L))
+    for (const char *Value : A->getValues())
+      LibPaths->push_back(Value);
 
   //----------------------------------------------------------------------------
   // Other standard paths
@@ -2944,25 +2954,25 @@ static Distro DetectDistro(llvm::Triple::ArchType Arch) {
     SmallVector<StringRef, 16> Lines;
     Data.split(Lines, "\n");
     Distro Version = UnknownDistro;
-    for (unsigned i = 0, s = Lines.size(); i != s; ++i)
-      if (Version == UnknownDistro && Lines[i].startswith("DISTRIB_CODENAME="))
-        Version = llvm::StringSwitch<Distro>(Lines[i].substr(17))
-          .Case("hardy", UbuntuHardy)
-          .Case("intrepid", UbuntuIntrepid)
-          .Case("jaunty", UbuntuJaunty)
-          .Case("karmic", UbuntuKarmic)
-          .Case("lucid", UbuntuLucid)
-          .Case("maverick", UbuntuMaverick)
-          .Case("natty", UbuntuNatty)
-          .Case("oneiric", UbuntuOneiric)
-          .Case("precise", UbuntuPrecise)
-          .Case("quantal", UbuntuQuantal)
-          .Case("raring", UbuntuRaring)
-          .Case("saucy", UbuntuSaucy)
-          .Case("trusty", UbuntuTrusty)
-          .Case("utopic", UbuntuUtopic)
-          .Case("vivid", UbuntuVivid)
-          .Default(UnknownDistro);
+    for (const StringRef Line : Lines)
+      if (Version == UnknownDistro && Line.startswith("DISTRIB_CODENAME="))
+        Version = llvm::StringSwitch<Distro>(Line.substr(17))
+                      .Case("hardy", UbuntuHardy)
+                      .Case("intrepid", UbuntuIntrepid)
+                      .Case("jaunty", UbuntuJaunty)
+                      .Case("karmic", UbuntuKarmic)
+                      .Case("lucid", UbuntuLucid)
+                      .Case("maverick", UbuntuMaverick)
+                      .Case("natty", UbuntuNatty)
+                      .Case("oneiric", UbuntuOneiric)
+                      .Case("precise", UbuntuPrecise)
+                      .Case("quantal", UbuntuQuantal)
+                      .Case("raring", UbuntuRaring)
+                      .Case("saucy", UbuntuSaucy)
+                      .Case("trusty", UbuntuTrusty)
+                      .Case("utopic", UbuntuUtopic)
+                      .Case("vivid", UbuntuVivid)
+                      .Default(UnknownDistro);
     return Version;
   }
 
@@ -3654,6 +3664,8 @@ SanitizerMask Linux::getSupportedSanitizers() const {
   const bool IsX86_64 = getTriple().getArch() == llvm::Triple::x86_64;
   const bool IsMIPS64 = getTriple().getArch() == llvm::Triple::mips64 ||
                         getTriple().getArch() == llvm::Triple::mips64el;
+  const bool IsPowerPC64 = getTriple().getArch() == llvm::Triple::ppc64 ||
+                           getTriple().getArch() == llvm::Triple::ppc64le;
   SanitizerMask Res = ToolChain::getSupportedSanitizers();
   Res |= SanitizerKind::Address;
   Res |= SanitizerKind::KernelAddress;
@@ -3661,9 +3673,10 @@ SanitizerMask Linux::getSupportedSanitizers() const {
   if (IsX86_64 || IsMIPS64) {
     Res |= SanitizerKind::DataFlow;
     Res |= SanitizerKind::Leak;
-    Res |= SanitizerKind::Memory;
     Res |= SanitizerKind::Thread;
   }
+  if (IsX86_64 || IsMIPS64 || IsPowerPC64)
+    Res |= SanitizerKind::Memory;
   if (IsX86 || IsX86_64) {
     Res |= SanitizerKind::Function;
     Res |= SanitizerKind::SafeStack;

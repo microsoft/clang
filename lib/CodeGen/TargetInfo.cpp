@@ -2498,13 +2498,16 @@ GetX86_64ByValArgumentPair(llvm::Type *Lo, llvm::Type *Hi,
   // of the second element because it might make us access off the end of the
   // struct.
   if (HiStart != 8) {
-    // There are only two sorts of types the ABI generation code can produce for
-    // the low part of a pair that aren't 8 bytes in size: float or i8/i16/i32.
+    // There are usually two sorts of types the ABI generation code can produce
+    // for the low part of a pair that aren't 8 bytes in size: float or
+    // i8/i16/i32.  This can also include pointers when they are 32-bit (X32 and
+    // NaCl).
     // Promote these to a larger type.
     if (Lo->isFloatTy())
       Lo = llvm::Type::getDoubleTy(Lo->getContext());
     else {
-      assert(Lo->isIntegerTy() && "Invalid/unknown lo type");
+      assert((Lo->isIntegerTy() || Lo->isPointerTy())
+             && "Invalid/unknown lo type");
       Lo = llvm::Type::getInt64Ty(Lo->getContext());
     }
   }
