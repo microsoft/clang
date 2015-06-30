@@ -3921,10 +3921,12 @@ TEST_F(FormatTest, BreaksDesireably) {
                "                      aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,\n"
                "                  aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa);");
 
-  // Indent consistently independent of call expression.
+  // Indent consistently independent of call expression and unary operator.
+  verifyFormat("aaaaaaaaaaa(bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb(\n"
+               "    dddddddddddddddddddddddddddddd));");
+  verifyFormat("aaaaaaaaaaa(!bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb(\n"
+               "    dddddddddddddddddddddddddddddd));");
   verifyFormat("aaaaaaaaaaa(bbbbbbbbbbbbbbbbbbbbbbbbb.ccccccccccccccccc(\n"
-               "    dddddddddddddddddddddddddddddd));\n"
-               "aaaaaaaaaaa(bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb(\n"
                "    dddddddddddddddddddddddddddddd));");
 
   // This test case breaks on an incorrect memoization, i.e. an optimization not
@@ -4616,30 +4618,50 @@ TEST_F(FormatTest, AlignsStringLiterals) {
                "              \"c\";");
 }
 
-TEST_F(FormatTest, AlwaysBreakAfterDefinitionReturnType) {
-  FormatStyle AfterType = getLLVMStyle();
-  AfterType.AlwaysBreakAfterDefinitionReturnType = true;
+TEST_F(FormatTest, DefinitionReturnTypeBreakingStyle) {
+  FormatStyle Style = getLLVMStyle();
+  Style.AlwaysBreakAfterDefinitionReturnType = FormatStyle::DRTBS_TopLevel;
+  verifyFormat("class C {\n"
+               "  int f() { return 1; }\n"
+               "};\n"
+               "int\n"
+               "f() {\n"
+               "  return 1;\n"
+               "}",
+               Style);
+  Style.AlwaysBreakAfterDefinitionReturnType = FormatStyle::DRTBS_All;
+  verifyFormat("class C {\n"
+               "  int\n"
+               "  f() {\n"
+               "    return 1;\n"
+               "  }\n"
+               "};\n"
+               "int\n"
+               "f() {\n"
+               "  return 1;\n"
+               "}",
+               Style);
   verifyFormat("const char *\n"
                "f(void) {\n" // Break here.
                "  return \"\";\n"
                "}\n"
                "const char *bar(void);\n", // No break here.
-               AfterType);
+               Style);
   verifyFormat("template <class T>\n"
                "T *\n"
                "f(T &c) {\n" // Break here.
                "  return NULL;\n"
                "}\n"
                "template <class T> T *f(T &c);\n", // No break here.
-               AfterType);
-  AfterType.BreakBeforeBraces = FormatStyle::BS_Stroustrup;
+               Style);
+  Style.BreakBeforeBraces = FormatStyle::BS_Stroustrup;
   verifyFormat("const char *\n"
                "f(void)\n" // Break here.
                "{\n"
                "  return \"\";\n"
                "}\n"
                "const char *bar(void);\n", // No break here.
-               AfterType);
+               Style);
   verifyFormat("template <class T>\n"
                "T *\n"     // Problem here: no line break
                "f(T &c)\n" // Break here.
@@ -4647,7 +4669,7 @@ TEST_F(FormatTest, AlwaysBreakAfterDefinitionReturnType) {
                "  return NULL;\n"
                "}\n"
                "template <class T> T *f(T &c);\n", // No break here.
-               AfterType);
+               Style);
 }
 
 TEST_F(FormatTest, AlwaysBreakBeforeMultilineStrings) {
@@ -5190,7 +5212,7 @@ TEST_F(FormatTest, DoesNotIndentRelativeToUnaryOperators) {
                "        aaaaa)) {\n"
                "}");
   verifyFormat("aaaaaaaaaa(!aaaaaaaaaa( // break\n"
-               "               aaaaa));");
+               "    aaaaa));");
   verifyFormat("*aaa = aaaaaaa( // break\n"
                "    bbbbbb);");
 }
@@ -9039,7 +9061,6 @@ TEST_F(FormatTest, ParsesConfigurationBools) {
   CHECK_PARSE_BOOL(AllowShortCaseLabelsOnASingleLine);
   CHECK_PARSE_BOOL(AllowShortIfStatementsOnASingleLine);
   CHECK_PARSE_BOOL(AllowShortLoopsOnASingleLine);
-  CHECK_PARSE_BOOL(AlwaysBreakAfterDefinitionReturnType);
   CHECK_PARSE_BOOL(AlwaysBreakTemplateDeclarations);
   CHECK_PARSE_BOOL(BinPackParameters);
   CHECK_PARSE_BOOL(BinPackArguments);
@@ -9171,6 +9192,15 @@ TEST_F(FormatTest, ParsesConfiguration) {
   CHECK_PARSE("BreakBeforeBraces: Allman", BreakBeforeBraces,
               FormatStyle::BS_Allman);
   CHECK_PARSE("BreakBeforeBraces: GNU", BreakBeforeBraces, FormatStyle::BS_GNU);
+
+  Style.AlwaysBreakAfterDefinitionReturnType = FormatStyle::DRTBS_All;
+  CHECK_PARSE("AlwaysBreakAfterDefinitionReturnType: None",
+              AlwaysBreakAfterDefinitionReturnType, FormatStyle::DRTBS_None);
+  CHECK_PARSE("AlwaysBreakAfterDefinitionReturnType: All",
+              AlwaysBreakAfterDefinitionReturnType, FormatStyle::DRTBS_All);
+  CHECK_PARSE("AlwaysBreakAfterDefinitionReturnType: TopLevel",
+              AlwaysBreakAfterDefinitionReturnType,
+              FormatStyle::DRTBS_TopLevel);
 
   Style.NamespaceIndentation = FormatStyle::NI_All;
   CHECK_PARSE("NamespaceIndentation: None", NamespaceIndentation,
