@@ -14,6 +14,7 @@
 #include "clang/Lex/HeaderSearch.h"
 #include "clang/Basic/FileManager.h"
 #include "clang/Basic/IdentifierTable.h"
+#include "clang/Lex/ExternalPreprocessorSource.h"
 #include "clang/Lex/HeaderMap.h"
 #include "clang/Lex/HeaderSearchOptions.h"
 #include "clang/Lex/LexDiagnostic.h"
@@ -33,9 +34,13 @@
 using namespace clang;
 
 const IdentifierInfo *
-HeaderFileInfo::getControllingMacro(ExternalIdentifierLookup *External) {
-  if (ControllingMacro)
+HeaderFileInfo::getControllingMacro(ExternalPreprocessorSource *External) {
+  if (ControllingMacro) {
+    if (ControllingMacro->isOutOfDate())
+      External->updateOutOfDateIdentifier(
+          *const_cast<IdentifierInfo *>(ControllingMacro));
     return ControllingMacro;
+  }
 
   if (!ControllingMacroID || !External)
     return nullptr;
@@ -1025,7 +1030,7 @@ void HeaderSearch::MarkFileModuleHeader(const FileEntry *FE,
 
 bool HeaderSearch::ShouldEnterIncludeFile(Preprocessor &PP,
                                           const FileEntry *File,
-                                          bool isImport) {
+                                          bool isImport, Module *M) {
   ++NumIncluded; // Count # of attempted #includes.
 
   // Get information about this file.
@@ -1050,7 +1055,11 @@ bool HeaderSearch::ShouldEnterIncludeFile(Preprocessor &PP,
   // if the macro that guards it is defined, we know the #include has no effect.
   if (const IdentifierInfo *ControllingMacro
       = FileInfo.getControllingMacro(ExternalLookup))
-    if (PP.isMacroDefined(ControllingMacro)) {
+    // If the include file is part of a module, and we already know what its
+    // controlling macro is, then we've already parsed it and can safely just
+    // make it visible. This saves us needing to switch into the visibility
+    // state of the module just to check whether the macro is defined within it.
+    if (M || PP.isMacroDefined(ControllingMacro)) {
       ++NumMultiIncludeFileOptzn;
       return false;
     }
