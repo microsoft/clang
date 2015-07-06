@@ -1882,6 +1882,7 @@ public:
   void VisitOMPTaskgroupDirective(const OMPTaskgroupDirective *D);
   void
   VisitOMPCancellationPointDirective(const OMPCancellationPointDirective *D);
+  void VisitOMPCancelDirective(const OMPCancelDirective *D);
   void VisitOMPFlushDirective(const OMPFlushDirective *D);
   void VisitOMPOrderedDirective(const OMPOrderedDirective *D);
   void VisitOMPAtomicDirective(const OMPAtomicDirective *D);
@@ -1936,8 +1937,8 @@ void EnqueueVisitor::AddTypeLoc(TypeSourceInfo *TI) {
  }
 void EnqueueVisitor::EnqueueChildren(const Stmt *S) {
   unsigned size = WL.size();
-  for (Stmt::const_child_range Child = S->children(); Child; ++Child) {
-    AddStmt(*Child);
+  for (const Stmt *SubStmt : S->children()) {
+    AddStmt(SubStmt);
   }
   if (size == WL.size())
     return;
@@ -2511,6 +2512,10 @@ void EnqueueVisitor::VisitOMPTeamsDirective(const OMPTeamsDirective *D) {
 
 void EnqueueVisitor::VisitOMPCancellationPointDirective(
     const OMPCancellationPointDirective *D) {
+  VisitOMPExecutableDirective(D);
+}
+
+void EnqueueVisitor::VisitOMPCancelDirective(const OMPCancelDirective *D) {
   VisitOMPExecutableDirective(D);
 }
 
@@ -4292,6 +4297,8 @@ CXString clang_getCursorKindSpelling(enum CXCursorKind Kind) {
     return cxstring::createRef("OMPTeamsDirective");
   case CXCursor_OMPCancellationPointDirective:
     return cxstring::createRef("OMPCancellationPointDirective");
+  case CXCursor_OMPCancelDirective:
+    return cxstring::createRef("OMPCancelDirective");
   case CXCursor_OverloadCandidate:
       return cxstring::createRef("OverloadCandidate");
   }
