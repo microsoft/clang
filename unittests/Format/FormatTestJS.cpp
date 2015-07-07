@@ -703,6 +703,10 @@ TEST_F(FormatTestJS, InterfaceDeclarations) {
                "  x: string;\n"
                "}\n"
                "var y;");
+  // Ensure that state is reset after parsing the interface.
+  verifyFormat("interface a {}\n"
+               "export function b() {}\n"
+               "var x;");
 }
 
 TEST_F(FormatTestJS, EnumDeclarations) {
@@ -885,6 +889,9 @@ TEST_F(FormatTestJS, TypeArguments) {
   verifyFormat("function f(): List<any> {}");
   verifyFormat("function aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa():\n"
                "    bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb {}");
+  verifyFormat("function aaaaaaaaaa(aaaaaaaaaaaaaaaa: aaaaaaaaaaaaaaaaaa,\n"
+               "                    aaaaaaaaaaaaaaaa: aaaaaaaaaaaaaaaaaa):\n"
+               "    aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa {}");
 }
 
 TEST_F(FormatTestJS, OptionalTypes) {

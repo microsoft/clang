@@ -421,9 +421,13 @@ void ASTTypeWriter::VisitObjCInterfaceType(const ObjCInterfaceType *T) {
 
 void ASTTypeWriter::VisitObjCObjectType(const ObjCObjectType *T) {
   Writer.AddTypeRef(T->getBaseType(), Record);
+  Record.push_back(T->getTypeArgsAsWritten().size());
+  for (auto TypeArg : T->getTypeArgsAsWritten())
+    Writer.AddTypeRef(TypeArg, Record);
   Record.push_back(T->getNumProtocols());
   for (const auto *I : T->quals())
     Writer.AddDeclRef(I, Record);
+  Record.push_back(T->isKindOfTypeAsWritten());
   Code = TYPE_OBJC_OBJECT;
 }
 
@@ -648,8 +652,12 @@ void TypeLocWriter::VisitObjCInterfaceTypeLoc(ObjCInterfaceTypeLoc TL) {
 }
 void TypeLocWriter::VisitObjCObjectTypeLoc(ObjCObjectTypeLoc TL) {
   Record.push_back(TL.hasBaseTypeAsWritten());
-  Writer.AddSourceLocation(TL.getLAngleLoc(), Record);
-  Writer.AddSourceLocation(TL.getRAngleLoc(), Record);
+  Writer.AddSourceLocation(TL.getTypeArgsLAngleLoc(), Record);
+  Writer.AddSourceLocation(TL.getTypeArgsRAngleLoc(), Record);
+  for (unsigned i = 0, e = TL.getNumTypeArgs(); i != e; ++i)
+    Writer.AddTypeSourceInfo(TL.getTypeArgTInfo(i), Record);
+  Writer.AddSourceLocation(TL.getProtocolLAngleLoc(), Record);
+  Writer.AddSourceLocation(TL.getProtocolRAngleLoc(), Record);
   for (unsigned i = 0, e = TL.getNumProtocols(); i != e; ++i)
     Writer.AddSourceLocation(TL.getProtocolLoc(i), Record);
 }

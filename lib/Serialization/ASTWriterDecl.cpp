@@ -117,6 +117,7 @@ namespace clang {
 
     // FIXME: Put in the same order is DeclNodes.td?
     void VisitObjCMethodDecl(ObjCMethodDecl *D);
+    void VisitObjCTypeParamDecl(ObjCTypeParamDecl *D);
     void VisitObjCContainerDecl(ObjCContainerDecl *D);
     void VisitObjCInterfaceDecl(ObjCInterfaceDecl *D);
     void VisitObjCIvarDecl(ObjCIvarDecl *D);
@@ -130,6 +131,22 @@ namespace clang {
     void VisitObjCPropertyDecl(ObjCPropertyDecl *D);
     void VisitObjCPropertyImplDecl(ObjCPropertyImplDecl *D);
     void VisitOMPThreadPrivateDecl(OMPThreadPrivateDecl *D);
+
+    /// Add an Objective-C type parameter list to the given record.
+    void AddObjCTypeParamList(ObjCTypeParamList *typeParams) {
+      // Empty type parameter list.
+      if (!typeParams) {
+        Record.push_back(0);
+        return;
+      }
+
+      Record.push_back(typeParams->size());
+      for (auto typeParam : *typeParams) {
+        Writer.AddDeclRef(typeParam, Record);
+      }
+      Writer.AddSourceLocation(typeParams->getLAngleLoc(), Record);
+      Writer.AddSourceLocation(typeParams->getRAngleLoc(), Record);
+    }
 
     void AddFunctionDefinition(const FunctionDecl *FD) {
       assert(FD->doesThisDeclarationHaveABody());
@@ -562,6 +579,16 @@ void ASTDeclWriter::VisitObjCMethodDecl(ObjCMethodDecl *D) {
   Code = serialization::DECL_OBJC_METHOD;
 }
 
+void ASTDeclWriter::VisitObjCTypeParamDecl(ObjCTypeParamDecl *D) {
+  VisitTypedefNameDecl(D);
+  Record.push_back(D->Variance);
+  Record.push_back(D->Index);
+  Writer.AddSourceLocation(D->VarianceLoc, Record);
+  Writer.AddSourceLocation(D->ColonLoc, Record);
+
+  Code = serialization::DECL_OBJC_TYPE_PARAM;
+}
+
 void ASTDeclWriter::VisitObjCContainerDecl(ObjCContainerDecl *D) {
   VisitNamedDecl(D);
   Writer.AddSourceLocation(D->getAtStartLoc(), Record);
@@ -573,14 +600,14 @@ void ASTDeclWriter::VisitObjCInterfaceDecl(ObjCInterfaceDecl *D) {
   VisitRedeclarable(D);
   VisitObjCContainerDecl(D);
   Writer.AddTypeRef(QualType(D->getTypeForDecl(), 0), Record);
+  AddObjCTypeParamList(D->TypeParamList);
 
   Record.push_back(D->isThisDeclarationADefinition());
   if (D->isThisDeclarationADefinition()) {
     // Write the DefinitionData
     ObjCInterfaceDecl::DefinitionData &Data = D->data();
     
-    Writer.AddDeclRef(D->getSuperClass(), Record);
-    Writer.AddSourceLocation(D->getSuperClassLoc(), Record);
+    Writer.AddTypeSourceInfo(D->getSuperClassTInfo(), Record);
     Writer.AddSourceLocation(D->getEndOfDefinitionLoc(), Record);
     Record.push_back(Data.HasDesignatedInitializers);
 
@@ -660,6 +687,7 @@ void ASTDeclWriter::VisitObjCCategoryDecl(ObjCCategoryDecl *D) {
   Writer.AddSourceLocation(D->getIvarLBraceLoc(), Record);
   Writer.AddSourceLocation(D->getIvarRBraceLoc(), Record);
   Writer.AddDeclRef(D->getClassInterface(), Record);
+  AddObjCTypeParamList(D->TypeParamList);
   Record.push_back(D->protocol_size());
   for (const auto *I : D->protocols())
     Writer.AddDeclRef(I, Record);
