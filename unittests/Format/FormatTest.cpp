@@ -4678,6 +4678,32 @@ TEST_F(FormatTest, DefinitionReturnTypeBreakingStyle) {
                "}\n"
                "template <class T> T *f(T &c);\n", // No break here.
                Style);
+  verifyFormat("class C {\n"
+               "  int\n"
+               "  operator+() {\n"
+               "    return 1;\n"
+               "  }\n"
+               "  int\n"
+               "  operator()() {\n"
+               "    return 1;\n"
+               "  }\n"
+               "};\n",
+               Style);
+  verifyFormat("void\n"
+               "A::operator()() {}\n"
+               "void\n"
+               "A::operator>>() {}\n"
+               "void\n"
+               "A::operator+() {}\n",
+               Style);
+  verifyFormat("void *operator new(std::size_t s);", // No break here.
+               Style);
+  verifyFormat("void *\n"
+               "operator new(std::size_t s) {}",
+               Style);
+  verifyFormat("void *\n"
+               "operator delete[](void *ptr) {}",
+               Style);
   Style.BreakBeforeBraces = FormatStyle::BS_Stroustrup;
   verifyFormat("const char *\n"
                "f(void)\n" // Break here.
@@ -6307,6 +6333,11 @@ TEST_F(FormatTest, FormatsBracedListsInColumnLayout) {
                "    1111111111, 2222222222, 33333333333, 4444444444, //\n"
                "    111111111,  222222222,  3333333333,  444444444,  //\n"
                "    11111111,   22222222,   333333333,   44444444};");
+  // Trailing comment in the last line.
+  verifyFormat("int aaaaa[] = {\n"
+               "    1, 2, 3, // comment\n"
+               "    4, 5, 6  // comment\n"
+               "};");
 
   // With nested lists, we should either format one item per line or all nested
   // lists one on line.
@@ -7074,6 +7105,22 @@ TEST_F(FormatTest, FormatObjCMethodDeclarations) {
                "                         y:(id<yyyyyyyyyyyyyyyyyyyy>)y\n"
                "    NS_DESIGNATED_INITIALIZER;",
                getLLVMStyleWithColumns(60));
+
+  // Continuation indent width should win over aligning colons if the function
+  // name is long.
+  FormatStyle continuationStyle = getGoogleStyle();
+  continuationStyle.ColumnLimit = 40;
+  continuationStyle.IndentWrappedFunctionNames = true;
+  verifyFormat("- (void)shortf:(GTMFoo *)theFoo\n"
+               "    dontAlignNamef:(NSRect)theRect {\n"
+               "}",
+               continuationStyle);
+
+  // Make sure we don't break aligning for short parameter names.
+  verifyFormat("- (void)shortf:(GTMFoo *)theFoo\n"
+               "       aShortf:(NSRect)theRect {\n"
+               "}",
+               continuationStyle);
 }
 
 TEST_F(FormatTest, FormatObjCMethodExpr) {
@@ -9866,6 +9913,15 @@ TEST_F(FormatTest, FormatsLambdas) {
                "  return aaaaaaaaaaaaaaaaaaaaaaa != aaaaaaaaaaaaaaaaaaaaaaa;\n"
                "});",
                getLLVMStyleWithColumns(60));
+  verifyFormat("SomeFunction({[&] {\n"
+               "                // comment\n"
+               "              },\n"
+               "              [&] {\n"
+               "                // comment\n"
+               "              }});");
+  verifyFormat("SomeFunction({[&] {\n"
+               "  // comment\n"
+               "}});");
 
   // Lambdas with return types.
   verifyFormat("int c = []() -> int { return 2; }();\n");
