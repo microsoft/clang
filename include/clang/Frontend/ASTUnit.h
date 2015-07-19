@@ -57,6 +57,7 @@ class FileManager;
 class HeaderSearch;
 class Preprocessor;
 class PCHContainerOperations;
+class PCHContainerReader;
 class SourceManager;
 class TargetInfo;
 class ASTFrontendAction;
@@ -718,15 +719,14 @@ public:
   ///
   /// \param Filename - The AST file to load.
   ///
-  /// \param PCHContainerOps - The PCHContainerOperations to use for loading and
+  /// \param PCHContainerRdr - The PCHContainerOperations to use for loading and
   /// creating modules.
   /// \param Diags - The diagnostics engine to use for reporting errors; its
   /// lifetime is expected to extend past that of the returned ASTUnit.
   ///
   /// \returns - The initialized ASTUnit or null if the AST failed to load.
   static std::unique_ptr<ASTUnit> LoadFromASTFile(
-      const std::string &Filename,
-      std::shared_ptr<PCHContainerOperations> PCHContainerOps,
+      const std::string &Filename, const PCHContainerReader &PCHContainerRdr,
       IntrusiveRefCntPtr<DiagnosticsEngine> Diags,
       const FileSystemOptions &FileSystemOpts, bool OnlyLocalDecls = false,
       ArrayRef<RemappedFile> RemappedFiles = None,
