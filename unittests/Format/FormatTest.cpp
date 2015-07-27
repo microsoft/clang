@@ -5161,6 +5161,8 @@ TEST_F(FormatTest, UnderstandsTemplateParameters) {
   EXPECT_EQ("A<A<A<A>>> a;", format("A<A<A<A>> > a;", getGoogleStyle()));
   EXPECT_EQ("A<::A<int>> a;", format("A< ::A<int>> a;", getGoogleStyle()));
   EXPECT_EQ("A<::A<int>> a;", format("A<::A<int> > a;", getGoogleStyle()));
+  EXPECT_EQ("auto x = [] { A<A<A<A>>> a; };",
+            format("auto x=[]{A<A<A<A> >> a;};", getGoogleStyle()));
 
   verifyFormat("A<A>> a;", getChromiumStyle(FormatStyle::LK_Cpp));
 
@@ -5456,6 +5458,7 @@ TEST_F(FormatTest, UnderstandsUsesOfStarAndAmp) {
   FormatStyle Left = getLLVMStyle();
   Left.PointerAlignment = FormatStyle::PAS_Left;
   verifyFormat("x = *a(x) = *a(y);", Left);
+  verifyFormat("for (;; * = b) {\n}", Left);
 
   verifyIndependentOfContext("a = *(x + y);");
   verifyIndependentOfContext("a = &(x + y);");
@@ -5621,6 +5624,15 @@ TEST_F(FormatTest, AdaptivelyFormatsPointersAndReferences) {
             format("int *a;\n"
                    "int * a;\n"
                    "int *  a;",
+                   getGoogleStyle()));
+  EXPECT_EQ("auto x = [] {\n"
+            "  int *a;\n"
+            "  int *a;\n"
+            "  int *a;\n"
+            "};",
+            format("auto x=[]{int *a;\n"
+                   "int * a;\n"
+                   "int *  a;};",
                    getGoogleStyle()));
 }
 
@@ -9544,6 +9556,11 @@ TEST_F(FormatTest, SplitsUTF8Strings) {
             "\"八九十\tqq\"",
             format("\"一\t二 \t三 四 五\t六 \t七 八九十\tqq\"",
                    getLLVMStyleWithColumns(11)));
+
+  // UTF8 character in an escape sequence.
+  EXPECT_EQ("\"aaaaaa\"\n"
+            "\"\\\xC2\x8D\"",
+            format("\"aaaaaa\\\xC2\x8D\"", getLLVMStyleWithColumns(10)));
 }
 
 TEST_F(FormatTest, HandlesDoubleWidthCharsInMultiLineStrings) {

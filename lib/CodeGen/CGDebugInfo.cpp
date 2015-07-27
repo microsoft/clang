@@ -972,7 +972,7 @@ void CGDebugInfo::CollectRecordFields(
         if (MI != StaticDataMemberCache.end()) {
           assert(MI->second &&
                  "Static data member declaration should still exist");
-          elements.push_back(cast<llvm::DIDerivedTypeBase>(MI->second));
+          elements.push_back(MI->second);
         } else {
           auto Field = CreateRecordStaticField(V, RecordTy, record);
           elements.push_back(Field);
@@ -1509,9 +1509,7 @@ llvm::DIType *CGDebugInfo::CreateTypeDefinition(const RecordType *Ty) {
   // its members.  Finally, we create a descriptor for the complete type (which
   // may refer to the forward decl if the struct is recursive) and replace all
   // uses of the forward declaration with the final definition.
-
-  auto *FwdDecl =
-      cast<llvm::DICompositeType>(getOrCreateLimitedType(Ty, DefUnit));
+  llvm::DICompositeType *FwdDecl = getOrCreateLimitedType(Ty, DefUnit);
 
   const RecordDecl *D = RD->getDefinition();
   if (!D || !D->isCompleteDefinition())
@@ -2175,11 +2173,11 @@ llvm::DIType *CGDebugInfo::CreateTypeNode(QualType Ty, llvm::DIFile *Unit) {
   llvm_unreachable("type should have been unwrapped!");
 }
 
-llvm::DIType *CGDebugInfo::getOrCreateLimitedType(const RecordType *Ty,
-                                                  llvm::DIFile *Unit) {
+llvm::DICompositeType *CGDebugInfo::getOrCreateLimitedType(const RecordType *Ty,
+                                                           llvm::DIFile *Unit) {
   QualType QTy(Ty, 0);
 
-  auto *T = cast_or_null<llvm::DICompositeTypeBase>(getTypeOrNull(QTy));
+  auto *T = cast_or_null<llvm::DICompositeType>(getTypeOrNull(QTy));
 
   // We may have cached a forward decl when we could have created
   // a non-forward decl. Go ahead and create a non-forward decl
@@ -3115,7 +3113,7 @@ CGDebugInfo::getOrCreateStaticDataMemberDeclarationOrNull(const VarDecl *D) {
   auto MI = StaticDataMemberCache.find(D->getCanonicalDecl());
   if (MI != StaticDataMemberCache.end()) {
     assert(MI->second && "Static data member declaration should still exist");
-    return cast<llvm::DIDerivedType>(MI->second);
+    return MI->second;
   }
 
   // If the member wasn't found in the cache, lazily construct and add it to the

@@ -120,6 +120,7 @@ private:
   /// from current directive.
   OpenMPClauseKind ClauseKindMode;
   Sema &SemaRef;
+  bool ForceCapturing;
 
   typedef SmallVector<SharingMapTy, 8>::reverse_iterator reverse_iterator;
 
@@ -130,10 +131,14 @@ private:
 
 public:
   explicit DSAStackTy(Sema &S)
-      : Stack(1), ClauseKindMode(OMPC_unknown), SemaRef(S) {}
+      : Stack(1), ClauseKindMode(OMPC_unknown), SemaRef(S),
+        ForceCapturing(false) {}
 
   bool isClauseParsingMode() const { return ClauseKindMode != OMPC_unknown; }
   void setClauseParsingMode(OpenMPClauseKind K) { ClauseKindMode = K; }
+
+  bool isForceVarCapturing() const { return ForceCapturing; }
+  void setForceVarCapturing(bool V) { ForceCapturing = V; }
 
   void push(OpenMPDirectiveKind DKind, const DeclarationNameInfo &DirName,
             Scope *CurScope, SourceLocation Loc) {
@@ -655,7 +660,8 @@ bool Sema::IsOpenMPCapturedVar(VarDecl *VD) {
   if (DSAStack->getCurrentDirective() != OMPD_unknown) {
     if (DSAStack->isLoopControlVariable(VD) ||
         (VD->hasLocalStorage() &&
-         isParallelOrTaskRegion(DSAStack->getCurrentDirective())))
+         isParallelOrTaskRegion(DSAStack->getCurrentDirective())) ||
+        DSAStack->isForceVarCapturing())
       return true;
     auto DVarPrivate = DSAStack->getTopDSA(VD, DSAStack->isClauseParsingMode());
     if (DVarPrivate.CKind != OMPC_unknown && isOpenMPPrivate(DVarPrivate.CKind))
@@ -1300,6 +1306,7 @@ void Sema::ActOnOpenMPRegionStart(OpenMPDirectiveKind DKind, Scope *CurScope) {
                              Params);
     break;
   }
+  case OMPD_target_data:
   case OMPD_target: {
     Sema::CapturedParamNameType Params[] = {
         std::make_pair(StringRef(), QualType()) // __context with shared vars
@@ -1350,13 +1357,18 @@ StmtResult Sema::ActOnOpenMPRegionEnd(StmtResult S,
   // This is required for proper codegen.
   for (auto *Clause : Clauses) {
     if (isOpenMPPrivate(Clause->getClauseKind()) ||
-        Clause->getClauseKind() == OMPC_copyprivate) {
+        Clause->getClauseKind() == OMPC_copyprivate ||
+        (getLangOpts().OpenMPUseTLS &&
+         getASTContext().getTargetInfo().isTLSSupported() &&
+         Clause->getClauseKind() == OMPC_copyin)) {
+      DSAStack->setForceVarCapturing(Clause->getClauseKind() == OMPC_copyin);
       // Mark all variables in private list clauses as used in inner region.
       for (auto *VarRef : Clause->children()) {
         if (auto *E = cast_or_null<Expr>(VarRef)) {
           MarkDeclarationsReferencedInExpr(E);
         }
       }
+      DSAStack->setForceVarCapturing(/*V=*/false);
     } else if (isParallelOrTaskRegion(DSAStack->getCurrentDirective()) &&
                Clause->getClauseKind() == OMPC_schedule) {
       // Mark all variables in private list clauses as used in inner region.
@@ -2123,6 +2135,10 @@ StmtResult Sema::ActOnOpenMPExecutableDirective(
     assert(AStmt == nullptr &&
            "No associated statement allowed for 'omp cancel' directive");
     Res = ActOnOpenMPCancelDirective(StartLoc, EndLoc, CancelRegion);
+    break;
+  case OMPD_target_data:
+    Res = ActOnOpenMPTargetDataDirective(ClausesWithImplicit, AStmt, StartLoc,
+                                         EndLoc);
     break;
   case OMPD_threadprivate:
     llvm_unreachable("OpenMP Directive is not allowed");
@@ -3377,11 +3393,11 @@ StmtResult Sema::ActOnOpenMPSectionsDirective(ArrayRef<OMPClause *> Clauses,
     BaseStmt = CS->getCapturedStmt();
   if (auto C = dyn_cast_or_null<CompoundStmt>(BaseStmt)) {
     auto S = C->children();
-    if (!S)
+    if (S.begin() == S.end())
       return StmtError();
     // All associated statements must be '#pragma omp section' except for
     // the first one.
-    for (Stmt *SectionStmt : ++S) {
+    for (Stmt *SectionStmt : llvm::make_range(std::next(S.begin()), S.end())) {
       if (!SectionStmt || !isa<OMPSectionDirective>(SectionStmt)) {
         if (SectionStmt)
           Diag(SectionStmt->getLocStart(),
@@ -3535,11 +3551,11 @@ Sema::ActOnOpenMPParallelSectionsDirective(ArrayRef<OMPClause *> Clauses,
     BaseStmt = CS->getCapturedStmt();
   if (auto C = dyn_cast_or_null<CompoundStmt>(BaseStmt)) {
     auto S = C->children();
-    if (!S)
+    if (S.begin() == S.end())
       return StmtError();
     // All associated statements must be '#pragma omp section' except for
     // the first one.
-    for (Stmt *SectionStmt : ++S) {
+    for (Stmt *SectionStmt : llvm::make_range(std::next(S.begin()), S.end())) {
       if (!SectionStmt || !isa<OMPSectionDirective>(SectionStmt)) {
         if (SectionStmt)
           Diag(SectionStmt->getLocStart(),
@@ -4318,6 +4334,16 @@ StmtResult Sema::ActOnOpenMPTargetDirective(ArrayRef<OMPClause *> Clauses,
   getCurFunction()->setHasBranchProtectedScope();
 
   return OMPTargetDirective::Create(Context, StartLoc, EndLoc, Clauses, AStmt);
+}
+
+StmtResult Sema::ActOnOpenMPTargetDataDirective(ArrayRef<OMPClause *> Clauses,
+                                                Stmt *AStmt,
+                                                SourceLocation StartLoc,
+                                                SourceLocation EndLoc) {
+  getCurFunction()->setHasBranchProtectedScope();
+
+  return OMPTargetDataDirective::Create(Context, StartLoc, EndLoc, Clauses,
+                                        AStmt);
 }
 
 StmtResult Sema::ActOnOpenMPTeamsDirective(ArrayRef<OMPClause *> Clauses,
@@ -6593,4 +6619,3 @@ Sema::ActOnOpenMPDependClause(OpenMPDependClauseKind DepKind,
   return OMPDependClause::Create(Context, StartLoc, LParenLoc, EndLoc, DepKind,
                                  DepLoc, ColonLoc, Vars);
 }
-

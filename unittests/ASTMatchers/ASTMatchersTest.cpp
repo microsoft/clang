@@ -453,6 +453,16 @@ TEST(AllOf, AllOverloadsWork) {
                      hasArgument(3, integerLiteral(equals(4)))))));
 }
 
+TEST(ConstructVariadic, MismatchedTypes_Regression) {
+  EXPECT_TRUE(
+      matches("const int a = 0;",
+              internal::DynTypedMatcher::constructVariadic(
+                  internal::DynTypedMatcher::VO_AnyOf,
+                  ast_type_traits::ASTNodeKind::getFromNodeKind<QualType>(),
+                  {isConstQualified(), arrayType()})
+                  .convertTo<QualType>()));
+}
+
 TEST(DeclarationMatcher, MatchAnyOf) {
   DeclarationMatcher YOrZDerivedFromX =
       recordDecl(anyOf(hasName("Y"), allOf(isDerivedFrom("X"), hasName("Z"))));
@@ -1772,6 +1782,15 @@ TEST(Matcher, MatchesAccessSpecDecls) {
       notMatches("class C { public: int i; };", accessSpecDecl(isPrivate())));
 
   EXPECT_TRUE(notMatches("class C { int i; };", accessSpecDecl()));
+}
+
+TEST(Matcher, MatchesFinal) {
+  EXPECT_TRUE(matches("class X final {};", recordDecl(isFinal())));
+  EXPECT_TRUE(matches("class X { virtual void f() final; };",
+                      methodDecl(isFinal())));
+  EXPECT_TRUE(notMatches("class X {};", recordDecl(isFinal())));
+  EXPECT_TRUE(notMatches("class X { virtual void f(); };",
+                         methodDecl(isFinal())));
 }
 
 TEST(Matcher, MatchesVirtualMethod) {

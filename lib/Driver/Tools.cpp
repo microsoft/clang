@@ -719,6 +719,12 @@ static void getARMTargetFeatures(const Driver &D, const llvm::Triple &Triple,
       Features.push_back("+long-calls");
   }
 
+  // llvm does not support reserving registers in general. There is support
+  // for reserving r9 on ARM though (defined as a platform-specific register
+  // in ARM EABI).
+  if (Args.hasArg(options::OPT_ffixed_r9))
+    Features.push_back("+reserve-r9");
+
   // The kext linker doesn't know how to deal with movw/movt.
   if (KernelOrKext)
     Features.push_back("+no-movt");
@@ -828,13 +834,6 @@ void Clang::AddARMTargetArgs(const ArgList &Args, ArgStringList &CmdArgs,
                     options::OPT_mno_implicit_float, true))
     CmdArgs.push_back("-no-implicit-float");
 
-  // llvm does not support reserving registers in general. There is support
-  // for reserving r9 on ARM though (defined as a platform-specific register
-  // in ARM EABI).
-  if (Args.hasArg(options::OPT_ffixed_r9)) {
-    CmdArgs.push_back("-backend-option");
-    CmdArgs.push_back("-arm-reserve-r9");
-  }
 }
 
 /// getAArch64TargetCPU - Get the (LLVM) name of the AArch64 cpu we are
@@ -844,7 +843,7 @@ static std::string getAArch64TargetCPU(const ArgList &Args) {
   std::string CPU;
   // If we have -mtune or -mcpu, use that.
   if ((A = Args.getLastArg(options::OPT_mtune_EQ))) {
-    CPU = A->getValue();
+    CPU = StringRef(A->getValue()).lower();
   } else if ((A = Args.getLastArg(options::OPT_mcpu_EQ))) {
     StringRef Mcpu = A->getValue();
     CPU = Mcpu.split("+").first.lower();
@@ -920,11 +919,6 @@ void Clang::AddAArch64TargetArgs(const ArgList &Args,
     else
       CmdArgs.push_back("-aarch64-global-merge=true");
   }
-
-  if (Args.hasArg(options::OPT_ffixed_x18)) {
-    CmdArgs.push_back("-backend-option");
-    CmdArgs.push_back("-aarch64-reserve-x18");
-  }
 }
 
 // Get CPU and ABI names. They are not independent
@@ -941,6 +935,10 @@ void mips::getMipsCPUAndABI(const ArgList &Args, const llvm::Triple &Triple,
     DefMips32CPU = "mips32r6";
     DefMips64CPU = "mips64r6";
   }
+ 
+  // MIPS64r6 is the default for Android MIPS64 (mips64el-linux-android).
+  if (Triple.getEnvironment() == llvm::Triple::Android)
+    DefMips64CPU = "mips64r6";
 
   // MIPS3 is the default for mips64*-unknown-openbsd.
   if (Triple.getOS() == llvm::Triple::OpenBSD)
@@ -1524,7 +1522,7 @@ static std::string getCPUName(const ArgList &Args, const llvm::Triple &T) {
     return getX86TargetCPU(Args, T);
 
   case llvm::Triple::hexagon:
-    return "hexagon" + toolchains::Hexagon_TC::GetTargetCPU(Args).str();
+    return "hexagon" + toolchains::HexagonToolChain::GetTargetCPU(Args).str();
 
   case llvm::Triple::systemz:
     return getSystemZTargetCPU(Args);
@@ -1800,7 +1798,8 @@ void Clang::AddHexagonTargetArgs(const ArgList &Args,
   CmdArgs.push_back("-mqdsp6-compat");
   CmdArgs.push_back("-Wreturn-type");
 
-  if (const char *v = toolchains::Hexagon_TC::GetSmallDataThreshold(Args)) {
+  if (const char *v =
+          toolchains::HexagonToolChain::GetSmallDataThreshold(Args)) {
     std::string SmallDataThreshold = "-hexagon-small-data-threshold=";
     SmallDataThreshold += v;
     CmdArgs.push_back("-mllvm");
@@ -1904,10 +1903,11 @@ static bool
 getAArch64MicroArchFeaturesFromMtune(const Driver &D, StringRef Mtune,
                                      const ArgList &Args,
                                      std::vector<const char *> &Features) {
+  std::string MtuneLowerCase = Mtune.lower();
   // Handle CPU name is 'native'.
-  if (Mtune == "native")
-    Mtune = llvm::sys::getHostCPUName();
-  if (Mtune == "cyclone") {
+  if (MtuneLowerCase == "native")
+    MtuneLowerCase = llvm::sys::getHostCPUName();
+  if (MtuneLowerCase == "cyclone") {
     Features.push_back("+zcm");
     Features.push_back("+zcz");
   }
@@ -1967,6 +1967,9 @@ static void getAArch64TargetFeatures(const Driver &D, const ArgList &Args,
     else
       Features.push_back("-crc");
   }
+
+  if (Args.hasArg(options::OPT_ffixed_x18))
+    Features.push_back("+reserve-x18");
 }
 
 static void getTargetFeatures(const Driver &D, const llvm::Triple &Triple,
@@ -2243,8 +2246,7 @@ static void CollectArgsForIntegratedAssembler(Compilation &C,
 
 // Until ARM libraries are build separately, we have them all in one library
 static StringRef getArchNameForCompilerRTLib(const ToolChain &TC) {
-  if (TC.getTriple().isOSWindows() &&
-      !TC.getTriple().isWindowsItaniumEnvironment() &&
+  if (TC.getTriple().isWindowsMSVCEnvironment() &&
       TC.getArch() == llvm::Triple::x86)
     return "i386";
   if (TC.getArch() == llvm::Triple::arm || TC.getArch() == llvm::Triple::armeb)
@@ -2270,10 +2272,12 @@ SmallString<128> tools::getCompilerRT(const ToolChain &TC, StringRef Component,
                         : "";
 
   bool IsOSWindows = TC.getTriple().isOSWindows();
+  bool IsITANMSVCWindows = TC.getTriple().isWindowsMSVCEnvironment() ||
+                           TC.getTriple().isWindowsItaniumEnvironment();
   StringRef Arch = getArchNameForCompilerRTLib(TC);
-  const char *Prefix = IsOSWindows ? "" : "lib";
+  const char *Prefix = IsITANMSVCWindows ? "" : "lib";
   const char *Suffix =
-      Shared ? (IsOSWindows ? ".dll" : ".so") : (IsOSWindows ? ".lib" : ".a");
+      Shared ? (IsOSWindows ? ".dll" : ".so") : (IsITANMSVCWindows ? ".lib" : ".a");
 
   SmallString<128> Path = getCompilerRTLibDir(TC);
   llvm::sys::path::append(Path, Prefix + Twine("clang_rt.") + Component + "-" +
@@ -2288,13 +2292,6 @@ SmallString<128> tools::getCompilerRT(const ToolChain &TC, StringRef Component,
 static void addClangRT(const ToolChain &TC, const ArgList &Args,
                        ArgStringList &CmdArgs) {
   CmdArgs.push_back(Args.MakeArgString(getCompilerRT(TC, "builtins")));
-
-  if (!TC.getTriple().isOSWindows()) {
-    // FIXME: why do we link against gcc when we are using compiler-rt?
-    CmdArgs.push_back("-lgcc_s");
-    if (TC.getDriver().CCCIsCXX())
-      CmdArgs.push_back("-lgcc_eh");
-  }
 }
 
 static void addProfileRT(const ToolChain &TC, const ArgList &Args,
@@ -4796,7 +4793,6 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   // Forward -Xclang arguments to -cc1, and -mllvm arguments to the LLVM option
   // parser.
   Args.AddAllArgValues(CmdArgs, options::OPT_Xclang);
-  bool OptDisabled = false;
   for (const Arg *A : Args.filtered(options::OPT_mllvm)) {
     A->claim();
 
@@ -4804,17 +4800,15 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
     // it and developers have been trained to spell it with -mllvm.
     if (StringRef(A->getValue(0)) == "-disable-llvm-optzns") {
       CmdArgs.push_back("-disable-llvm-optzns");
-      OptDisabled = true;
     } else
       A->render(Args, CmdArgs);
   }
 
   // With -save-temps, we want to save the unoptimized bitcode output from the
-  // CompileJobAction, so disable optimizations if they are not already
-  // disabled.
-  if (C.getDriver().isSaveTempsEnabled() && !OptDisabled &&
-      isa<CompileJobAction>(JA))
-    CmdArgs.push_back("-disable-llvm-optzns");
+  // CompileJobAction, use -disable-llvm-passes to get pristine IR generated
+  // by the frontend.
+  if (C.getDriver().isSaveTempsEnabled() && isa<CompileJobAction>(JA))
+    CmdArgs.push_back("-disable-llvm-passes");
 
   if (Output.getType() == types::TY_Dependencies) {
     // Handled with other dependency code.
@@ -4871,11 +4865,9 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   // Host-side cuda compilation receives device-side outputs as Inputs[1...].
   // Include them with -fcuda-include-gpubinary.
   if (IsCuda && Inputs.size() > 1)
-    for (InputInfoList::const_iterator it = std::next(Inputs.begin()),
-                                       ie = Inputs.end();
-         it != ie; ++it) {
+    for (auto I = std::next(Inputs.begin()), E = Inputs.end(); I != E; ++I) {
       CmdArgs.push_back("-fcuda-include-gpubinary");
-      CmdArgs.push_back(it->getFilename());
+      CmdArgs.push_back(I->getFilename());
     }
 
   // Finally add the compile command to the compilation.
@@ -5105,39 +5097,46 @@ void Clang::AddClangCLArgs(const ArgList &Args, ArgStringList &CmdArgs) const {
   if (Arg *A = Args.getLastArg(options::OPT__SLASH_M_Group))
     RTOptionID = A->getOption().getID();
 
+  StringRef FlagForCRT;
   switch (RTOptionID) {
   case options::OPT__SLASH_MD:
     if (Args.hasArg(options::OPT__SLASH_LDd))
       CmdArgs.push_back("-D_DEBUG");
     CmdArgs.push_back("-D_MT");
     CmdArgs.push_back("-D_DLL");
-    CmdArgs.push_back("--dependent-lib=msvcrt");
+    FlagForCRT = "--dependent-lib=msvcrt";
     break;
   case options::OPT__SLASH_MDd:
     CmdArgs.push_back("-D_DEBUG");
     CmdArgs.push_back("-D_MT");
     CmdArgs.push_back("-D_DLL");
-    CmdArgs.push_back("--dependent-lib=msvcrtd");
+    FlagForCRT = "--dependent-lib=msvcrtd";
     break;
   case options::OPT__SLASH_MT:
     if (Args.hasArg(options::OPT__SLASH_LDd))
       CmdArgs.push_back("-D_DEBUG");
     CmdArgs.push_back("-D_MT");
-    CmdArgs.push_back("--dependent-lib=libcmt");
+    FlagForCRT = "--dependent-lib=libcmt";
     break;
   case options::OPT__SLASH_MTd:
     CmdArgs.push_back("-D_DEBUG");
     CmdArgs.push_back("-D_MT");
-    CmdArgs.push_back("--dependent-lib=libcmtd");
+    FlagForCRT = "--dependent-lib=libcmtd";
     break;
   default:
     llvm_unreachable("Unexpected option ID.");
   }
 
-  // This provides POSIX compatibility (maps 'open' to '_open'), which most
-  // users want.  The /Za flag to cl.exe turns this off, but it's not
-  // implemented in clang.
-  CmdArgs.push_back("--dependent-lib=oldnames");
+  if (Args.hasArg(options::OPT__SLASH_Zl)) {
+    CmdArgs.push_back("-D_VC_NODEFAULTLIB");
+  } else {
+    CmdArgs.push_back(FlagForCRT.data());
+
+    // This provides POSIX compatibility (maps 'open' to '_open'), which most
+    // users want.  The /Za flag to cl.exe turns this off, but it's not
+    // implemented in clang.
+    CmdArgs.push_back("--dependent-lib=oldnames");
+  }
 
   // Both /showIncludes and /E (and /EP) write to stdout. Allowing both
   // would produce interleaved output, so ignore /showIncludes in such cases.
@@ -5317,6 +5316,9 @@ void ClangAs::ConstructJob(Compilation &C, const JobAction &JA,
     // assembler on assembly source files.
     CmdArgs.push_back("-dwarf-debug-producer");
     CmdArgs.push_back(Args.MakeArgString(getClangFullVersion()));
+
+    // And pass along -I options
+    Args.AddAllArgs(CmdArgs, options::OPT_I);
   }
 
   // Optionally embed the -cc1as level arguments into the debug info, for build
@@ -5548,7 +5550,7 @@ void hexagon::Assembler::ConstructJob(Compilation &C, const JobAction &JA,
   ArgStringList CmdArgs;
 
   std::string MarchString = "-march=";
-  MarchString += toolchains::Hexagon_TC::GetTargetCPU(Args);
+  MarchString += toolchains::HexagonToolChain::GetTargetCPU(Args);
   CmdArgs.push_back(Args.MakeArgString(MarchString));
 
   RenderExtraToolArgs(JA, CmdArgs);
@@ -5561,7 +5563,7 @@ void hexagon::Assembler::ConstructJob(Compilation &C, const JobAction &JA,
     CmdArgs.push_back("-fsyntax-only");
   }
 
-  if (const char *v = toolchains::Hexagon_TC::GetSmallDataThreshold(Args))
+  if (const char *v = toolchains::HexagonToolChain::GetSmallDataThreshold(Args))
     CmdArgs.push_back(Args.MakeArgString(std::string("-G") + v));
 
   Args.AddAllArgValues(CmdArgs, options::OPT_Wa_COMMA, options::OPT_Xassembler);
@@ -5605,13 +5607,12 @@ void hexagon::Linker::RenderExtraToolArgs(const JobAction &JA,
   // The types are (hopefully) good enough.
 }
 
-static void constructHexagonLinkArgs(Compilation &C, const JobAction &JA,
-                                     const toolchains::Hexagon_TC &ToolChain,
-                                     const InputInfo &Output,
-                                     const InputInfoList &Inputs,
-                                     const ArgList &Args,
-                                     ArgStringList &CmdArgs,
-                                     const char *LinkingOutput) {
+static void
+constructHexagonLinkArgs(Compilation &C, const JobAction &JA,
+                         const toolchains::HexagonToolChain &ToolChain,
+                         const InputInfo &Output, const InputInfoList &Inputs,
+                         const ArgList &Args, ArgStringList &CmdArgs,
+                         const char *LinkingOutput) {
 
   const Driver &D = ToolChain.getDriver();
 
@@ -5643,7 +5644,7 @@ static void constructHexagonLinkArgs(Compilation &C, const JobAction &JA,
   for (const auto &Opt : ToolChain.ExtraOpts)
     CmdArgs.push_back(Opt.c_str());
 
-  std::string MarchString = toolchains::Hexagon_TC::GetTargetCPU(Args);
+  std::string MarchString = toolchains::HexagonToolChain::GetTargetCPU(Args);
   CmdArgs.push_back(Args.MakeArgString("-m" + MarchString));
 
   if (buildingLib) {
@@ -5658,9 +5659,10 @@ static void constructHexagonLinkArgs(Compilation &C, const JobAction &JA,
   if (buildPIE && !buildingLib)
     CmdArgs.push_back("-pie");
 
-  if (const char *v = toolchains::Hexagon_TC::GetSmallDataThreshold(Args)) {
+  if (const char *v =
+          toolchains::HexagonToolChain::GetSmallDataThreshold(Args)) {
     CmdArgs.push_back(Args.MakeArgString(std::string("-G") + v));
-    useG0 = toolchains::Hexagon_TC::UsesG0(v);
+    useG0 = toolchains::HexagonToolChain::UsesG0(v);
   }
 
   //----------------------------------------------------------------------------
@@ -5673,7 +5675,7 @@ static void constructHexagonLinkArgs(Compilation &C, const JobAction &JA,
   const std::string G0Suffix = "/G0";
   const std::string MarchG0Suffix = MarchSuffix + G0Suffix;
   const std::string RootDir =
-      toolchains::Hexagon_TC::GetGnuDir(D.InstalledDir, Args) + "/";
+      toolchains::HexagonToolChain::GetGnuDir(D.InstalledDir, Args) + "/";
   const std::string StartFilesDir =
       RootDir + "hexagon/lib" + (useG0 ? MarchG0Suffix : MarchSuffix);
 
@@ -5763,8 +5765,8 @@ void hexagon::Linker::ConstructJob(Compilation &C, const JobAction &JA,
                                    const ArgList &Args,
                                    const char *LinkingOutput) const {
 
-  const toolchains::Hexagon_TC &ToolChain =
-      static_cast<const toolchains::Hexagon_TC &>(getToolChain());
+  const toolchains::HexagonToolChain &ToolChain =
+      static_cast<const toolchains::HexagonToolChain &>(getToolChain());
 
   ArgStringList CmdArgs;
   constructHexagonLinkArgs(C, JA, ToolChain, Output, Inputs, Args, CmdArgs,
@@ -5775,6 +5777,26 @@ void hexagon::Linker::ConstructJob(Compilation &C, const JobAction &JA,
                                           CmdArgs, Inputs));
 }
 // Hexagon tools end.
+
+void amdgpu::Linker::ConstructJob(Compilation &C, const JobAction &JA,
+                                  const InputInfo &Output,
+                                  const InputInfoList &Inputs,
+                                  const ArgList &Args,
+                                  const char *LinkingOutput) const {
+
+  std::string Linker = getToolChain().GetProgramPath(getShortName());
+  ArgStringList CmdArgs;
+  CmdArgs.push_back("-flavor");
+  CmdArgs.push_back("gnu");
+  CmdArgs.push_back("-target");
+  CmdArgs.push_back(Args.MakeArgString(getToolChain().getTripleString()));
+  AddLinkerInputs(getToolChain(), Inputs, Args, CmdArgs);
+  CmdArgs.push_back("-o");
+  CmdArgs.push_back(Output.getFilename());
+  C.addCommand(llvm::make_unique<Command>(JA, *this, Args.MakeArgString(Linker),
+                                          CmdArgs, Inputs));
+}
+// AMDGPU tools end.
 
 const std::string arm::getARMArch(const ArgList &Args,
                                   const llvm::Triple &Triple) {
@@ -7794,6 +7816,7 @@ void gnutools::Assembler::ConstructJob(Compilation &C, const JobAction &JA,
   if (NeedsKPIC)
     addAssemblerKPIC(Args, CmdArgs);
 
+  Args.AddAllArgs(CmdArgs, options::OPT_I);
   Args.AddAllArgValues(CmdArgs, options::OPT_Wa_COMMA, options::OPT_Xassembler);
 
   CmdArgs.push_back("-o");
@@ -7817,6 +7840,7 @@ void gnutools::Assembler::ConstructJob(Compilation &C, const JobAction &JA,
 static void AddLibgcc(const llvm::Triple &Triple, const Driver &D,
                       ArgStringList &CmdArgs, const ArgList &Args) {
   bool isAndroid = Triple.getEnvironment() == llvm::Triple::Android;
+  bool isCygMing = Triple.isOSCygMing();
   bool StaticLibgcc = Args.hasArg(options::OPT_static_libgcc) ||
                       Args.hasArg(options::OPT_static);
   if (!D.CCCIsCXX())
@@ -7826,10 +7850,10 @@ static void AddLibgcc(const llvm::Triple &Triple, const Driver &D,
     if (D.CCCIsCXX())
       CmdArgs.push_back("-lgcc");
   } else {
-    if (!D.CCCIsCXX())
+    if (!D.CCCIsCXX() && !isCygMing)
       CmdArgs.push_back("--as-needed");
     CmdArgs.push_back("-lgcc_s");
-    if (!D.CCCIsCXX())
+    if (!D.CCCIsCXX() && !isCygMing)
       CmdArgs.push_back("--no-as-needed");
   }
 
@@ -7864,13 +7888,15 @@ static std::string getLinuxDynamicLinker(const ArgList &Args,
   else if (Arch == llvm::Triple::aarch64_be)
     return "/lib/ld-linux-aarch64_be.so.1";
   else if (Arch == llvm::Triple::arm || Arch == llvm::Triple::thumb) {
-    if (ToolChain.getTriple().getEnvironment() == llvm::Triple::GNUEABIHF)
+    if (ToolChain.getTriple().getEnvironment() == llvm::Triple::GNUEABIHF ||
+        tools::arm::getARMFloatABI(ToolChain.getDriver(), Args, ToolChain.getTriple()) == "hard")
       return "/lib/ld-linux-armhf.so.3";
     else
       return "/lib/ld-linux.so.3";
   } else if (Arch == llvm::Triple::armeb || Arch == llvm::Triple::thumbeb) {
     // TODO: check which dynamic linker name.
-    if (ToolChain.getTriple().getEnvironment() == llvm::Triple::GNUEABIHF)
+    if (ToolChain.getTriple().getEnvironment() == llvm::Triple::GNUEABIHF ||
+        tools::arm::getARMFloatABI(ToolChain.getDriver(), Args, ToolChain.getTriple()) == "hard")
       return "/lib/ld-linux-armhf.so.3";
     else
       return "/lib/ld-linux.so.3";
@@ -8203,8 +8229,8 @@ void nacltools::AssemblerARM::ConstructJob(Compilation &C, const JobAction &JA,
                                            const InputInfoList &Inputs,
                                            const ArgList &Args,
                                            const char *LinkingOutput) const {
-  const toolchains::NaCl_TC &ToolChain =
-      static_cast<const toolchains::NaCl_TC &>(getToolChain());
+  const toolchains::NaClToolChain &ToolChain =
+      static_cast<const toolchains::NaClToolChain &>(getToolChain());
   InputInfo NaClMacros(ToolChain.GetNaClArmMacrosPath(), types::TY_PP_Asm,
                        "nacl-arm-macros.s");
   InputInfoList NewInputs;
@@ -8224,8 +8250,8 @@ void nacltools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
                                      const ArgList &Args,
                                      const char *LinkingOutput) const {
 
-  const toolchains::NaCl_TC &ToolChain =
-      static_cast<const toolchains::NaCl_TC &>(getToolChain());
+  const toolchains::NaClToolChain &ToolChain =
+      static_cast<const toolchains::NaClToolChain &>(getToolChain());
   const Driver &D = ToolChain.getDriver();
   const llvm::Triple::ArchType Arch = ToolChain.getArch();
   const bool IsStatic =
@@ -8250,8 +8276,8 @@ void nacltools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   if (Args.hasArg(options::OPT_s))
     CmdArgs.push_back("-s");
 
-  // NaCl_TC doesn't have ExtraOpts like Linux; the only relevant flag from
-  // there is --build-id, which we do want.
+  // NaClToolChain doesn't have ExtraOpts like Linux; the only relevant flag
+  // from there is --build-id, which we do want.
   CmdArgs.push_back("--build-id");
 
   if (!IsStatic)
@@ -8805,17 +8831,31 @@ std::unique_ptr<Command> visualstudio::Compiler::GetCommand(
   Args.AddAllArgs(CmdArgs, options::OPT_I);
 
   // Optimization level.
+  if (Arg *A = Args.getLastArg(options::OPT_fbuiltin, options::OPT_fno_builtin))
+    CmdArgs.push_back(A->getOption().getID() == options::OPT_fbuiltin ? "/Oi"
+                                                                      : "/Oi-");
   if (Arg *A = Args.getLastArg(options::OPT_O, options::OPT_O0)) {
     if (A->getOption().getID() == options::OPT_O0) {
       CmdArgs.push_back("/Od");
     } else {
+      CmdArgs.push_back("/Og");
+
       StringRef OptLevel = A->getValue();
-      if (OptLevel == "1" || OptLevel == "2" || OptLevel == "s")
-        A->render(Args, CmdArgs);
-      else if (OptLevel == "3")
-        CmdArgs.push_back("/Ox");
+      if (OptLevel == "s" || OptLevel == "z")
+        CmdArgs.push_back("/Os");
+      else
+        CmdArgs.push_back("/Ot");
+
+      CmdArgs.push_back("/Ob2");
     }
   }
+  if (Arg *A = Args.getLastArg(options::OPT_fomit_frame_pointer,
+                               options::OPT_fno_omit_frame_pointer))
+    CmdArgs.push_back(A->getOption().getID() == options::OPT_fomit_frame_pointer
+                          ? "/Oy"
+                          : "/Oy-");
+  if (!Args.hasArg(options::OPT_fwritable_strings))
+    CmdArgs.push_back("/GF");
 
   // Flags for which clang-cl has an alias.
   // FIXME: How can we ensure this stays in sync with relevant clang-cl options?
@@ -8846,6 +8886,7 @@ std::unique_ptr<Command> visualstudio::Compiler::GetCommand(
   Args.AddAllArgs(CmdArgs, options::OPT__SLASH_LD);
   Args.AddAllArgs(CmdArgs, options::OPT__SLASH_LDd);
   Args.AddAllArgs(CmdArgs, options::OPT__SLASH_EH);
+  Args.AddAllArgs(CmdArgs, options::OPT__SLASH_Zl);
 
   // The order of these flags is relevant, so pick the last one.
   if (Arg *A = Args.getLastArg(options::OPT__SLASH_MD, options::OPT__SLASH_MDd,
@@ -8911,15 +8952,10 @@ void MinGW::Linker::AddLibGCC(const ArgList &Args,
   if (Args.hasArg(options::OPT_mthreads))
     CmdArgs.push_back("-lmingwthrd");
   CmdArgs.push_back("-lmingw32");
-  if (Args.hasArg(options::OPT_shared) ||
-      Args.hasArg(options::OPT_shared_libgcc) ||
-      !Args.hasArg(options::OPT_static_libgcc)) {
-    CmdArgs.push_back("-lgcc_s");
-    CmdArgs.push_back("-lgcc");
-  } else {
-    CmdArgs.push_back("-lgcc");
-    CmdArgs.push_back("-lgcc_eh");
-  }
+
+  // Add libgcc or compiler-rt.
+  AddRunTimeLibs(getToolChain(), getToolChain().getDriver(), CmdArgs, Args);
+
   CmdArgs.push_back("-lmoldname");
   CmdArgs.push_back("-lmingwex");
   CmdArgs.push_back("-lmsvcrt");

@@ -90,3 +90,15 @@ C test4(A& a1, B& b1) {
   return std::move(b1);
   return std::move(b2);
 }
+
+// PR23819, case 2
+struct D {};
+D test5(D d) {
+  return d;
+
+  return std::move(d);
+  // expected-warning@-1{{redundant move in return statement}}
+  // expected-note@-2{{remove std::move call here}}
+  // CHECK: fix-it:"{{.*}}":{[[@LINE-3]]:10-[[@LINE-3]]:20}:""
+  // CHECK: fix-it:"{{.*}}":{[[@LINE-4]]:21-[[@LINE-4]]:22}:""
+}
