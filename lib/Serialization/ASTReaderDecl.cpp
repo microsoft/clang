@@ -126,33 +126,41 @@ namespace clang {
     class RedeclarableResult {
       ASTReader &Reader;
       GlobalDeclID FirstID;
+      Decl *LoadedDecl;
       Decl *MergeWith;
       mutable bool Owning;
       bool IsKeyDecl;
-      Decl::Kind DeclKind;
 
       void operator=(RedeclarableResult &) = delete;
 
     public:
       RedeclarableResult(ASTReader &Reader, GlobalDeclID FirstID,
-                         Decl *MergeWith, Decl::Kind DeclKind,
-                         bool IsKeyDecl)
-        : Reader(Reader), FirstID(FirstID), MergeWith(MergeWith),
-          Owning(true), IsKeyDecl(IsKeyDecl), DeclKind(DeclKind) {}
+                         Decl *LoadedDecl, Decl *MergeWith, bool IsKeyDecl)
+          : Reader(Reader), FirstID(FirstID), LoadedDecl(LoadedDecl),
+            MergeWith(MergeWith), Owning(true), IsKeyDecl(IsKeyDecl) {}
 
       RedeclarableResult(RedeclarableResult &&Other)
-        : Reader(Other.Reader), FirstID(Other.FirstID),
-          MergeWith(Other.MergeWith), Owning(Other.Owning),
-          IsKeyDecl(Other.IsKeyDecl), DeclKind(Other.DeclKind) {
+          : Reader(Other.Reader), FirstID(Other.FirstID),
+            LoadedDecl(Other.LoadedDecl), MergeWith(Other.MergeWith),
+            Owning(Other.Owning), IsKeyDecl(Other.IsKeyDecl) {
         Other.Owning = false;
       }
 
       ~RedeclarableResult() {
-        if (FirstID && Owning && isRedeclarableDeclKind(DeclKind)) {
+        if (FirstID && Owning &&
+            isRedeclarableDeclKind(LoadedDecl->getKind())) {
           auto Canon = Reader.GetDecl(FirstID)->getCanonicalDecl();
           if (Reader.PendingDeclChainsKnown.insert(Canon).second)
             Reader.PendingDeclChains.push_back(Canon);
         }
+      }
+
+      /// \brief Note that a RedeclarableDecl is not actually redeclarable.
+      void setNotRedeclarable() {
+        Owning = false;
+        Reader.RedeclsDeserialized.erase(LoadedDecl);
+        assert(FirstID == LoadedDecl->getGlobalID() && !MergeWith &&
+               "non-redeclarable declaration was redeclared?");
       }
 
       /// \brief Retrieve the first ID.
@@ -908,7 +916,9 @@ void ASTDeclReader::VisitObjCMethodDecl(ObjCMethodDecl *MD) {
 }
 
 void ASTDeclReader::VisitObjCTypeParamDecl(ObjCTypeParamDecl *D) {
-  VisitTypedefNameDecl(D);
+  RedeclarableResult Redecl = VisitTypedefNameDecl(D);
+  Redecl.setNotRedeclarable();
+
   D->Variance = Record[Idx++];
   D->Index = Record[Idx++];
   D->VarianceLoc = ReadSourceLocation(Record, Idx);
@@ -1208,9 +1218,11 @@ ASTDeclReader::RedeclarableResult ASTDeclReader::VisitVarDeclImpl(VarDecl *VD) {
   };
   switch ((VarKind)Record[Idx++]) {
   case VarNotTemplate:
-    // Only true variables (not parameters or implicit parameters) can be merged
-    if (VD->getKind() != Decl::ParmVar && VD->getKind() != Decl::ImplicitParam &&
-        !isa<VarTemplateSpecializationDecl>(VD))
+    // Only true variables (not parameters or implicit parameters) can be
+    // merged; the other kinds are not really redeclarable at all.
+    if (isa<ParmVarDecl>(VD) || isa<ImplicitParamDecl>(VD))
+      Redecl.setNotRedeclarable();
+    else if (!isa<VarTemplateSpecializationDecl>(VD))
       mergeRedeclarable(VD, Redecl);
     break;
   case VarTemplate:
@@ -2070,6 +2082,7 @@ ASTDeclReader::VisitVarTemplateSpecializationDeclImpl(
   if (writtenAsCanonicalDecl) {
     VarTemplateDecl *CanonPattern = ReadDeclAs<VarTemplateDecl>(Record, Idx);
     if (D->isCanonicalDecl()) { // It's kept in the folding set.
+      // FIXME: If it's already present, merge it.
       if (VarTemplatePartialSpecializationDecl *Partial =
               dyn_cast<VarTemplatePartialSpecializationDecl>(D)) {
         CanonPattern->getCommonPtr()->PartialSpecializations
@@ -2212,8 +2225,8 @@ ASTDeclReader::VisitRedeclarable(Redeclarable<T> *D) {
                              
   // The result structure takes care to note that we need to load the 
   // other declaration chains for this ID.
-  return RedeclarableResult(Reader, FirstDeclID, MergeWith,
-                            static_cast<T *>(D)->getKind(), IsKeyDecl);
+  return RedeclarableResult(Reader, FirstDeclID, static_cast<T *>(D), MergeWith,
+                            IsKeyDecl);
 }
 
 /// \brief Attempts to merge the given declaration (D) with another declaration
@@ -2256,8 +2269,7 @@ void ASTDeclReader::mergeTemplatePattern(RedeclarableTemplateDecl *D,
   auto *DPattern = D->getTemplatedDecl();
   auto *ExistingPattern = Existing->getTemplatedDecl();
   RedeclarableResult Result(Reader, DPattern->getCanonicalDecl()->getGlobalID(),
-                            /*MergeWith*/ExistingPattern, DPattern->getKind(),
-                            IsKeyDecl);
+                            DPattern, /*MergeWith*/ ExistingPattern, IsKeyDecl);
 
   if (auto *DClass = dyn_cast<CXXRecordDecl>(DPattern)) {
     // Merge with any existing definition.
@@ -3426,10 +3438,6 @@ namespace {
       assert(std::is_sorted(SearchDecls.begin(), SearchDecls.end()));
     }
 
-    static bool visit(ModuleFile &M, void *UserData) {
-      return static_cast<RedeclChainVisitor*>(UserData)->visit(M);
-    }
-    
     /// Get the chain, in order from newest to oldest.
     ArrayRef<Decl *> getChain() const {
       return Chain;
@@ -3457,7 +3465,8 @@ namespace {
       return Result->Offset;
     }
 
-    bool visit(ModuleFile &M) {
+  public:
+    bool operator()(ModuleFile &M) {
       llvm::ArrayRef<DeclID> ToSearch = SearchDecls;
       GlobalDeclID LocalSearchDeclID = 0;
 
@@ -3542,7 +3551,8 @@ void ASTReader::loadPendingDeclChain(Decl *CanonDecl) {
 
   // Build up the list of redeclarations.
   RedeclChainVisitor Visitor(*this, SearchDecls, RedeclsDeserialized, CanonID);
-  ModuleMgr.visit(&RedeclChainVisitor::visit, &Visitor);
+  ModuleMgr.visit(Visitor);
+  RedeclsDeserialized.erase(CanonDecl);
 
   // Retrieve the chains.
   ArrayRef<Decl *> Chain = Visitor.getChain();
@@ -3635,11 +3645,7 @@ namespace {
       }
     }
 
-    static bool visit(ModuleFile &M, void *UserData) {
-      return static_cast<ObjCCategoriesVisitor *>(UserData)->visit(M);
-    }
-
-    bool visit(ModuleFile &M) {
+    bool operator()(ModuleFile &M) {
       // If we've loaded all of the category information we care about from
       // this module file, we're done.
       if (M.Generation <= PreviousGeneration)
@@ -3684,7 +3690,7 @@ void ASTReader::loadObjCCategories(serialization::GlobalDeclID ID,
                                    unsigned PreviousGeneration) {
   ObjCCategoriesVisitor Visitor(*this, ID, D, CategoriesDeserialized,
                                 PreviousGeneration);
-  ModuleMgr.visit(ObjCCategoriesVisitor::visit, &Visitor);
+  ModuleMgr.visit(Visitor);
 }
 
 template<typename DeclT, typename Fn>

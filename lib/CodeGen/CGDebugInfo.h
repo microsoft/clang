@@ -117,7 +117,8 @@ class CGDebugInfo {
   llvm::DenseMap<const NamespaceDecl *, llvm::TrackingMDRef> NameSpaceCache;
   llvm::DenseMap<const NamespaceAliasDecl *, llvm::TrackingMDRef>
       NamespaceAliasCache;
-  llvm::DenseMap<const Decl *, llvm::TrackingMDRef> StaticDataMemberCache;
+  llvm::DenseMap<const Decl *, llvm::TypedTrackingMDRef<llvm::DIDerivedType>>
+      StaticDataMemberCache;
 
   /// Helper functions for getOrCreateType.
   /// @{
@@ -389,7 +390,8 @@ private:
 
   /// Get the type from the cache or create a new partial type if
   /// necessary.
-  llvm::DIType *getOrCreateLimitedType(const RecordType *Ty, llvm::DIFile *F);
+  llvm::DICompositeType *getOrCreateLimitedType(const RecordType *Ty,
+                                                llvm::DIFile *F);
 
   /// Create type metadata for a source language type.
   llvm::DIType *CreateTypeNode(QualType Ty, llvm::DIFile *Fg);

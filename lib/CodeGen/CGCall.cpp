@@ -1421,12 +1421,15 @@ void CodeGenModule::ConstructAttributeList(const CGFunctionInfo &FI,
         FuncAttrs.addAttribute(llvm::Attribute::NoReturn);
     }
 
-    // 'const' and 'pure' attribute functions are also nounwind.
+    // 'const', 'pure' and 'noalias' attributed functions are also nounwind.
     if (TargetDecl->hasAttr<ConstAttr>()) {
       FuncAttrs.addAttribute(llvm::Attribute::ReadNone);
       FuncAttrs.addAttribute(llvm::Attribute::NoUnwind);
     } else if (TargetDecl->hasAttr<PureAttr>()) {
       FuncAttrs.addAttribute(llvm::Attribute::ReadOnly);
+      FuncAttrs.addAttribute(llvm::Attribute::NoUnwind);
+    } else if (TargetDecl->hasAttr<NoAliasAttr>()) {
+      FuncAttrs.addAttribute(llvm::Attribute::ArgMemOnly);
       FuncAttrs.addAttribute(llvm::Attribute::NoUnwind);
     }
     if (TargetDecl->hasAttr<RestrictAttr>())
@@ -2805,12 +2808,11 @@ void CodeGenFunction::EmitNonNullArgCheck(RValue RV, QualType ArgType,
                 "nonnull_arg", StaticData, None);
 }
 
-void CodeGenFunction::EmitCallArgs(CallArgList &Args,
-                                   ArrayRef<QualType> ArgTypes,
-                                   CallExpr::const_arg_iterator ArgBeg,
-                                   CallExpr::const_arg_iterator ArgEnd,
-                                   const FunctionDecl *CalleeDecl,
-                                   unsigned ParamsToSkip) {
+void CodeGenFunction::EmitCallArgs(
+    CallArgList &Args, ArrayRef<QualType> ArgTypes,
+    llvm::iterator_range<CallExpr::const_arg_iterator> ArgRange,
+    const FunctionDecl *CalleeDecl, unsigned ParamsToSkip) {
+  assert((int)ArgTypes.size() == (ArgRange.end() - ArgRange.begin()));
   // We *have* to evaluate arguments from right to left in the MS C++ ABI,
   // because arguments are destroyed left to right in the callee.
   if (CGM.getTarget().getCXXABI().areArgsDestroyedLeftToRightInCallee()) {
@@ -2827,9 +2829,9 @@ void CodeGenFunction::EmitCallArgs(CallArgList &Args,
     // Evaluate each argument.
     size_t CallArgsStart = Args.size();
     for (int I = ArgTypes.size() - 1; I >= 0; --I) {
-      CallExpr::const_arg_iterator Arg = ArgBeg + I;
+      CallExpr::const_arg_iterator Arg = ArgRange.begin() + I;
       EmitCallArg(Args, *Arg, ArgTypes[I]);
-      EmitNonNullArgCheck(Args.back().RV, ArgTypes[I], Arg->getExprLoc(),
+      EmitNonNullArgCheck(Args.back().RV, ArgTypes[I], (*Arg)->getExprLoc(),
                           CalleeDecl, ParamsToSkip + I);
     }
 
@@ -2840,10 +2842,10 @@ void CodeGenFunction::EmitCallArgs(CallArgList &Args,
   }
 
   for (unsigned I = 0, E = ArgTypes.size(); I != E; ++I) {
-    CallExpr::const_arg_iterator Arg = ArgBeg + I;
-    assert(Arg != ArgEnd);
+    CallExpr::const_arg_iterator Arg = ArgRange.begin() + I;
+    assert(Arg != ArgRange.end());
     EmitCallArg(Args, *Arg, ArgTypes[I]);
-    EmitNonNullArgCheck(Args.back().RV, ArgTypes[I], Arg->getExprLoc(),
+    EmitNonNullArgCheck(Args.back().RV, ArgTypes[I], (*Arg)->getExprLoc(),
                         CalleeDecl, ParamsToSkip + I);
   }
 }

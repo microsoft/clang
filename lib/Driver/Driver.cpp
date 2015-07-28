@@ -387,6 +387,9 @@ Compilation *Driver::BuildCompilation(ArrayRef<const char *> ArgList) {
 
   InputArgList Args = ParseArgStrings(ArgList.slice(1));
 
+  // Silence driver warnings if requested
+  Diags.setIgnoreAllWarnings(Args.hasArg(options::OPT_w));
+
   // -no-canonical-prefixes is used very early in main.
   Args.ClaimAllArgs(options::OPT_no_canonical_prefixes);
 
@@ -1235,11 +1238,8 @@ void Driver::BuildInputs(const ToolChain &TC, DerivedArgList &Args,
 // CudaHostAction which combines both host and device side actions.
 static std::unique_ptr<Action>
 buildCudaActions(const Driver &D, const ToolChain &TC, DerivedArgList &Args,
-                 const Arg *InputArg, const types::ID InputType,
-                 std::unique_ptr<Action> Current, ActionList &Actions) {
-
-  assert(InputType == types::TY_CUDA &&
-         "CUDA Actions only apply to CUDA inputs.");
+                 const Arg *InputArg, std::unique_ptr<Action> HostAction,
+                 ActionList &Actions) {
 
   // Collect all cuda_gpu_arch parameters, removing duplicates.
   SmallVector<const char *, 4> GpuArchList;
@@ -1259,7 +1259,7 @@ buildCudaActions(const Driver &D, const ToolChain &TC, DerivedArgList &Args,
 
   // Replicate inputs for each GPU architecture.
   Driver::InputList CudaDeviceInputs;
-  for (unsigned i = 0, e = GpuArchList.size(); i != e; ++i)
+  for (unsigned I = 0, E = GpuArchList.size(); I != E; ++I)
     CudaDeviceInputs.push_back(std::make_pair(types::TY_CUDA_DEVICE, InputArg));
 
   // Build actions for all device inputs.
@@ -1270,16 +1270,22 @@ buildCudaActions(const Driver &D, const ToolChain &TC, DerivedArgList &Args,
 
   // Check whether any of device actions stopped before they could generate PTX.
   bool PartialCompilation = false;
-  bool DeviceOnlyCompilation = Args.hasArg(options::OPT_cuda_device_only);
-  for (unsigned i = 0, e = GpuArchList.size(); i != e; ++i) {
-    if (CudaDeviceActions[i]->getKind() != Action::BackendJobClass) {
+  for (unsigned I = 0, E = GpuArchList.size(); I != E; ++I) {
+    if (CudaDeviceActions[I]->getKind() != Action::BackendJobClass) {
       PartialCompilation = true;
       break;
     }
   }
 
+  // Figure out which NVPTX triple to use for device-side compilation based on
+  // whether host is 64-bit.
+  const char *DeviceTriple = TC.getTriple().isArch64Bit()
+                                 ? "nvptx64-nvidia-cuda"
+                                 : "nvptx-nvidia-cuda";
+
   // Figure out what to do with device actions -- pass them as inputs to the
   // host action or run each of them independently.
+  bool DeviceOnlyCompilation = Args.hasArg(options::OPT_cuda_device_only);
   if (PartialCompilation || DeviceOnlyCompilation) {
     // In case of partial or device-only compilation results of device actions
     // are not consumed by the host action device actions have to be added to
@@ -1292,27 +1298,27 @@ buildCudaActions(const Driver &D, const ToolChain &TC, DerivedArgList &Args,
       return nullptr;
     }
 
-    for (unsigned i = 0, e = GpuArchList.size(); i != e; ++i)
-      Actions.push_back(
-          new CudaDeviceAction(std::unique_ptr<Action>(CudaDeviceActions[i]),
-                               GpuArchList[i], /* AtTopLevel */ true));
+    for (unsigned I = 0, E = GpuArchList.size(); I != E; ++I)
+      Actions.push_back(new CudaDeviceAction(
+          std::unique_ptr<Action>(CudaDeviceActions[I]), GpuArchList[I],
+          DeviceTriple, /* AtTopLevel */ true));
     // Kill host action in case of device-only compilation.
     if (DeviceOnlyCompilation)
-      Current.reset(nullptr);
-    return Current;
-  } else {
-    // Outputs of device actions during complete CUDA compilation get created
-    // with AtTopLevel=false and become inputs for the host action.
-    ActionList DeviceActions;
-    for (unsigned i = 0, e = GpuArchList.size(); i != e; ++i)
-      DeviceActions.push_back(
-          new CudaDeviceAction(std::unique_ptr<Action>(CudaDeviceActions[i]),
-                               GpuArchList[i], /* AtTopLevel */ false));
-    // Return a new host action that incorporates original host action and all
-    // device actions.
-    return std::unique_ptr<Action>(
-        new CudaHostAction(std::move(Current), DeviceActions));
+      HostAction.reset(nullptr);
+    return HostAction;
   }
+
+  // Outputs of device actions during complete CUDA compilation get created
+  // with AtTopLevel=false and become inputs for the host action.
+  ActionList DeviceActions;
+  for (unsigned I = 0, E = GpuArchList.size(); I != E; ++I)
+    DeviceActions.push_back(new CudaDeviceAction(
+        std::unique_ptr<Action>(CudaDeviceActions[I]), GpuArchList[I],
+        DeviceTriple, /* AtTopLevel */ false));
+  // Return a new host action that incorporates original host action and all
+  // device actions.
+  return std::unique_ptr<Action>(
+      new CudaHostAction(std::move(HostAction), DeviceActions));
 }
 
 void Driver::BuildActions(const ToolChain &TC, DerivedArgList &Args,
@@ -1373,9 +1379,9 @@ void Driver::BuildActions(const ToolChain &TC, DerivedArgList &Args,
   ActionList LinkerInputs;
 
   llvm::SmallVector<phases::ID, phases::MaxNumberOfPhases> PL;
-  for (unsigned i = 0, e = Inputs.size(); i != e; ++i) {
-    types::ID InputType = Inputs[i].first;
-    const Arg *InputArg = Inputs[i].second;
+  for (auto &I : Inputs) {
+    types::ID InputType = I.first;
+    const Arg *InputArg = I.second;
 
     PL.clear();
     types::getCompilationPhases(InputType, PL);
@@ -1421,14 +1427,13 @@ void Driver::BuildActions(const ToolChain &TC, DerivedArgList &Args,
       // Assumes that clang does everything up until linking phase, so we inject
       // cuda device actions at the last step before linking. Otherwise CUDA
       // host action forces preprocessor into a separate invocation.
-      if (FinalPhase == phases::Link) {
-        for (auto i = PL.begin(), e = PL.end(); i != e; ++i) {
-          auto next = i + 1;
-          if (next != e && *next == phases::Link)
-            CudaInjectionPhase = *i;
+      CudaInjectionPhase = FinalPhase;
+      if (FinalPhase == phases::Link)
+        for (auto PI = PL.begin(), PE = PL.end(); PI != PE; ++PI) {
+          auto next = PI + 1;
+          if (next != PE && *next == phases::Link)
+            CudaInjectionPhase = *PI;
         }
-      } else
-        CudaInjectionPhase = FinalPhase;
     }
 
     // Build the pipeline for this file.
@@ -1459,7 +1464,7 @@ void Driver::BuildActions(const ToolChain &TC, DerivedArgList &Args,
 
       if (InputType == types::TY_CUDA && Phase == CudaInjectionPhase &&
           !Args.hasArg(options::OPT_cuda_host_only)) {
-        Current = buildCudaActions(*this, TC, Args, InputArg, InputType,
+        Current = buildCudaActions(*this, TC, Args, InputArg,
                                    std::move(Current), Actions);
         if (!Current)
           break;
@@ -1789,15 +1794,11 @@ void Driver::BuildJobsForAction(Compilation &C, const Action *A,
   }
 
   if (const CudaDeviceAction *CDA = dyn_cast<CudaDeviceAction>(A)) {
-    // Figure out which NVPTX triple to use for device-side compilation based on
-    // whether host is 64-bit.
-    llvm::Triple DeviceTriple(C.getDefaultToolChain().getTriple().isArch64Bit()
-                                  ? "nvptx64-nvidia-cuda"
-                                  : "nvptx-nvidia-cuda");
-    BuildJobsForAction(C, *CDA->begin(),
-                       &getToolChain(C.getArgs(), DeviceTriple),
-                       CDA->getGpuArchName(), CDA->isAtTopLevel(),
-                       /*MultipleArchs*/ true, LinkingOutput, Result);
+    BuildJobsForAction(
+        C, *CDA->begin(),
+        &getToolChain(C.getArgs(), llvm::Triple(CDA->getDeviceTriple())),
+        CDA->getGpuArchName(), CDA->isAtTopLevel(),
+        /*MultipleArchs*/ true, LinkingOutput, Result);
     return;
   }
 
@@ -2185,15 +2186,18 @@ const ToolChain &Driver::getToolChain(const ArgList &Args,
       break;
     case llvm::Triple::Linux:
       if (Target.getArch() == llvm::Triple::hexagon)
-        TC = new toolchains::Hexagon_TC(*this, Target, Args);
+        TC = new toolchains::HexagonToolChain(*this, Target, Args);
       else
         TC = new toolchains::Linux(*this, Target, Args);
       break;
     case llvm::Triple::NaCl:
-      TC = new toolchains::NaCl_TC(*this, Target, Args);
+      TC = new toolchains::NaClToolChain(*this, Target, Args);
       break;
     case llvm::Triple::Solaris:
       TC = new toolchains::Solaris(*this, Target, Args);
+      break;
+    case llvm::Triple::AMDHSA:
+      TC = new toolchains::AMDGPUToolChain(*this, Target, Args);
       break;
     case llvm::Triple::Win32:
       switch (Target.getEnvironment()) {
@@ -2226,9 +2230,9 @@ const ToolChain &Driver::getToolChain(const ArgList &Args,
       if (Target.getArchName() == "tce")
         TC = new toolchains::TCEToolChain(*this, Target, Args);
       else if (Target.getArch() == llvm::Triple::hexagon)
-        TC = new toolchains::Hexagon_TC(*this, Target, Args);
+        TC = new toolchains::HexagonToolChain(*this, Target, Args);
       else if (Target.getArch() == llvm::Triple::xcore)
-        TC = new toolchains::XCore(*this, Target, Args);
+        TC = new toolchains::XCoreToolChain(*this, Target, Args);
       else if (Target.getArch() == llvm::Triple::shave)
         TC = new toolchains::SHAVEToolChain(*this, Target, Args);
       else if (Target.isOSBinFormatELF())

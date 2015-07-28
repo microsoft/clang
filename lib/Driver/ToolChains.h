@@ -29,7 +29,7 @@ namespace toolchains {
 /// all subcommands; this relies on gcc translating the majority of
 /// command line options.
 class LLVM_LIBRARY_VISIBILITY Generic_GCC : public ToolChain {
-protected:
+public:
   /// \brief Struct to store and manipulate GCC versions.
   ///
   /// We rely on assumptions about the form and structure of GCC version
@@ -147,6 +147,7 @@ protected:
                                 bool NeedsBiarchSuffix = false);
   };
 
+protected:
   GCCInstallationDetector GCCInstallation;
 
 public:
@@ -556,6 +557,7 @@ private:
   std::string Arch;
   mutable std::unique_ptr<tools::gcc::Preprocessor> Preprocessor;
   mutable std::unique_ptr<tools::gcc::Compiler> Compiler;
+  void findGccLibDir();
 };
 
 class LLVM_LIBRARY_VISIBILITY OpenBSD : public Generic_ELF {
@@ -711,16 +713,16 @@ public:
                              llvm::opt::ArgStringList &CC1Args) const override;
 };
 
-class LLVM_LIBRARY_VISIBILITY Hexagon_TC : public Linux {
+class LLVM_LIBRARY_VISIBILITY HexagonToolChain : public Linux {
 protected:
   GCCVersion GCCLibAndIncVersion;
   Tool *buildAssembler() const override;
   Tool *buildLinker() const override;
 
 public:
-  Hexagon_TC(const Driver &D, const llvm::Triple &Triple,
-             const llvm::opt::ArgList &Args);
-  ~Hexagon_TC() override;
+  HexagonToolChain(const Driver &D, const llvm::Triple &Triple,
+                   const llvm::opt::ArgList &Args);
+  ~HexagonToolChain() override;
 
   void
   AddClangSystemIncludeArgs(const llvm::opt::ArgList &DriverArgs,
@@ -742,10 +744,20 @@ public:
   static bool UsesG0(const char *smallDataThreshold);
 };
 
-class LLVM_LIBRARY_VISIBILITY NaCl_TC : public Generic_ELF {
+class LLVM_LIBRARY_VISIBILITY AMDGPUToolChain : public Generic_ELF {
+protected:
+  Tool *buildLinker() const override;
+
 public:
-  NaCl_TC(const Driver &D, const llvm::Triple &Triple,
-          const llvm::opt::ArgList &Args);
+  AMDGPUToolChain(const Driver &D, const llvm::Triple &Triple,
+            const llvm::opt::ArgList &Args);
+  bool IsIntegratedAssemblerDefault() const override { return true; }
+};
+
+class LLVM_LIBRARY_VISIBILITY NaClToolChain : public Generic_ELF {
+public:
+  NaClToolChain(const Driver &D, const llvm::Triple &Triple,
+                const llvm::opt::ArgList &Args);
 
   void
   AddClangSystemIncludeArgs(const llvm::opt::ArgList &DriverArgs,
@@ -763,9 +775,9 @@ public:
     return getTriple().getArch() == llvm::Triple::mipsel;
   }
 
-  // Get the path to the file containing NaCl's ARM macros. It lives in NaCl_TC
-  // because the AssembleARM tool needs a const char * that it can pass around
-  // and the toolchain outlives all the jobs.
+  // Get the path to the file containing NaCl's ARM macros.
+  // It lives in NaClToolChain because the ARMAssembler tool needs a
+  // const char * that it can pass around,
   const char *GetNaClArmMacrosPath() const { return NaClArmMacrosPath.c_str(); }
 
   std::string ComputeEffectiveClangTriple(const llvm::opt::ArgList &Args,
@@ -798,6 +810,10 @@ class LLVM_LIBRARY_VISIBILITY MSVCToolChain : public ToolChain {
 public:
   MSVCToolChain(const Driver &D, const llvm::Triple &Triple,
                 const llvm::opt::ArgList &Args);
+
+  llvm::opt::DerivedArgList *
+  TranslateArgs(const llvm::opt::DerivedArgList &Args,
+                const char *BoundArch) const override;
 
   bool IsIntegratedAssemblerDefault() const override;
   bool IsUnwindTablesDefault() const override;
@@ -861,10 +877,10 @@ protected:
   Tool *buildAssembler() const override;
 };
 
-class LLVM_LIBRARY_VISIBILITY XCore : public ToolChain {
+class LLVM_LIBRARY_VISIBILITY XCoreToolChain : public ToolChain {
 public:
-  XCore(const Driver &D, const llvm::Triple &Triple,
-        const llvm::opt::ArgList &Args);
+  XCoreToolChain(const Driver &D, const llvm::Triple &Triple,
+                 const llvm::opt::ArgList &Args);
 
 protected:
   Tool *buildAssembler() const override;
@@ -888,9 +904,9 @@ public:
                            llvm::opt::ArgStringList &CmdArgs) const override;
 };
 
-/// SHAVEToolChain - A tool chain using the compiler installed by the the
-// Movidius SDK into MV_TOOLS_DIR (which we assume will be copied to llvm's
-// installation dir) to perform all subcommands.
+/// SHAVEToolChain - A tool chain using the compiler installed by the
+/// Movidius SDK into MV_TOOLS_DIR (which we assume will be copied to llvm's
+/// installation dir) to perform all subcommands.
 class LLVM_LIBRARY_VISIBILITY SHAVEToolChain : public Generic_GCC {
 public:
   SHAVEToolChain(const Driver &D, const llvm::Triple &Triple,

@@ -378,7 +378,7 @@ void LookupResult::resolveKind() {
   // Don't do any extra resolution if we've already resolved as ambiguous.
   if (ResultKind == Ambiguous) return;
 
-  llvm::SmallPtrSet<NamedDecl*, 16> Unique;
+  llvm::SmallDenseMap<NamedDecl*, unsigned, 16> Unique;
   llvm::SmallPtrSet<QualType, 16> UniqueTypes;
 
   bool Ambiguous = false;
@@ -414,14 +414,26 @@ void LookupResult::resolveKind() {
       }
     }
 
-    if (!Unique.insert(D).second) {
+    auto UniqueResult = Unique.insert(std::make_pair(D, I));
+    if (!UniqueResult.second) {
       // If it's not unique, pull something off the back (and
       // continue at this index).
-      // FIXME: This is wrong. We need to take the more recent declaration in
-      // order to get the right type, default arguments, etc. We also need to
-      // prefer visible declarations to hidden ones (for redeclaration lookup
-      // in modules builds).
-      Decls[I] = Decls[--N];
+      auto ExistingI = UniqueResult.first->second;
+      auto *Existing = Decls[ExistingI]->getUnderlyingDecl();
+      for (Decl *Prev = Decls[I]->getUnderlyingDecl()->getPreviousDecl(); /**/;
+           Prev = Prev->getPreviousDecl()) {
+        if (Prev == Existing) {
+          // Existing result is older. Replace it with the new one.
+          Decls[ExistingI] = Decls[I];
+          Decls[I] = Decls[--N];
+          break;
+        }
+        if (!Prev) {
+          // New decl is older. Keep the existing one.
+          Decls[I] = Decls[--N];
+          break;
+        }
+      }
       continue;
     }
 
@@ -1679,12 +1691,10 @@ static bool LookupQualifiedNameInUsingDirectives(Sema &S, LookupResult &R,
 
 /// \brief Callback that looks for any member of a class with the given name.
 static bool LookupAnyMember(const CXXBaseSpecifier *Specifier,
-                            CXXBasePath &Path,
-                            void *Name) {
+                            CXXBasePath &Path, DeclarationName Name) {
   RecordDecl *BaseRecord = Specifier->getType()->getAs<RecordType>()->getDecl();
 
-  DeclarationName N = DeclarationName::getFromOpaquePtr(Name);
-  Path.Decls = BaseRecord->lookup(N);
+  Path.Decls = BaseRecord->lookup(Name);
   return !Path.Decls.empty();
 }
 
@@ -1802,7 +1812,8 @@ bool Sema::LookupQualifiedName(LookupResult &R, DeclContext *LookupCtx,
   Paths.setOrigin(LookupRec);
 
   // Look for this member in our base classes
-  CXXRecordDecl::BaseMatchesCallback *BaseCallback = nullptr;
+  bool (*BaseCallback)(const CXXBaseSpecifier *Specifier, CXXBasePath &Path,
+                       DeclarationName Name) = nullptr;
   switch (R.getLookupKind()) {
     case LookupObjCImplicitSelfParam:
     case LookupOrdinaryName:
@@ -1835,8 +1846,12 @@ bool Sema::LookupQualifiedName(LookupResult &R, DeclContext *LookupCtx,
       break;
   }
 
-  if (!LookupRec->lookupInBases(BaseCallback,
-                                R.getLookupName().getAsOpaquePtr(), Paths))
+  DeclarationName Name = R.getLookupName();
+  if (!LookupRec->lookupInBases(
+          [=](const CXXBaseSpecifier *Specifier, CXXBasePath &Path) {
+            return BaseCallback(Specifier, Path, Name);
+          },
+          Paths))
     return false;
 
   R.setNamingClass(LookupRec);

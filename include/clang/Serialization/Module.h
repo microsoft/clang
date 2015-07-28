@@ -53,12 +53,11 @@ enum ModuleKind {
 /// \brief Information about the contents of a DeclContext.
 struct DeclContextInfo {
   DeclContextInfo()
-    : NameLookupTableData(), LexicalDecls(), NumLexicalDecls() {}
+    : NameLookupTableData(), LexicalDecls() {}
 
   llvm::OnDiskIterableChainedHashTable<reader::ASTDeclContextNameLookupTrait>
     *NameLookupTableData; // an ASTDeclContextNameLookupTable.
-  const KindDeclIDPair *LexicalDecls;
-  unsigned NumLexicalDecls;
+  ArrayRef<KindDeclIDPair> LexicalDecls;
 };
 
 /// \brief The input file that has been loaded from this AST file, along with
@@ -270,6 +269,10 @@ public:
   /// IdentifierHashTable.
   void *IdentifierLookupTable;
 
+  /// \brief Offsets of identifiers that we're going to preload within
+  /// IdentifierTableData.
+  std::vector<unsigned> PreloadIdentifierOffsets;
+
   // === Macros ===
 
   /// \brief The cursor to the start of the preprocessor block, which stores
@@ -475,6 +478,11 @@ public:
   /// \brief Determine whether this module was directly imported at
   /// any point during translation.
   bool isDirectlyImported() const { return DirectlyImported; }
+
+  /// \brief Is this a module file for a module (rather than a PCH or similar).
+  bool isModule() const {
+    return Kind == MK_ImplicitModule || Kind == MK_ExplicitModule;
+  }
 
   /// \brief Dump debugging output for this module.
   void dump();

@@ -227,10 +227,22 @@ bool CodeGenFunction::EmitOMPCopyinClause(const OMPExecutableDirective &D) {
       auto *VD = cast<VarDecl>(cast<DeclRefExpr>(*IRef)->getDecl());
       QualType Type = VD->getType();
       if (CopiedVars.insert(VD->getCanonicalDecl()).second) {
-        // Get the address of the master variable.
-        auto *MasterAddr = VD->isStaticLocal()
-                               ? CGM.getStaticLocalDeclAddress(VD)
-                               : CGM.GetAddrOfGlobal(VD);
+
+        // Get the address of the master variable. If we are emitting code with
+        // TLS support, the address is passed from the master as field in the
+        // captured declaration.
+        llvm::Value *MasterAddr;
+        if (getLangOpts().OpenMPUseTLS &&
+            getContext().getTargetInfo().isTLSSupported()) {
+          assert(CapturedStmtInfo->lookup(VD) &&
+                 "Copyin threadprivates should have been captured!");
+          DeclRefExpr DRE(const_cast<VarDecl *>(VD), true, (*IRef)->getType(),
+                          VK_LValue, (*IRef)->getExprLoc());
+          MasterAddr = EmitLValue(&DRE).getAddress();
+        } else {
+          MasterAddr = VD->isStaticLocal() ? CGM.getStaticLocalDeclAddress(VD)
+                                           : CGM.GetAddrOfGlobal(VD);
+        }
         // Get the address of the threadprivate variable.
         auto *PrivateAddr = EmitLValue(*IRef).getAddress();
         if (CopiedVars.size() == 1) {
@@ -2120,4 +2132,13 @@ CodeGenFunction::getOMPCancelDestination(OpenMPDirectiveKind Kind) {
     return BreakContinueStack.empty() ? JumpDest()
                                       : BreakContinueStack.back().BreakBlock;
   return JumpDest();
+}
+
+// Generate the instructions for '#pragma omp target data' directive.
+void CodeGenFunction::EmitOMPTargetDataDirective(
+    const OMPTargetDataDirective &S) {
+
+  // emit the code inside the construct for now
+  auto CS = cast<CapturedStmt>(S.getAssociatedStmt());
+  EmitStmt(CS->getCapturedStmt());
 }
