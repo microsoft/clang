@@ -412,9 +412,9 @@ void Clang::AddPreprocessingOptions(Compilation &C, const JobAction &JA,
     A->render(Args, CmdArgs);
   }
 
-  Args.AddAllArgs(CmdArgs, options::OPT_D, options::OPT_U);
-  Args.AddAllArgs(CmdArgs, options::OPT_I_Group, options::OPT_F,
-                  options::OPT_index_header_map);
+  Args.AddAllArgs(CmdArgs,
+                  {options::OPT_D, options::OPT_U, options::OPT_I_Group,
+                   options::OPT_F, options::OPT_index_header_map});
 
   // Add -Wp, and -Xassembler if using the preprocessor.
 
@@ -542,19 +542,8 @@ static void getARMArchCPUFromArgs(const ArgList &Args, llvm::StringRef &Arch,
 static void getARMHWDivFeatures(const Driver &D, const Arg *A,
                                 const ArgList &Args, StringRef HWDiv,
                                 std::vector<const char *> &Features) {
-  if (HWDiv == "arm") {
-    Features.push_back("+hwdiv-arm");
-    Features.push_back("-hwdiv");
-  } else if (HWDiv == "thumb") {
-    Features.push_back("-hwdiv-arm");
-    Features.push_back("+hwdiv");
-  } else if (HWDiv == "arm,thumb" || HWDiv == "thumb,arm") {
-    Features.push_back("+hwdiv-arm");
-    Features.push_back("+hwdiv");
-  } else if (HWDiv == "none") {
-    Features.push_back("-hwdiv-arm");
-    Features.push_back("-hwdiv");
-  } else
+  unsigned HWDivID = llvm::ARMTargetParser::parseHWDiv(HWDiv);
+  if (!llvm::ARMTargetParser::getHWDivFeatures(HWDivID, Features))
     D.Diag(diag::err_drv_clang_unsupported) << A->getAsString(Args);
 }
 
@@ -810,6 +799,42 @@ static void getARMTargetFeatures(const Driver &D, const llvm::Triple &Triple,
       Features.push_back("+long-calls");
   }
 
+  // Kernel code has more strict alignment requirements.
+  if (KernelOrKext)
+    Features.push_back("+strict-align");
+  else if (Arg *A = Args.getLastArg(options::OPT_mno_unaligned_access,
+                                    options::OPT_munaligned_access)) {
+    if (A->getOption().matches(options::OPT_munaligned_access)) {
+      // No v6M core supports unaligned memory access (v6M ARM ARM A3.2).
+      if (Triple.getSubArch() == llvm::Triple::SubArchType::ARMSubArch_v6m)
+        D.Diag(diag::err_target_unsupported_unaligned) << "v6m";
+    } else
+      Features.push_back("+strict-align");
+  } else {
+    // Assume pre-ARMv6 doesn't support unaligned accesses.
+    //
+    // ARMv6 may or may not support unaligned accesses depending on the
+    // SCTLR.U bit, which is architecture-specific. We assume ARMv6
+    // Darwin and NetBSD targets support unaligned accesses, and others don't.
+    //
+    // ARMv7 always has SCTLR.U set to 1, but it has a new SCTLR.A bit
+    // which raises an alignment fault on unaligned accesses. Linux
+    // defaults this bit to 0 and handles it as a system-wide (not
+    // per-process) setting. It is therefore safe to assume that ARMv7+
+    // Linux targets support unaligned accesses. The same goes for NaCl.
+    //
+    // The above behavior is consistent with GCC.
+    int VersionNum = getARMSubArchVersionNumber(Triple);
+    if (Triple.isOSDarwin() || Triple.isOSNetBSD()) {
+      if (VersionNum < 6)
+        Features.push_back("+strict-align");
+    } else if (Triple.isOSLinux() || Triple.isOSNaCl()) {
+      if (VersionNum < 7)
+        Features.push_back("+strict-align");
+    } else
+      Features.push_back("+strict-align");
+  }
+
   // llvm does not support reserving registers in general. There is support
   // for reserving r9 on ARM though (defined as a platform-specific register
   // in ARM EABI).
@@ -890,27 +915,6 @@ void Clang::AddARMTargetArgs(const ArgList &Args, ArgStringList &CmdArgs,
     CmdArgs.push_back("hard");
   }
 
-  // Kernel code has more strict alignment requirements.
-  if (KernelOrKext) {
-    CmdArgs.push_back("-backend-option");
-    CmdArgs.push_back("-arm-strict-align");
-  }
-
-  // -mkernel implies -mstrict-align; don't add the redundant option.
-  if (!KernelOrKext) {
-    if (Arg *A = Args.getLastArg(options::OPT_mno_unaligned_access,
-                                 options::OPT_munaligned_access)) {
-      CmdArgs.push_back("-backend-option");
-      if (A->getOption().matches(options::OPT_mno_unaligned_access))
-        CmdArgs.push_back("-arm-strict-align");
-      else {
-        if (Triple.getSubArch() == llvm::Triple::SubArchType::ARMSubArch_v6m)
-          D.Diag(diag::err_target_unsupported_unaligned) << "v6m";
-        CmdArgs.push_back("-arm-no-strict-align");
-      }
-    }
-  }
-
   // Forward the -mglobal-merge option for explicit control over the pass.
   if (Arg *A = Args.getLastArg(options::OPT_mglobal_merge,
                                options::OPT_mno_global_merge)) {
@@ -978,15 +982,6 @@ void Clang::AddAArch64TargetArgs(const ArgList &Args,
 
   CmdArgs.push_back("-target-abi");
   CmdArgs.push_back(ABIName);
-
-  if (Arg *A = Args.getLastArg(options::OPT_mno_unaligned_access,
-                               options::OPT_munaligned_access)) {
-    CmdArgs.push_back("-backend-option");
-    if (A->getOption().matches(options::OPT_mno_unaligned_access))
-      CmdArgs.push_back("-aarch64-strict-align");
-    else
-      CmdArgs.push_back("-aarch64-no-strict-align");
-  }
 
   if (Arg *A = Args.getLastArg(options::OPT_mfix_cortex_a53_835769,
                                options::OPT_mno_fix_cortex_a53_835769)) {
@@ -2063,6 +2058,11 @@ static void getAArch64TargetFeatures(const Driver &D,
     else
       Features.push_back("-crc");
   }
+
+  if (Arg *A = Args.getLastArg(options::OPT_mno_unaligned_access,
+                               options::OPT_munaligned_access))
+    if (A->getOption().matches(options::OPT_mno_unaligned_access))
+      Features.push_back("+strict-align");
 
   if (Args.hasArg(options::OPT_ffixed_x18) || Triple.isOSDarwin())
     Features.push_back("+reserve-x18");
@@ -4047,6 +4047,12 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   Args.AddLastArg(CmdArgs, options::OPT_fstandalone_debug);
   Args.AddLastArg(CmdArgs, options::OPT_fno_standalone_debug);
   Args.AddLastArg(CmdArgs, options::OPT_fno_operator_names);
+  // Emulated TLS is enabled by default on Android, and can be enabled manually
+  // with -femulated-tls.
+  bool EmulatedTLSDefault = Triple.getEnvironment() == llvm::Triple::Android;
+  if (Args.hasFlag(options::OPT_femulated_tls, options::OPT_fno_emulated_tls,
+                   EmulatedTLSDefault))
+    CmdArgs.push_back("-femulated-tls");
   // AltiVec language extensions aren't relevant for assembling.
   if (!isa<PreprocessJobAction>(JA) || Output.getType() != types::TY_PP_Asm)
     Args.AddLastArg(CmdArgs, options::OPT_faltivec);
@@ -5817,11 +5823,9 @@ constructHexagonLinkArgs(Compilation &C, const JobAction &JA,
   //----------------------------------------------------------------------------
   //
   //----------------------------------------------------------------------------
-  Args.AddAllArgs(CmdArgs, options::OPT_T_Group);
-  Args.AddAllArgs(CmdArgs, options::OPT_e);
-  Args.AddAllArgs(CmdArgs, options::OPT_s);
-  Args.AddAllArgs(CmdArgs, options::OPT_t);
-  Args.AddAllArgs(CmdArgs, options::OPT_u_Group);
+  Args.AddAllArgs(CmdArgs,
+                  {options::OPT_T_Group, options::OPT_e, options::OPT_s,
+                   options::OPT_t, options::OPT_u_Group});
 
   AddLinkerInputs(ToolChain, Inputs, Args, CmdArgs);
 
@@ -6176,12 +6180,9 @@ void cloudabi::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   const ToolChain::path_list &Paths = ToolChain.getFilePaths();
   for (const auto &Path : Paths)
     CmdArgs.push_back(Args.MakeArgString(StringRef("-L") + Path));
-  Args.AddAllArgs(CmdArgs, options::OPT_T_Group);
-  Args.AddAllArgs(CmdArgs, options::OPT_e);
-  Args.AddAllArgs(CmdArgs, options::OPT_s);
-  Args.AddAllArgs(CmdArgs, options::OPT_t);
-  Args.AddAllArgs(CmdArgs, options::OPT_Z_Flag);
-  Args.AddAllArgs(CmdArgs, options::OPT_r);
+  Args.AddAllArgs(CmdArgs,
+                  {options::OPT_T_Group, options::OPT_e, options::OPT_s,
+                   options::OPT_t, options::OPT_Z_Flag, options::OPT_r});
 
   if (D.IsUsingLTO(Args))
     AddGoldPlugin(ToolChain, Args, CmdArgs);
@@ -6510,13 +6511,11 @@ void darwin::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   // we follow suite for ease of comparison.
   AddLinkArgs(C, Args, CmdArgs, Inputs);
 
-  Args.AddAllArgs(CmdArgs, options::OPT_d_Flag);
-  Args.AddAllArgs(CmdArgs, options::OPT_s);
-  Args.AddAllArgs(CmdArgs, options::OPT_t);
-  Args.AddAllArgs(CmdArgs, options::OPT_Z_Flag);
-  Args.AddAllArgs(CmdArgs, options::OPT_u_Group);
-  Args.AddLastArg(CmdArgs, options::OPT_e);
-  Args.AddAllArgs(CmdArgs, options::OPT_r);
+  // It seems that the 'e' option is completely ignored for dynamic executables
+  // (the default), and with static executables, the last one wins, as expected.
+  Args.AddAllArgs(CmdArgs, {options::OPT_d_Flag, options::OPT_s, options::OPT_t,
+                            options::OPT_Z_Flag, options::OPT_u_Group,
+                            options::OPT_e, options::OPT_r});
 
   // Forward -ObjC when either -ObjC or -ObjC++ is used, to force loading
   // members of static archive libraries which implement Objective-C classes or
@@ -6801,10 +6800,8 @@ void solaris::Linker::ConstructJob(Compilation &C, const JobAction &JA,
 
   CmdArgs.push_back(Args.MakeArgString("-L" + GCCLibPath));
 
-  Args.AddAllArgs(CmdArgs, options::OPT_L);
-  Args.AddAllArgs(CmdArgs, options::OPT_T_Group);
-  Args.AddAllArgs(CmdArgs, options::OPT_e);
-  Args.AddAllArgs(CmdArgs, options::OPT_r);
+  Args.AddAllArgs(CmdArgs, {options::OPT_L, options::OPT_T_Group,
+                            options::OPT_e, options::OPT_r});
 
   AddLinkerInputs(getToolChain(), Inputs, Args, CmdArgs);
 
@@ -6977,13 +6974,9 @@ void openbsd::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   CmdArgs.push_back(
       Args.MakeArgString("-L/usr/lib/gcc-lib/" + Triple + "/4.2.1"));
 
-  Args.AddAllArgs(CmdArgs, options::OPT_L);
-  Args.AddAllArgs(CmdArgs, options::OPT_T_Group);
-  Args.AddAllArgs(CmdArgs, options::OPT_e);
-  Args.AddAllArgs(CmdArgs, options::OPT_s);
-  Args.AddAllArgs(CmdArgs, options::OPT_t);
-  Args.AddAllArgs(CmdArgs, options::OPT_Z_Flag);
-  Args.AddAllArgs(CmdArgs, options::OPT_r);
+  Args.AddAllArgs(CmdArgs, {options::OPT_L, options::OPT_T_Group,
+                            options::OPT_e, options::OPT_s, options::OPT_t,
+                            options::OPT_Z_Flag, options::OPT_r});
 
   AddLinkerInputs(getToolChain(), Inputs, Args, CmdArgs);
 
@@ -7105,9 +7098,8 @@ void bitrig::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     }
   }
 
-  Args.AddAllArgs(CmdArgs, options::OPT_L);
-  Args.AddAllArgs(CmdArgs, options::OPT_T_Group);
-  Args.AddAllArgs(CmdArgs, options::OPT_e);
+  Args.AddAllArgs(CmdArgs,
+                  {options::OPT_L, options::OPT_T_Group, options::OPT_e});
 
   AddLinkerInputs(getToolChain(), Inputs, Args, CmdArgs);
 
@@ -8534,9 +8526,8 @@ void minix::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     CmdArgs.push_back(Args.MakeArgString(getToolChain().GetFilePath("crtn.o")));
   }
 
-  Args.AddAllArgs(CmdArgs, options::OPT_L);
-  Args.AddAllArgs(CmdArgs, options::OPT_T_Group);
-  Args.AddAllArgs(CmdArgs, options::OPT_e);
+  Args.AddAllArgs(CmdArgs,
+                  {options::OPT_L, options::OPT_T_Group, options::OPT_e});
 
   AddLinkerInputs(getToolChain(), Inputs, Args, CmdArgs);
 
@@ -8659,9 +8650,8 @@ void dragonfly::Linker::ConstructJob(Compilation &C, const JobAction &JA,
           Args.MakeArgString(getToolChain().GetFilePath("crtbegin.o")));
   }
 
-  Args.AddAllArgs(CmdArgs, options::OPT_L);
-  Args.AddAllArgs(CmdArgs, options::OPT_T_Group);
-  Args.AddAllArgs(CmdArgs, options::OPT_e);
+  Args.AddAllArgs(CmdArgs,
+                  {options::OPT_L, options::OPT_T_Group, options::OPT_e});
 
   AddLinkerInputs(getToolChain(), Inputs, Args, CmdArgs);
 
@@ -8921,8 +8911,7 @@ std::unique_ptr<Command> visualstudio::Compiler::GetCommand(
   // any flag accepted by clang-cl.
 
   // These are spelled the same way in clang and cl.exe,.
-  Args.AddAllArgs(CmdArgs, options::OPT_D, options::OPT_U);
-  Args.AddAllArgs(CmdArgs, options::OPT_I);
+  Args.AddAllArgs(CmdArgs, {options::OPT_D, options::OPT_U, options::OPT_I});
 
   // Optimization level.
   if (Arg *A = Args.getLastArg(options::OPT_fbuiltin, options::OPT_fno_builtin))
@@ -9475,10 +9464,10 @@ void tools::SHAVE::Compiler::ConstructJob(Compilation &C, const JobAction &JA,
   assert(II.getType() == types::TY_C || II.getType() == types::TY_CXX);
   assert(Output.getType() == types::TY_PP_Asm); // Require preprocessed asm.
 
-  // Append all -I, -iquote, -isystem paths.
-  Args.AddAllArgs(CmdArgs, options::OPT_clang_i_Group);
+  // Append all -I, -iquote, -isystem paths, and defines/undefines.
   // These are spelled the same way in clang and moviCompile.
-  Args.AddAllArgs(CmdArgs, options::OPT_D, options::OPT_U);
+  Args.AddAllArgs(CmdArgs,
+                  {options::OPT_clang_i_Group, options::OPT_D, options::OPT_U});
 
   CmdArgs.push_back("-DMYRIAD2");
   CmdArgs.push_back("-mcpu=myriad2");

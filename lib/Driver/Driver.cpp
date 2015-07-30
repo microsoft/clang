@@ -174,10 +174,8 @@ phases::ID Driver::getFinalPhase(const DerivedArgList &DAL,
   } else if ((PhaseArg = DAL.getLastArg(options::OPT_S))) {
     FinalPhase = phases::Backend;
 
-    // -c and partial CUDA compilations only run up to the assembler.
-  } else if ((PhaseArg = DAL.getLastArg(options::OPT_c)) ||
-             (PhaseArg = DAL.getLastArg(options::OPT_cuda_device_only)) ||
-             (PhaseArg = DAL.getLastArg(options::OPT_cuda_host_only))) {
+    // -c compilation only runs up to the assembler.
+  } else if ((PhaseArg = DAL.getLastArg(options::OPT_c))) {
     FinalPhase = phases::Assemble;
 
     // Otherwise do everything.
@@ -1492,6 +1490,10 @@ void Driver::BuildActions(const ToolChain &TC, DerivedArgList &Args,
 
   // Claim ignored clang-cl options.
   Args.ClaimAllArgs(options::OPT_cl_ignored_Group);
+
+  // Claim --cuda-host-only arg which may be passed to non-CUDA
+  // compilations and should not trigger warnings there.
+  Args.ClaimAllArgs(options::OPT_cuda_host_only);
 }
 
 std::unique_ptr<Action>
