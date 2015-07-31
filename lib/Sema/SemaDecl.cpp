@@ -4865,6 +4865,12 @@ NamedDecl *Sema::HandleDeclarator(Scope *S, Declarator &D,
     // C++ Concepts TS [dcl.spec.concept]p1: The concept specifier shall be
     // applied only to the definition of a function template or variable
     // template, declared in namespace scope
+    if (!TemplateParamLists.size()) {
+      Diag(D.getDeclSpec().getConceptSpecLoc(),
+           diag::err_concept_decl_non_template);
+      return nullptr;
+    }
+
     if (!DC->getRedeclContext()->isFileContext()) {
       Diag(D.getIdentifierLoc(),
            diag::err_concept_decls_may_only_appear_in_namespace_scope);
@@ -8570,9 +8576,8 @@ namespace {
 
       // Convert FieldDecls to their index number.
       llvm::SmallVector<unsigned, 4> UsedFieldIndex;
-      for (auto I = Fields.rbegin(), E = Fields.rend(); I != E; ++I) {
-        UsedFieldIndex.push_back((*I)->getFieldIndex());
-      }
+      for (const FieldDecl *I : llvm::reverse(Fields))
+        UsedFieldIndex.push_back(I->getFieldIndex());
 
       // See if a warning is needed by checking the first difference in index
       // numbers.  If field being used has index less than the field being
