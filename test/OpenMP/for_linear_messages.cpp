@@ -17,29 +17,29 @@ const int C2 = 2;
 void test_linear_colons()
 {
   int B = 0;
-  #pragma omp simd linear(B:bfoo())
+  #pragma omp for linear(B:bfoo())
   for (int i = 0; i < 10; ++i) ;
   // expected-error@+1 {{unexpected ':' in nested name specifier; did you mean '::'}}
-  #pragma omp simd linear(B::ib:B:bfoo())
+  #pragma omp for linear(B::ib:B:bfoo())
   for (int i = 0; i < 10; ++i) ;
   // expected-error@+1 {{use of undeclared identifier 'ib'; did you mean 'B::ib'}}
-  #pragma omp simd linear(B:ib)
+  #pragma omp for linear(B:ib)
   for (int i = 0; i < 10; ++i) ;
   // expected-error@+1 {{unexpected ':' in nested name specifier; did you mean '::'?}}
-  #pragma omp simd linear(z:B:ib)
+  #pragma omp for linear(z:B:ib)
   for (int i = 0; i < 10; ++i) ;
-  #pragma omp simd linear(B:B::bfoo())
+  #pragma omp for linear(B:B::bfoo())
   for (int i = 0; i < 10; ++i) ;
-  #pragma omp simd linear(X::x : ::z)
+  #pragma omp for linear(X::x : ::z)
   for (int i = 0; i < 10; ++i) ;
-  #pragma omp simd linear(B,::z, X::x)
+  #pragma omp for linear(B,::z, X::x)
   for (int i = 0; i < 10; ++i) ;
-  #pragma omp simd linear(::z)
+  #pragma omp for linear(::z)
   for (int i = 0; i < 10; ++i) ;
   // expected-error@+1 {{expected variable name}}
-  #pragma omp simd linear(B::bfoo())
+  #pragma omp for linear(B::bfoo())
   for (int i = 0; i < 10; ++i) ;
-  #pragma omp simd linear(B::ib,B:C1+C2)
+  #pragma omp for linear(B::ib,B:C1+C2)
   for (int i = 0; i < 10; ++i) ;
 }
 
@@ -48,7 +48,7 @@ template<int L, class T, class N> T test_template(T* arr, N num) {
   T sum = (T)0;
   T ind2 = - num * L; // expected-note {{'ind2' defined here}}
   // expected-error@+1 {{argument of a linear clause should be of integral or pointer type}}
-#pragma omp simd linear(ind2:L)
+#pragma omp for linear(ind2:L)
   for (i = 0; i < num; ++i) {
     T cur = arr[(int)ind2];
     ind2 += L;
@@ -60,7 +60,7 @@ template<int L, class T, class N> T test_template(T* arr, N num) {
 template<int LEN> int test_warn() {
   int ind2 = 0;
   // expected-warning@+1 {{zero linear step (ind2 should probably be const)}}
-  #pragma omp simd linear(ind2:LEN)
+  #pragma omp for linear(ind2:LEN)
   for (int i = 0; i < 100; i++) {
     ind2 += LEN;
   }
@@ -103,47 +103,47 @@ template<class I, class C> int foomain(I argc, C **argv) {
   I g(5);
   int i;
   int &j = i; // expected-note {{'j' defined here}}
-  #pragma omp simd linear // expected-error {{expected '(' after 'linear'}}
+  #pragma omp for linear // expected-error {{expected '(' after 'linear'}}
   for (int k = 0; k < argc; ++k) ++k;
-  #pragma omp simd linear ( // expected-error {{expected expression}} expected-error {{expected ')'}} expected-note {{to match this '('}}
+  #pragma omp for linear ( // expected-error {{expected expression}} expected-error {{expected ')'}} expected-note {{to match this '('}}
   for (int k = 0; k < argc; ++k) ++k;
-  #pragma omp simd linear () // expected-error {{expected expression}}
+  #pragma omp for linear () // expected-error {{expected expression}}
   for (int k = 0; k < argc; ++k) ++k;
-  #pragma omp simd linear (argc // expected-error {{expected ')'}} expected-note {{to match this '('}}
+  #pragma omp for linear (argc // expected-error {{expected ')'}} expected-note {{to match this '('}}
   for (int k = 0; k < argc; ++k) ++k;
-  #pragma omp simd linear (argc, // expected-error {{expected expression}} expected-error {{expected ')'}} expected-note {{to match this '('}}
+  #pragma omp for linear (argc, // expected-error {{expected expression}} expected-error {{expected ')'}} expected-note {{to match this '('}}
   for (int k = 0; k < argc; ++k) ++k;
-  #pragma omp simd linear (argc > 0 ? argv[1] : argv[2]) // expected-error {{expected variable name}}
+  #pragma omp for linear (argc > 0 ? argv[1] : argv[2]) // expected-error {{expected variable name}}
   for (int k = 0; k < argc; ++k) ++k;
-  #pragma omp simd linear (argc : 5)
+  #pragma omp for linear (argc : 5)
   for (int k = 0; k < argc; ++k) ++k;
-  #pragma omp simd linear (S1) // expected-error {{'S1' does not refer to a value}}
+  #pragma omp for linear (S1) // expected-error {{'S1' does not refer to a value}}
   for (int k = 0; k < argc; ++k) ++k;
   // expected-error@+2 {{linear variable with incomplete type 'S1'}}
   // expected-error@+1 {{const-qualified variable cannot be linear}}
-  #pragma omp simd linear (a, b:B::ib)
+  #pragma omp for linear (a, b:B::ib)
   for (int k = 0; k < argc; ++k) ++k;
-  #pragma omp simd linear (argv[1]) // expected-error {{expected variable name}}
+  #pragma omp for linear (argv[1]) // expected-error {{expected variable name}}
   for (int k = 0; k < argc; ++k) ++k;
-  #pragma omp simd linear(e, g)
+  #pragma omp for linear(e, g)
   for (int k = 0; k < argc; ++k) ++k;
-  #pragma omp simd linear(h) // expected-error {{threadprivate or thread local variable cannot be linear}}
+  #pragma omp for linear(h) // expected-error {{threadprivate or thread local variable cannot be linear}}
   for (int k = 0; k < argc; ++k) ++k;
-  #pragma omp simd linear(i)
+  #pragma omp for linear(i)
   for (int k = 0; k < argc; ++k) ++k;
   #pragma omp parallel
   {
     int v = 0;
     int i;
-    #pragma omp simd linear(v:i)
+    #pragma omp for linear(v:i)
     for (int k = 0; k < argc; ++k) { i = k; v += i; }
   }
-  #pragma omp simd linear(j) // expected-error {{arguments of OpenMP clause 'linear' cannot be of reference type}}
+  #pragma omp for linear(j) // expected-error {{arguments of OpenMP clause 'linear' cannot be of reference type}}
   for (int k = 0; k < argc; ++k) ++k;
   int v = 0;
-  #pragma omp simd linear(v:j)
+  #pragma omp for linear(v:j)
   for (int k = 0; k < argc; ++k) { ++k; v += j; }
-  #pragma omp simd linear(i)
+  #pragma omp for linear(i)
   for (int k = 0; k < argc; ++k) ++k;
   return 0;
 }
@@ -156,7 +156,6 @@ namespace C {
 using A::x;
 }
 
-int f;
 int main(int argc, char **argv) {
   double darr[100];
   // expected-note@+1 {{in instantiation of function template specialization 'test_template<-4, double, int>' requested here}}
@@ -168,47 +167,45 @@ int main(int argc, char **argv) {
   S5 g(5); // expected-note {{'g' defined here}}
   int i;
   int &j = i; // expected-note {{'j' defined here}}
-  #pragma omp simd linear(f) linear(f) // expected-error {{linear variable cannot be linear}} expected-note {{defined as linear}}
+  #pragma omp for linear // expected-error {{expected '(' after 'linear'}}
   for (int k = 0; k < argc; ++k) ++k;
-  #pragma omp simd linear // expected-error {{expected '(' after 'linear'}}
+  #pragma omp for linear ( // expected-error {{expected expression}} expected-error {{expected ')'}} expected-note {{to match this '('}}
   for (int k = 0; k < argc; ++k) ++k;
-  #pragma omp simd linear ( // expected-error {{expected expression}} expected-error {{expected ')'}} expected-note {{to match this '('}}
+  #pragma omp for linear () // expected-error {{expected expression}}
   for (int k = 0; k < argc; ++k) ++k;
-  #pragma omp simd linear () // expected-error {{expected expression}}
+  #pragma omp for linear (argc // expected-error {{expected ')'}} expected-note {{to match this '('}}
   for (int k = 0; k < argc; ++k) ++k;
-  #pragma omp simd linear (argc // expected-error {{expected ')'}} expected-note {{to match this '('}}
+  #pragma omp for linear (argc, // expected-error {{expected expression}} expected-error {{expected ')'}} expected-note {{to match this '('}}
   for (int k = 0; k < argc; ++k) ++k;
-  #pragma omp simd linear (argc, // expected-error {{expected expression}} expected-error {{expected ')'}} expected-note {{to match this '('}}
+  #pragma omp for linear (argc > 0 ? argv[1] : argv[2]) // expected-error {{expected variable name}}
   for (int k = 0; k < argc; ++k) ++k;
-  #pragma omp simd linear (argc > 0 ? argv[1] : argv[2]) // expected-error {{expected variable name}}
+  #pragma omp for linear (argc)
   for (int k = 0; k < argc; ++k) ++k;
-  #pragma omp simd linear (argc)
-  for (int k = 0; k < argc; ++k) ++k;
-  #pragma omp simd linear (S1) // expected-error {{'S1' does not refer to a value}}
+  #pragma omp for linear (S1) // expected-error {{'S1' does not refer to a value}}
   for (int k = 0; k < argc; ++k) ++k;
   // expected-error@+2 {{linear variable with incomplete type 'S1'}}
   // expected-error@+1 {{const-qualified variable cannot be linear}}
-  #pragma omp simd linear(a, b)
+  #pragma omp for linear(a, b)
   for (int k = 0; k < argc; ++k) ++k;
-  #pragma omp simd linear (argv[1]) // expected-error {{expected variable name}}
+  #pragma omp for linear (argv[1]) // expected-error {{expected variable name}}
   for (int k = 0; k < argc; ++k) ++k;
   // expected-error@+2 {{argument of a linear clause should be of integral or pointer type, not 'S4'}}
   // expected-error@+1 {{argument of a linear clause should be of integral or pointer type, not 'S5'}}
-  #pragma omp simd linear(e, g)
+  #pragma omp for linear(e, g)
   for (int k = 0; k < argc; ++k) ++k;
-  #pragma omp simd linear(h, C::x) // expected-error 2 {{threadprivate or thread local variable cannot be linear}}
+  #pragma omp for linear(h, C::x) // expected-error 2 {{threadprivate or thread local variable cannot be linear}}
   for (int k = 0; k < argc; ++k) ++k;
   #pragma omp parallel
   {
     int i;
-    #pragma omp simd linear(i)
+    #pragma omp for linear(i)
     for (int k = 0; k < argc; ++k) ++k;
-    #pragma omp simd linear(i : 4)
+    #pragma omp for linear(i : 4)
     for (int k = 0; k < argc; ++k) { ++k; i += 4; }
   }
-  #pragma omp simd linear(j) // expected-error {{arguments of OpenMP clause 'linear' cannot be of reference type 'int &'}}
+  #pragma omp for linear(j) // expected-error {{arguments of OpenMP clause 'linear' cannot be of reference type 'int &'}}
   for (int k = 0; k < argc; ++k) ++k;
-  #pragma omp simd linear(i)
+  #pragma omp for linear(i)
   for (int k = 0; k < argc; ++k) ++k;
 
   foomain<int,char>(argc,argv);
