@@ -2848,42 +2848,53 @@ static void addPGOAndCoverageFlags(Compilation &C, const Driver &D,
   auto *ProfileGenerateArg = Args.getLastArg(
       options::OPT_fprofile_instr_generate,
       options::OPT_fprofile_instr_generate_EQ, options::OPT_fprofile_generate,
-      options::OPT_fprofile_generate_EQ);
+      options::OPT_fprofile_generate_EQ,
+      options::OPT_fno_profile_instr_generate);
+  if (ProfileGenerateArg &&
+      ProfileGenerateArg->getOption().matches(
+          options::OPT_fno_profile_instr_generate))
+    ProfileGenerateArg = nullptr;
 
   auto *ProfileUseArg = Args.getLastArg(
       options::OPT_fprofile_instr_use, options::OPT_fprofile_instr_use_EQ,
-      options::OPT_fprofile_use, options::OPT_fprofile_use_EQ);
+      options::OPT_fprofile_use, options::OPT_fprofile_use_EQ,
+      options::OPT_fno_profile_instr_use);
+  if (ProfileUseArg &&
+      ProfileUseArg->getOption().matches(options::OPT_fno_profile_instr_use))
+    ProfileUseArg = nullptr;
 
   if (ProfileGenerateArg && ProfileUseArg)
     D.Diag(diag::err_drv_argument_not_allowed_with)
         << ProfileGenerateArg->getSpelling() << ProfileUseArg->getSpelling();
 
-  if (ProfileGenerateArg &&
-      ProfileGenerateArg->getOption().matches(
-          options::OPT_fprofile_instr_generate_EQ))
-    ProfileGenerateArg->render(Args, CmdArgs);
-  else if (ProfileGenerateArg &&
-           ProfileGenerateArg->getOption().matches(
-               options::OPT_fprofile_generate_EQ)) {
-    SmallString<128> Path(ProfileGenerateArg->getValue());
-    llvm::sys::path::append(Path, "default.profraw");
-    CmdArgs.push_back(
-        Args.MakeArgString(Twine("-fprofile-instr-generate=") + Path));
-  } else
-    Args.AddAllArgs(CmdArgs, options::OPT_fprofile_instr_generate);
+  if (ProfileGenerateArg) {
+    if (ProfileGenerateArg->getOption().matches(
+            options::OPT_fprofile_instr_generate_EQ))
+      ProfileGenerateArg->render(Args, CmdArgs);
+    else if (ProfileGenerateArg->getOption().matches(
+                 options::OPT_fprofile_generate_EQ)) {
+      SmallString<128> Path(ProfileGenerateArg->getValue());
+      llvm::sys::path::append(Path, "default.profraw");
+      CmdArgs.push_back(
+          Args.MakeArgString(Twine("-fprofile-instr-generate=") + Path));
+    } else
+      Args.AddAllArgs(CmdArgs, options::OPT_fprofile_instr_generate);
+  }
 
-  if (ProfileUseArg &&
-      ProfileUseArg->getOption().matches(options::OPT_fprofile_instr_use_EQ))
-    ProfileUseArg->render(Args, CmdArgs);
-  else if (ProfileUseArg &&
-           (ProfileUseArg->getOption().matches(options::OPT_fprofile_use_EQ) ||
-            ProfileUseArg->getOption().matches(
-                options::OPT_fprofile_instr_use))) {
-    SmallString<128> Path(
-        ProfileUseArg->getNumValues() == 0 ? "" : ProfileUseArg->getValue());
-    if (Path.empty() || llvm::sys::fs::is_directory(Path))
-      llvm::sys::path::append(Path, "default.profdata");
-    CmdArgs.push_back(Args.MakeArgString(Twine("-fprofile-instr-use=") + Path));
+  if (ProfileUseArg) {
+    if (ProfileUseArg->getOption().matches(options::OPT_fprofile_instr_use_EQ))
+      ProfileUseArg->render(Args, CmdArgs);
+    else if ((ProfileUseArg->getOption().matches(
+                  options::OPT_fprofile_use_EQ) ||
+              ProfileUseArg->getOption().matches(
+                  options::OPT_fprofile_instr_use))) {
+      SmallString<128> Path(
+          ProfileUseArg->getNumValues() == 0 ? "" : ProfileUseArg->getValue());
+      if (Path.empty() || llvm::sys::fs::is_directory(Path))
+        llvm::sys::path::append(Path, "default.profdata");
+      CmdArgs.push_back(
+          Args.MakeArgString(Twine("-fprofile-instr-use=") + Path));
+    }
   }
 
   if (Args.hasArg(options::OPT_ftest_coverage) ||
@@ -2894,12 +2905,15 @@ static void addPGOAndCoverageFlags(Compilation &C, const Driver &D,
       Args.hasArg(options::OPT_coverage))
     CmdArgs.push_back("-femit-coverage-data");
 
-  if (Args.hasArg(options::OPT_fcoverage_mapping) && !ProfileGenerateArg)
+  if (Args.hasFlag(options::OPT_fcoverage_mapping,
+                   options::OPT_fno_coverage_mapping, false) &&
+      !ProfileGenerateArg)
     D.Diag(diag::err_drv_argument_only_allowed_with)
         << "-fcoverage-mapping"
         << "-fprofile-instr-generate";
 
-  if (Args.hasArg(options::OPT_fcoverage_mapping))
+  if (Args.hasFlag(options::OPT_fcoverage_mapping,
+                   options::OPT_fno_coverage_mapping, false))
     CmdArgs.push_back("-fcoverage-mapping");
 
   if (C.getArgs().hasArg(options::OPT_c) ||
@@ -3678,6 +3692,9 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
     }
   }
 
+  // Forward -gcodeview.
+  Args.AddLastArg(CmdArgs, options::OPT_gcodeview);
+
   // We ignore flags -gstrict-dwarf and -grecord-gcc-switches for now.
   Args.ClaimAllArgs(options::OPT_g_flags_Group);
   if (Args.hasFlag(options::OPT_gcolumn_info, options::OPT_gno_column_info,
@@ -3848,6 +3865,7 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   for (const Arg *A :
        Args.filtered(options::OPT_clang_ignored_gcc_optimization_f_Group)) {
     D.Diag(diag::warn_ignored_gcc_optimization) << A->getAsString(Args);
+    A->claim();
   }
 
   claimNoWarnArgs(Args);
@@ -5268,6 +5286,16 @@ void Clang::AddClangCLArgs(const ArgList &Args, ArgStringList &CmdArgs) const {
   if (Args.hasFlag(options::OPT__SLASH_GR_, options::OPT__SLASH_GR,
                    /*default=*/false))
     CmdArgs.push_back("-fno-rtti-data");
+
+  // Emit CodeView if -Z7 is present.
+  bool EmitCodeView = Args.hasArg(options::OPT__SLASH_Z7);
+  bool EmitDwarf = Args.hasArg(options::OPT_gdwarf);
+  // If we are emitting CV but not DWARF, don't build information that LLVM
+  // can't yet process.
+  if (EmitCodeView && !EmitDwarf)
+    CmdArgs.push_back("-gline-tables-only");
+  if (EmitCodeView)
+    CmdArgs.push_back("-gcodeview");
 
   const Driver &D = getToolChain().getDriver();
   EHFlags EH = parseClangCLEHFlags(D, Args);
@@ -8819,7 +8847,7 @@ void visualstudio::Linker::ConstructJob(Compilation &C, const JobAction &JA,
 
   CmdArgs.push_back("-nologo");
 
-  if (Args.hasArg(options::OPT_g_Group))
+  if (Args.hasArg(options::OPT_g_Group, options::OPT__SLASH_Z7))
     CmdArgs.push_back("-debug");
 
   bool DLL = Args.hasArg(options::OPT__SLASH_LD, options::OPT__SLASH_LDd,
@@ -8975,7 +9003,8 @@ std::unique_ptr<Command> visualstudio::Compiler::GetCommand(
         A->getOption().getID() == options::OPT_fdata_sections ? "/Gw" : "/Gw-");
   if (Args.hasArg(options::OPT_fsyntax_only))
     CmdArgs.push_back("/Zs");
-  if (Args.hasArg(options::OPT_g_Flag, options::OPT_gline_tables_only))
+  if (Args.hasArg(options::OPT_g_Flag, options::OPT_gline_tables_only,
+                  options::OPT__SLASH_Z7))
     CmdArgs.push_back("/Z7");
 
   std::vector<std::string> Includes =

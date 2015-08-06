@@ -955,48 +955,54 @@ ASTDeclContextNameLookupTrait::ReadData(internal_key_type,
   return std::make_pair(Start, Start + NumDecls);
 }
 
-bool ASTReader::ReadDeclContextStorage(ModuleFile &M,
-                                       BitstreamCursor &Cursor,
-                                   const std::pair<uint64_t, uint64_t> &Offsets,
-                                       DeclContextInfo &Info) {
+bool ASTReader::ReadLexicalDeclContextStorage(ModuleFile &M,
+                                              BitstreamCursor &Cursor,
+                                              uint64_t Offset,
+                                              DeclContext *DC) {
+  assert(Offset != 0);
+
   SavedStreamPosition SavedPosition(Cursor);
-  // First the lexical decls.
-  if (Offsets.first != 0) {
-    Cursor.JumpToBit(Offsets.first);
+  Cursor.JumpToBit(Offset);
 
-    RecordData Record;
-    StringRef Blob;
-    unsigned Code = Cursor.ReadCode();
-    unsigned RecCode = Cursor.readRecord(Code, Record, &Blob);
-    if (RecCode != DECL_CONTEXT_LEXICAL) {
-      Error("Expected lexical block");
-      return true;
-    }
-
-    Info.LexicalDecls = llvm::makeArrayRef(
-        reinterpret_cast<const KindDeclIDPair *>(Blob.data()),
-        Blob.size() / sizeof(KindDeclIDPair));
+  RecordData Record;
+  StringRef Blob;
+  unsigned Code = Cursor.ReadCode();
+  unsigned RecCode = Cursor.readRecord(Code, Record, &Blob);
+  if (RecCode != DECL_CONTEXT_LEXICAL) {
+    Error("Expected lexical block");
+    return true;
   }
 
-  // Now the lookup table.
-  if (Offsets.second != 0) {
-    Cursor.JumpToBit(Offsets.second);
+  M.DeclContextInfos[DC].LexicalDecls = llvm::makeArrayRef(
+      reinterpret_cast<const KindDeclIDPair *>(Blob.data()),
+      Blob.size() / sizeof(KindDeclIDPair));
+  DC->setHasExternalLexicalStorage(true);
+  return false;
+}
 
-    RecordData Record;
-    StringRef Blob;
-    unsigned Code = Cursor.ReadCode();
-    unsigned RecCode = Cursor.readRecord(Code, Record, &Blob);
-    if (RecCode != DECL_CONTEXT_VISIBLE) {
-      Error("Expected visible lookup table block");
-      return true;
-    }
-    Info.NameLookupTableData = ASTDeclContextNameLookupTable::Create(
-        (const unsigned char *)Blob.data() + Record[0],
-        (const unsigned char *)Blob.data() + sizeof(uint32_t),
-        (const unsigned char *)Blob.data(),
-        ASTDeclContextNameLookupTrait(*this, M));
+bool ASTReader::ReadVisibleDeclContextStorage(ModuleFile &M,
+                                              BitstreamCursor &Cursor,
+                                              uint64_t Offset,
+                                              DeclID ID) {
+  assert(Offset != 0);
+
+  SavedStreamPosition SavedPosition(Cursor);
+  Cursor.JumpToBit(Offset);
+
+  RecordData Record;
+  StringRef Blob;
+  unsigned Code = Cursor.ReadCode();
+  unsigned RecCode = Cursor.readRecord(Code, Record, &Blob);
+  if (RecCode != DECL_CONTEXT_VISIBLE) {
+    Error("Expected visible lookup table block");
+    return true;
   }
 
+  // We can't safely determine the primary context yet, so delay attaching the
+  // lookup table until we're done with recursive deserialization.
+  unsigned BucketOffset = Record[0];
+  PendingVisibleUpdates[ID].push_back(PendingVisibleUpdate{
+      &M, (const unsigned char *)Blob.data(), BucketOffset});
   return false;
 }
 
@@ -2503,20 +2509,14 @@ ASTReader::ReadASTBlock(ModuleFile &F, unsigned ClientLoadCapabilities) {
     case UPDATE_VISIBLE: {
       unsigned Idx = 0;
       serialization::DeclID ID = ReadDeclID(F, Record, Idx);
-      ASTDeclContextNameLookupTable *Table =
-          ASTDeclContextNameLookupTable::Create(
-              (const unsigned char *)Blob.data() + Record[Idx++],
-              (const unsigned char *)Blob.data() + sizeof(uint32_t),
-              (const unsigned char *)Blob.data(),
-              ASTDeclContextNameLookupTrait(*this, F));
-      if (Decl *D = GetExistingDecl(ID)) {
-        auto *DC = cast<DeclContext>(D);
-        DC->getPrimaryContext()->setHasExternalVisibleStorage(true);
-        auto *&LookupTable = F.DeclContextInfos[DC].NameLookupTableData;
-        delete LookupTable;
-        LookupTable = Table;
-      } else
-        PendingVisibleUpdates[ID].push_back(std::make_pair(Table, &F));
+      auto *Data = (const unsigned char*)Blob.data();
+      unsigned BucketOffset = Record[Idx++];
+      PendingVisibleUpdates[ID].push_back(
+          PendingVisibleUpdate{&F, Data, BucketOffset});
+      // If we've already loaded the decl, perform the updates when we finish
+      // loading this block.
+      if (Decl *D = GetExistingDecl(ID))
+        PendingUpdateRecords.push_back(std::make_pair(ID, D));
       break;
     }
 
@@ -5910,8 +5910,13 @@ void ASTReader::CompleteRedeclChain(const Decl *D) {
       } else
         DC->lookup(Name);
     } else if (needsAnonymousDeclarationNumber(cast<NamedDecl>(D))) {
-      // FIXME: It'd be nice to do something a bit more targeted here.
-      D->getDeclContext()->decls_begin();
+      // Find all declarations of this kind from the relevant context.
+      for (auto *DCDecl : cast<Decl>(D->getLexicalDeclContext())->redecls()) {
+        auto *DC = cast<DeclContext>(DCDecl);
+        SmallVector<Decl*, 8> Decls;
+        FindExternalLexicalDecls(
+            DC, [&](Decl::Kind K) { return K == D->getKind(); }, Decls);
+      }
     }
   }
 
@@ -6174,47 +6179,48 @@ namespace {
   class FindExternalLexicalDeclsVisitor {
     ASTReader &Reader;
     const DeclContext *DC;
-    bool (*isKindWeWant)(Decl::Kind);
+    llvm::function_ref<bool(Decl::Kind)> IsKindWeWant;
     
     SmallVectorImpl<Decl*> &Decls;
     bool PredefsVisited[NUM_PREDEF_DECL_IDS];
 
   public:
-    FindExternalLexicalDeclsVisitor(ASTReader &Reader, const DeclContext *DC,
-                                    bool (*isKindWeWant)(Decl::Kind),
-                                    SmallVectorImpl<Decl*> &Decls)
-      : Reader(Reader), DC(DC), isKindWeWant(isKindWeWant), Decls(Decls) 
-    {
+    FindExternalLexicalDeclsVisitor(
+        ASTReader &Reader, const DeclContext *DC,
+        llvm::function_ref<bool(Decl::Kind)> IsKindWeWant,
+        SmallVectorImpl<Decl *> &Decls)
+        : Reader(Reader), DC(DC), IsKindWeWant(IsKindWeWant), Decls(Decls) {
       for (unsigned I = 0; I != NUM_PREDEF_DECL_IDS; ++I)
         PredefsVisited[I] = false;
     }
 
     static bool visitPostorder(ModuleFile &M, void *UserData) {
-      FindExternalLexicalDeclsVisitor *This
-        = static_cast<FindExternalLexicalDeclsVisitor *>(UserData);
+      return (*static_cast<FindExternalLexicalDeclsVisitor*>(UserData))(M);
+    }
 
-      ModuleFile::DeclContextInfosMap::iterator Info
-        = M.DeclContextInfos.find(This->DC);
+    bool operator()(ModuleFile &M) {
+      ModuleFile::DeclContextInfosMap::iterator Info =
+          M.DeclContextInfos.find(DC);
       if (Info == M.DeclContextInfos.end() || Info->second.LexicalDecls.empty())
         return false;
 
       // Load all of the declaration IDs
       for (const KindDeclIDPair &P : Info->second.LexicalDecls) {
-        if (This->isKindWeWant && !This->isKindWeWant((Decl::Kind)P.first))
+        if (!IsKindWeWant((Decl::Kind)P.first))
           continue;
 
         // Don't add predefined declarations to the lexical context more
         // than once.
         if (P.second < NUM_PREDEF_DECL_IDS) {
-          if (This->PredefsVisited[P.second])
+          if (PredefsVisited[P.second])
             continue;
 
-          This->PredefsVisited[P.second] = true;
+          PredefsVisited[P.second] = true;
         }
 
-        if (Decl *D = This->Reader.GetLocalDecl(M, P.second)) {
-          if (!This->DC->isDeclInLexicalTraversal(D))
-            This->Decls.push_back(D);
+        if (Decl *D = Reader.GetLocalDecl(M, P.second)) {
+          if (!DC->isDeclInLexicalTraversal(D))
+            Decls.push_back(D);
         }
       }
 
@@ -6223,16 +6229,16 @@ namespace {
   };
 }
 
-ExternalLoadResult ASTReader::FindExternalLexicalDecls(const DeclContext *DC,
-                                         bool (*isKindWeWant)(Decl::Kind),
-                                         SmallVectorImpl<Decl*> &Decls) {
+void ASTReader::FindExternalLexicalDecls(
+    const DeclContext *DC, llvm::function_ref<bool(Decl::Kind)> IsKindWeWant,
+    SmallVectorImpl<Decl *> &Decls) {
   // There might be lexical decls in multiple modules, for the TU at
-  // least. Walk all of the modules in the order they were loaded.
-  FindExternalLexicalDeclsVisitor Visitor(*this, DC, isKindWeWant, Decls);
+  // least. FIXME: Only look in multiple module files in the very rare
+  // cases where this can actually happen.
+  FindExternalLexicalDeclsVisitor Visitor(*this, DC, IsKindWeWant, Decls);
   ModuleMgr.visitDepthFirst(
       nullptr, &FindExternalLexicalDeclsVisitor::visitPostorder, &Visitor);
   ++NumLexicalDeclContextsRead;
-  return ELR_Success;
 }
 
 namespace {
@@ -8325,21 +8331,26 @@ void ASTReader::diagnoseOdrViolations() {
     if (Found)
       continue;
 
+    // Quick check failed, time to do the slow thing. Note, we can't just
+    // look up the name of D in CanonDef here, because the member that is
+    // in CanonDef might not be found by name lookup (it might have been
+    // replaced by a more recent declaration in the lookup table), and we
+    // can't necessarily find it in the redeclaration chain because it might
+    // be merely mergeable, not redeclarable.
     llvm::SmallVector<const NamedDecl*, 4> Candidates;
-    DeclContext::lookup_result R = CanonDef->lookup(D->getDeclName());
-    for (DeclContext::lookup_iterator I = R.begin(), E = R.end();
-         !Found && I != E; ++I) {
-      for (auto RI : (*I)->redecls()) {
-        if (RI->getLexicalDeclContext() == CanonDef) {
-          // This declaration is present in the canonical definition. If it's
-          // in the same redecl chain, it's the one we're looking for.
-          if (RI->getCanonicalDecl() == DCanon)
-            Found = true;
-          else
-            Candidates.push_back(cast<NamedDecl>(RI));
-          break;
-        }
+    for (auto *CanonMember : CanonDef->decls()) {
+      if (CanonMember->getCanonicalDecl() == DCanon) {
+        // This can happen if the declaration is merely mergeable and not
+        // actually redeclarable (we looked for redeclarations earlier).
+        //
+        // FIXME: We should be able to detect this more efficiently, without
+        // pulling in all of the members of CanonDef.
+        Found = true;
+        break;
       }
+      if (auto *ND = dyn_cast<NamedDecl>(CanonMember))
+        if (ND->getDeclName() == D->getDeclName())
+          Candidates.push_back(ND);
     }
 
     if (!Found) {
@@ -8448,10 +8459,10 @@ void ASTReader::FinishedDeserializing() {
       }
     }
 
-    diagnoseOdrViolations();
-
     if (ReadTimer)
       ReadTimer->stopTimer();
+
+    diagnoseOdrViolations();
 
     // We are not in recursive loading, so it's safe to pass the "interesting"
     // decls to the consumer.
@@ -8521,14 +8532,4 @@ ASTReader::ASTReader(Preprocessor &PP, ASTContext &Context,
 ASTReader::~ASTReader() {
   if (OwnsDeserializationListener)
     delete DeserializationListener;
-
-  for (DeclContextVisibleUpdatesPending::iterator
-           I = PendingVisibleUpdates.begin(),
-           E = PendingVisibleUpdates.end();
-       I != E; ++I) {
-    for (DeclContextVisibleUpdates::iterator J = I->second.begin(),
-                                             F = I->second.end();
-         J != F; ++J)
-      delete J->first;
-  }
 }
