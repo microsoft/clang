@@ -973,9 +973,13 @@ bool ASTReader::ReadLexicalDeclContextStorage(ModuleFile &M,
     return true;
   }
 
-  M.DeclContextInfos[DC].LexicalDecls = llvm::makeArrayRef(
-      reinterpret_cast<const KindDeclIDPair *>(Blob.data()),
-      Blob.size() / sizeof(KindDeclIDPair));
+  assert(!isa<TranslationUnitDecl>(DC) &&
+         "expected a TU_UPDATE_LEXICAL record for TU");
+  // FIXME: Once we remove RewriteDecl, assert that we didn't already have
+  // lexical decls for this context.
+  LexicalDecls[DC] = llvm::makeArrayRef(
+      reinterpret_cast<const llvm::support::unaligned_uint32_t *>(Blob.data()),
+      Blob.size() / 4);
   DC->setHasExternalLexicalStorage(true);
   return false;
 }
@@ -2498,10 +2502,11 @@ ASTReader::ReadASTBlock(ModuleFile &F, unsigned ClientLoadCapabilities) {
         
     case TU_UPDATE_LEXICAL: {
       DeclContext *TU = Context.getTranslationUnitDecl();
-      DeclContextInfo &Info = F.DeclContextInfos[TU];
-      Info.LexicalDecls = llvm::makeArrayRef(
-          reinterpret_cast<const KindDeclIDPair *>(Blob.data()),
-          static_cast<unsigned int>(Blob.size() / sizeof(KindDeclIDPair)));
+      LexicalContents Contents(
+          reinterpret_cast<const llvm::support::unaligned_uint32_t *>(
+              Blob.data()),
+          static_cast<unsigned int>(Blob.size() / 4));
+      TULexicalDecls.push_back(std::make_pair(&F, Contents));
       TU->setHasExternalLexicalStorage(true);
       break;
     }
@@ -6175,69 +6180,45 @@ Stmt *ASTReader::GetExternalDeclStmt(uint64_t Offset) {
   return ReadStmtFromStream(*Loc.F);
 }
 
-namespace {
-  class FindExternalLexicalDeclsVisitor {
-    ASTReader &Reader;
-    const DeclContext *DC;
-    llvm::function_ref<bool(Decl::Kind)> IsKindWeWant;
-    
-    SmallVectorImpl<Decl*> &Decls;
-    bool PredefsVisited[NUM_PREDEF_DECL_IDS];
-
-  public:
-    FindExternalLexicalDeclsVisitor(
-        ASTReader &Reader, const DeclContext *DC,
-        llvm::function_ref<bool(Decl::Kind)> IsKindWeWant,
-        SmallVectorImpl<Decl *> &Decls)
-        : Reader(Reader), DC(DC), IsKindWeWant(IsKindWeWant), Decls(Decls) {
-      for (unsigned I = 0; I != NUM_PREDEF_DECL_IDS; ++I)
-        PredefsVisited[I] = false;
-    }
-
-    static bool visitPostorder(ModuleFile &M, void *UserData) {
-      return (*static_cast<FindExternalLexicalDeclsVisitor*>(UserData))(M);
-    }
-
-    bool operator()(ModuleFile &M) {
-      ModuleFile::DeclContextInfosMap::iterator Info =
-          M.DeclContextInfos.find(DC);
-      if (Info == M.DeclContextInfos.end() || Info->second.LexicalDecls.empty())
-        return false;
-
-      // Load all of the declaration IDs
-      for (const KindDeclIDPair &P : Info->second.LexicalDecls) {
-        if (!IsKindWeWant((Decl::Kind)P.first))
-          continue;
-
-        // Don't add predefined declarations to the lexical context more
-        // than once.
-        if (P.second < NUM_PREDEF_DECL_IDS) {
-          if (PredefsVisited[P.second])
-            continue;
-
-          PredefsVisited[P.second] = true;
-        }
-
-        if (Decl *D = Reader.GetLocalDecl(M, P.second)) {
-          if (!DC->isDeclInLexicalTraversal(D))
-            Decls.push_back(D);
-        }
-      }
-
-      return false;
-    }
-  };
-}
-
 void ASTReader::FindExternalLexicalDecls(
     const DeclContext *DC, llvm::function_ref<bool(Decl::Kind)> IsKindWeWant,
     SmallVectorImpl<Decl *> &Decls) {
-  // There might be lexical decls in multiple modules, for the TU at
-  // least. FIXME: Only look in multiple module files in the very rare
-  // cases where this can actually happen.
-  FindExternalLexicalDeclsVisitor Visitor(*this, DC, IsKindWeWant, Decls);
-  ModuleMgr.visitDepthFirst(
-      nullptr, &FindExternalLexicalDeclsVisitor::visitPostorder, &Visitor);
+  bool PredefsVisited[NUM_PREDEF_DECL_IDS] = {};
+
+  auto Visit = [&] (ModuleFile *M, LexicalContents LexicalDecls) {
+    assert(LexicalDecls.size() % 2 == 0 && "expected an even number of entries");
+    for (int I = 0, N = LexicalDecls.size(); I != N; I += 2) {
+      auto K = (Decl::Kind)+LexicalDecls[I];
+      if (!IsKindWeWant(K))
+        continue;
+
+      auto ID = (serialization::DeclID)+LexicalDecls[I + 1];
+
+      // Don't add predefined declarations to the lexical context more
+      // than once.
+      if (ID < NUM_PREDEF_DECL_IDS) {
+        if (PredefsVisited[ID])
+          continue;
+
+        PredefsVisited[ID] = true;
+      }
+
+      if (Decl *D = GetLocalDecl(*M, ID)) {
+        if (!DC->isDeclInLexicalTraversal(D))
+          Decls.push_back(D);
+      }
+    }
+  };
+
+  if (isa<TranslationUnitDecl>(DC)) {
+    for (auto Lexical : TULexicalDecls)
+      Visit(Lexical.first, Lexical.second);
+  } else {
+    auto I = LexicalDecls.find(DC);
+    if (I != LexicalDecls.end())
+      Visit(getOwningModuleFile(cast<Decl>(DC)), I->second);
+  }
+
   ++NumLexicalDeclContextsRead;
 }
 
@@ -6343,7 +6324,7 @@ namespace {
   /// declaration context.
   class DeclContextNameLookupVisitor {
     ASTReader &Reader;
-    ArrayRef<const DeclContext *> Contexts;
+    const DeclContext *Context;
     DeclarationName Name;
     ASTDeclContextNameLookupTrait::DeclNameKey NameKey;
     unsigned NameHash;
@@ -6352,50 +6333,25 @@ namespace {
 
   public:
     DeclContextNameLookupVisitor(ASTReader &Reader,
+                                 const DeclContext *Context,
                                  DeclarationName Name,
                                  SmallVectorImpl<NamedDecl *> &Decls,
                                  llvm::SmallPtrSetImpl<NamedDecl *> &DeclSet)
-      : Reader(Reader), Name(Name),
+      : Reader(Reader), Context(Context), Name(Name),
         NameKey(ASTDeclContextNameLookupTrait::GetInternalKey(Name)),
         NameHash(ASTDeclContextNameLookupTrait::ComputeHash(NameKey)),
         Decls(Decls), DeclSet(DeclSet) {}
 
-    void visitContexts(ArrayRef<const DeclContext*> Contexts) {
-      if (Contexts.empty())
-        return;
-      this->Contexts = Contexts;
-
-      // If we can definitively determine which module file to look into,
-      // only look there. Otherwise, look in all module files.
-      ModuleFile *Definitive;
-      if (Contexts.size() == 1 &&
-          (Definitive = getDefinitiveModuleFileFor(Contexts[0], Reader))) {
-        (*this)(*Definitive);
-      } else {
-        Reader.getModuleManager().visit(*this);
-      }
-    }
-
     bool operator()(ModuleFile &M) {
       // Check whether we have any visible declaration information for
       // this context in this module.
-      ModuleFile::DeclContextInfosMap::iterator Info;
-      bool FoundInfo = false;
-      for (auto *DC : Contexts) {
-        Info = M.DeclContextInfos.find(DC);
-        if (Info != M.DeclContextInfos.end() &&
-            Info->second.NameLookupTableData) {
-          FoundInfo = true;
-          break;
-        }
-      }
-
-      if (!FoundInfo)
+      auto Info = M.DeclContextInfos.find(Context);
+      if (Info == M.DeclContextInfos.end() || !Info->second.NameLookupTableData)
         return false;
 
       // Look for this name within this module.
       ASTDeclContextNameLookupTable *LookupTable =
-        Info->second.NameLookupTableData;
+          Info->second.NameLookupTableData;
       ASTDeclContextNameLookupTable::iterator Pos =
           LookupTable->find_hashed(NameKey, NameHash);
       if (Pos == LookupTable->end())
@@ -6442,40 +6398,14 @@ ASTReader::FindExternalVisibleDeclsByName(const DeclContext *DC,
   SmallVector<NamedDecl *, 64> Decls;
   llvm::SmallPtrSet<NamedDecl*, 64> DeclSet;
 
-  // Compute the declaration contexts we need to look into. Multiple such
-  // declaration contexts occur when two declaration contexts from disjoint
-  // modules get merged, e.g., when two namespaces with the same name are 
-  // independently defined in separate modules.
-  SmallVector<const DeclContext *, 2> Contexts;
-  Contexts.push_back(DC);
+  DeclContextNameLookupVisitor Visitor(*this, DC, Name, Decls, DeclSet);
 
-  if (DC->isNamespace()) {
-    auto Key = KeyDecls.find(const_cast<Decl *>(cast<Decl>(DC)));
-    if (Key != KeyDecls.end()) {
-      for (unsigned I = 0, N = Key->second.size(); I != N; ++I)
-        Contexts.push_back(cast<DeclContext>(GetDecl(Key->second[I])));
-    }
-  }
-
-  DeclContextNameLookupVisitor Visitor(*this, Name, Decls, DeclSet);
-  Visitor.visitContexts(Contexts);
-
-  // If this might be an implicit special member function, then also search
-  // all merged definitions of the surrounding class. We need to search them
-  // individually, because finding an entity in one of them doesn't imply that
-  // we can't find a different entity in another one.
-  if (isa<CXXRecordDecl>(DC)) {
-    auto Merged = MergedLookups.find(DC);
-    if (Merged != MergedLookups.end()) {
-      for (unsigned I = 0; I != Merged->second.size(); ++I) {
-        const DeclContext *Context = Merged->second[I];
-        Visitor.visitContexts(Context);
-        // We might have just added some more merged lookups. If so, our
-        // iterator is now invalid, so grab a fresh one before continuing.
-        Merged = MergedLookups.find(DC);
-      }
-    }
-  }
+  // If we can definitively determine which module file to look into,
+  // only look there. Otherwise, look in all module files.
+  if (ModuleFile *Definitive = getDefinitiveModuleFileFor(DC, *this))
+    Visitor(*Definitive);
+  else
+    ModuleMgr.visit(Visitor);
 
   ++NumVisibleDeclContextsRead;
   SetExternalVisibleDeclsForName(DC, Name, Decls);
