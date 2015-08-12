@@ -2652,6 +2652,26 @@ AST_MATCHER(CXXCtorInitializer, isBaseInitializer) {
   return Node.isBaseInitializer();
 }
 
+/// \brief Matches a constructor initializer if it is initializing a member, as
+/// opposed to a base.
+///
+/// Given
+/// \code
+///   struct B {};
+///   struct D : B {
+///     int I;
+///     D(int i) : I(i) {}
+///   };
+///   struct E : B {
+///     E() : B() {}
+///   };
+/// \endcode
+/// constructorDecl(hasAnyConstructorInitializer(isMemberInitializer()))
+///   will match D(int), but not match E().
+AST_MATCHER(CXXCtorInitializer, isMemberInitializer) {
+  return Node.isMemberInitializer();
+}
+
 /// \brief Matches any argument of a call expression or a constructor call
 /// expression.
 ///
@@ -4167,6 +4187,27 @@ AST_MATCHER(CXXConstructorDecl, isMoveConstructor) {
 /// constructorDecl(isDefaultConstructor()) will match #1, but not #2 or #3.
 AST_MATCHER(CXXConstructorDecl, isDefaultConstructor) {
   return Node.isDefaultConstructor();
+}
+
+/// \brief Matches constructor and conversion declarations that are marked with
+/// the explicit keyword.
+///
+/// Given
+/// \code
+///   struct S {
+///     S(int); // #1
+///     explicit S(double); // #2
+///     operator int(); // #3
+///     explicit operator bool(); // #4
+///   };
+/// \endcode
+/// constructorDecl(isExplicit()) will match #2, but not #1.
+/// conversionDecl(isExplicit()) will match #4, but not #3.
+AST_POLYMORPHIC_MATCHER(isExplicit,
+                        AST_POLYMORPHIC_SUPPORTED_TYPES(CXXConstructorDecl,
+                                                        CXXConversionDecl)) {
+  return Node.isExplicit();
+
 }
 
 /// \brief If the given case statement does not use the GNU case range

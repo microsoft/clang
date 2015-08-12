@@ -1420,6 +1420,13 @@ TEST(Callee, MatchesDeclarations) {
                          CallMethodX));
 }
 
+TEST(ConversionDeclaration, IsExplicit) {
+  EXPECT_TRUE(matches("struct S { explicit operator int(); };",
+                      conversionDecl(isExplicit())));
+  EXPECT_TRUE(notMatches("struct S { operator int(); };",
+                         conversionDecl(isExplicit())));
+}
+
 TEST(Callee, MatchesMemberExpressions) {
   EXPECT_TRUE(matches("class Y { void x() { this->x(); } };",
               callExpr(callee(memberExpr()))));
@@ -1992,6 +1999,13 @@ TEST(ConstructorDeclaration, IsImplicit) {
                       methodDecl(isImplicit(), hasName("operator="))));
 }
 
+TEST(ConstructorDeclaration, IsExplicit) {
+  EXPECT_TRUE(matches("struct S { explicit S(int); };",
+                      constructorDecl(isExplicit())));
+  EXPECT_TRUE(notMatches("struct S { S(int); };",
+                         constructorDecl(isExplicit())));
+}
+
 TEST(ConstructorDeclaration, Kinds) {
   EXPECT_TRUE(matches("struct S { S(); };",
                       constructorDecl(isDefaultConstructor())));
@@ -2097,6 +2111,12 @@ TEST(HasAnyConstructorInitializer, IsBaseInitializer) {
   EXPECT_TRUE(notMatches(Code, constructorDecl(allOf(
     hasAnyConstructorInitializer(allOf(isBaseInitializer(), isWritten())),
     hasName("D")))));
+  EXPECT_TRUE(matches(Code, constructorDecl(allOf(
+    hasAnyConstructorInitializer(allOf(isMemberInitializer(), isWritten())),
+    hasName("D")))));
+  EXPECT_TRUE(notMatches(Code, constructorDecl(allOf(
+    hasAnyConstructorInitializer(allOf(isMemberInitializer(), isWritten())),
+    hasName("E")))));
 }
 
 TEST(Matcher, NewExpression) {
