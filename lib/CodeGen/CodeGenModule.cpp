@@ -2953,7 +2953,6 @@ CodeGenModule::GetAddrOfConstantStringFromLiteral(const StringLiteral *S,
       getCXXABI().getMangleContext().shouldMangleStringLiteral(S)) {
     llvm::raw_svector_ostream Out(MangledNameBuffer);
     getCXXABI().getMangleContext().mangleStringLiteral(S, Out);
-    Out.flush();
 
     LT = llvm::GlobalValue::LinkOnceODRLinkage;
     GlobalVariableName = MangledNameBuffer;
@@ -3030,8 +3029,7 @@ llvm::Constant *CodeGenModule::GetAddrOfGlobalTemporary(
   if (Init == E->GetTemporaryExpr())
     MaterializedType = E->getType();
 
-  llvm::Constant *&Slot = MaterializedGlobalTemporaryMap[E];
-  if (Slot)
+  if (llvm::Constant *Slot = MaterializedGlobalTemporaryMap[E])
     return Slot;
 
   // FIXME: If an externally-visible declaration extends multiple temporaries,
@@ -3041,7 +3039,6 @@ llvm::Constant *CodeGenModule::GetAddrOfGlobalTemporary(
   llvm::raw_svector_ostream Out(Name);
   getCXXABI().getMangleContext().mangleReferenceTemporary(
       VD, E->getManglingNumber(), Out);
-  Out.flush();
 
   APValue *Value = nullptr;
   if (E->getStorageDuration() == SD_Static) {
@@ -3103,7 +3100,7 @@ llvm::Constant *CodeGenModule::GetAddrOfGlobalTemporary(
     GV->setComdat(TheModule.getOrInsertComdat(GV->getName()));
   if (VD->getTLSKind())
     setTLSMode(GV, *VD);
-  Slot = GV;
+  MaterializedGlobalTemporaryMap[E] = GV;
   return GV;
 }
 
