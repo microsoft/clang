@@ -510,6 +510,10 @@ def warn_main_one_arg : Warning<"only one parameter on 'main' declaration">,
 def err_main_arg_wrong : Error<"%select{first|second|third|fourth}0 "
     "parameter of 'main' (%select{argument count|argument array|environment|"
     "platform-specific data}0) must be of type %1">;
+def err_main_global_variable :
+    Error<"main cannot be declared as global variable">;
+def warn_main_redefined : Warning<"variable named 'main' with external linkage "
+    "has undefined behavior">, InGroup<Main>;
 def ext_main_used : Extension<
   "ISO C++ does not allow 'main' to be used by a program">, InGroup<Main>;
 
@@ -1965,7 +1969,7 @@ def note_private_extern : Note<
   "use __attribute__((visibility(\"hidden\"))) attribute instead">;
 
 // C++ Concepts TS
-def err_concept_decl_non_template : Error<
+def err_concept_wrong_decl_kind : Error<
   "'concept' can only appear on the definition of a function template or variable template">;
 def err_concept_decls_may_only_appear_in_namespace_scope : Error<
   "concept declarations may only appear in namespace scope">;

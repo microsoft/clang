@@ -3662,6 +3662,14 @@ Decl *Sema::ParsedFreeStandingDeclSpec(Scope *S, AccessSpecifier AS,
     return TagD;
   }
 
+  if (DS.isConceptSpecified()) {
+    // C++ Concepts TS [dcl.spec.concept]p1: A concept definition refers to
+    // either a function concept and its definition or a variable concept and
+    // its initializer.
+    Diag(DS.getConceptSpecLoc(), diag::err_concept_wrong_decl_kind);
+    return TagD;
+  }
+
   DiagnoseFunctionSpecifiers(DS);
 
   if (DS.isFriendSpecified()) {
@@ -4865,7 +4873,7 @@ NamedDecl *Sema::HandleDeclarator(Scope *S, Declarator &D,
     // template, declared in namespace scope
     if (!TemplateParamLists.size()) {
       Diag(D.getDeclSpec().getConceptSpecLoc(),
-           diag::err_concept_decl_non_template);
+           diag:: err_concept_wrong_decl_kind);
       return nullptr;
     }
 
@@ -6109,6 +6117,22 @@ Sema::ActOnVariableDeclarator(Scope *S, Declarator &D, DeclContext *DC,
                      NewVD, getMSManglingNumber(getLangOpts(), S)));
       Context.setStaticLocalNumber(NewVD, MCtx->getStaticLocalNumber(NewVD));
     }
+  }
+
+  // Special handling of variable named 'main'.
+  if (Name.isIdentifier() && Name.getAsIdentifierInfo()->isStr("main") &&
+      NewVD->getDeclContext()->getRedeclContext()->isTranslationUnit() &&
+      !getLangOpts().Freestanding && !NewVD->getDescribedVarTemplate()) {
+
+    // C++ [basic.start.main]p3
+    // A program that declares a variable main at global scope is ill-formed.
+    if (getLangOpts().CPlusPlus)
+      Diag(D.getLocStart(), diag::err_main_global_variable);
+
+    // In C, and external-linkage variable named main results in undefined
+    // behavior.
+    else if (NewVD->hasExternalFormalLinkage())
+      Diag(D.getLocStart(), diag::warn_main_redefined);
   }
 
   if (D.isRedeclaration() && !Previous.empty()) {
