@@ -2498,6 +2498,7 @@ static void linkSanitizerRuntimeDeps(const ToolChain &TC,
   CmdArgs.push_back("--no-as-needed");
   CmdArgs.push_back("-lpthread");
   CmdArgs.push_back("-lrt");
+  CmdArgs.push_back("-lutil");
   CmdArgs.push_back("-lm");
   // There's no libdl on FreeBSD.
   if (TC.getTriple().getOS() != llvm::Triple::FreeBSD)
@@ -8883,6 +8884,27 @@ void visualstudio::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   }
 
   Args.AddAllArgValues(CmdArgs, options::OPT__SLASH_link);
+
+  if (Args.hasFlag(options::OPT_fopenmp, options::OPT_fopenmp_EQ,
+                   options::OPT_fno_openmp, false)) {
+    CmdArgs.push_back("-nodefaultlib:vcomp.lib");
+    CmdArgs.push_back("-nodefaultlib:vcompd.lib");
+    CmdArgs.push_back(Args.MakeArgString(std::string("-libpath:") +
+                                         TC.getDriver().Dir + "/../lib"));
+    switch (getOpenMPRuntime(getToolChain(), Args)) {
+    case OMPRT_OMP:
+      CmdArgs.push_back("-defaultlib:libomp.lib");
+      break;
+    case OMPRT_IOMP5:
+      CmdArgs.push_back("-defaultlib:libiomp5md.lib");
+      break;
+    case OMPRT_GOMP:
+      break;
+    case OMPRT_Unknown:
+      // Already diagnosed.
+      break;
+    }
+  }
 
   // Add filenames, libraries, and other linker inputs.
   for (const auto &Input : Inputs) {
