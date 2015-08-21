@@ -138,20 +138,24 @@ bool ChainedASTReaderListener::needsSystemInputFileVisitation() {
   return First->needsSystemInputFileVisitation() ||
   Second->needsSystemInputFileVisitation();
 }
-void ChainedASTReaderListener::visitModuleFile(StringRef Filename) {
-  First->visitModuleFile(Filename);
-  Second->visitModuleFile(Filename);
+void ChainedASTReaderListener::visitModuleFile(StringRef Filename,
+                                               ModuleKind Kind) {
+  First->visitModuleFile(Filename, Kind);
+  Second->visitModuleFile(Filename, Kind);
 }
 bool ChainedASTReaderListener::visitInputFile(StringRef Filename,
                                               bool isSystem,
-                                              bool isOverridden) {
+                                              bool isOverridden,
+                                              bool isExplicitModule) {
   bool Continue = false;
   if (First->needsInputFileVisitation() &&
       (!isSystem || First->needsSystemInputFileVisitation()))
-    Continue |= First->visitInputFile(Filename, isSystem, isOverridden);
+    Continue |= First->visitInputFile(Filename, isSystem, isOverridden,
+                                      isExplicitModule);
   if (Second->needsInputFileVisitation() &&
       (!isSystem || Second->needsSystemInputFileVisitation()))
-    Continue |= Second->visitInputFile(Filename, isSystem, isOverridden);
+    Continue |= Second->visitInputFile(Filename, isSystem, isOverridden,
+                                       isExplicitModule);
   return Continue;
 }
 
@@ -955,54 +959,72 @@ ASTDeclContextNameLookupTrait::ReadData(internal_key_type,
   return std::make_pair(Start, Start + NumDecls);
 }
 
-bool ASTReader::ReadDeclContextStorage(ModuleFile &M,
-                                       BitstreamCursor &Cursor,
-                                   const std::pair<uint64_t, uint64_t> &Offsets,
-                                       DeclContextInfo &Info) {
+bool ASTReader::ReadLexicalDeclContextStorage(ModuleFile &M,
+                                              BitstreamCursor &Cursor,
+                                              uint64_t Offset,
+                                              DeclContext *DC) {
+  assert(Offset != 0);
+
   SavedStreamPosition SavedPosition(Cursor);
-  // First the lexical decls.
-  if (Offsets.first != 0) {
-    Cursor.JumpToBit(Offsets.first);
+  Cursor.JumpToBit(Offset);
 
-    RecordData Record;
-    StringRef Blob;
-    unsigned Code = Cursor.ReadCode();
-    unsigned RecCode = Cursor.readRecord(Code, Record, &Blob);
-    if (RecCode != DECL_CONTEXT_LEXICAL) {
-      Error("Expected lexical block");
-      return true;
-    }
-
-    Info.LexicalDecls = llvm::makeArrayRef(
-        reinterpret_cast<const KindDeclIDPair *>(Blob.data()),
-        Blob.size() / sizeof(KindDeclIDPair));
+  RecordData Record;
+  StringRef Blob;
+  unsigned Code = Cursor.ReadCode();
+  unsigned RecCode = Cursor.readRecord(Code, Record, &Blob);
+  if (RecCode != DECL_CONTEXT_LEXICAL) {
+    Error("Expected lexical block");
+    return true;
   }
 
-  // Now the lookup table.
-  if (Offsets.second != 0) {
-    Cursor.JumpToBit(Offsets.second);
+  assert(!isa<TranslationUnitDecl>(DC) &&
+         "expected a TU_UPDATE_LEXICAL record for TU");
+  // If we are handling a C++ class template instantiation, we can see multiple
+  // lexical updates for the same record. It's important that we select only one
+  // of them, so that field numbering works properly. Just pick the first one we
+  // see.
+  auto &Lex = LexicalDecls[DC];
+  if (!Lex.first) {
+    Lex = std::make_pair(
+        &M, llvm::makeArrayRef(
+                reinterpret_cast<const llvm::support::unaligned_uint32_t *>(
+                    Blob.data()),
+                Blob.size() / 4));
+  }
+  DC->setHasExternalLexicalStorage(true);
+  return false;
+}
 
-    RecordData Record;
-    StringRef Blob;
-    unsigned Code = Cursor.ReadCode();
-    unsigned RecCode = Cursor.readRecord(Code, Record, &Blob);
-    if (RecCode != DECL_CONTEXT_VISIBLE) {
-      Error("Expected visible lookup table block");
-      return true;
-    }
-    Info.NameLookupTableData = ASTDeclContextNameLookupTable::Create(
-        (const unsigned char *)Blob.data() + Record[0],
-        (const unsigned char *)Blob.data() + sizeof(uint32_t),
-        (const unsigned char *)Blob.data(),
-        ASTDeclContextNameLookupTrait(*this, M));
+bool ASTReader::ReadVisibleDeclContextStorage(ModuleFile &M,
+                                              BitstreamCursor &Cursor,
+                                              uint64_t Offset,
+                                              DeclID ID) {
+  assert(Offset != 0);
+
+  SavedStreamPosition SavedPosition(Cursor);
+  Cursor.JumpToBit(Offset);
+
+  RecordData Record;
+  StringRef Blob;
+  unsigned Code = Cursor.ReadCode();
+  unsigned RecCode = Cursor.readRecord(Code, Record, &Blob);
+  if (RecCode != DECL_CONTEXT_VISIBLE) {
+    Error("Expected visible lookup table block");
+    return true;
   }
 
+  // We can't safely determine the primary context yet, so delay attaching the
+  // lookup table until we're done with recursive deserialization.
+  unsigned BucketOffset = Record[0];
+  PendingVisibleUpdates[ID].push_back(PendingVisibleUpdate{
+      &M, (const unsigned char *)Blob.data(), BucketOffset});
   return false;
 }
 
 void ASTReader::Error(StringRef Msg) {
   Error(diag::err_fe_pch_malformed, Msg);
-  if (Context.getLangOpts().Modules && !Diags.isDiagnosticInFlight()) {
+  if (Context.getLangOpts().Modules && !Diags.isDiagnosticInFlight() &&
+      !PP.getHeaderSearchInfo().getModuleCachePath().empty()) {
     Diag(diag::note_module_cache_path)
       << PP.getHeaderSearchInfo().getModuleCachePath();
   }
@@ -1478,13 +1500,14 @@ unsigned HeaderFileInfoTrait::ComputeHash(internal_key_ref ikey) {
 
 HeaderFileInfoTrait::internal_key_type 
 HeaderFileInfoTrait::GetInternalKey(const FileEntry *FE) {
-  internal_key_type ikey = { FE->getSize(), FE->getModificationTime(),
-                             FE->getName(), /*Imported*/false };
+  internal_key_type ikey = {FE->getSize(),
+                            M.HasTimestamps ? FE->getModificationTime() : 0,
+                            FE->getName(), /*Imported*/ false};
   return ikey;
 }
     
 bool HeaderFileInfoTrait::EqualKey(internal_key_ref a, internal_key_ref b) {
-  if (a.Size != b.Size || a.ModTime != b.ModTime)
+  if (a.Size != b.Size || (a.ModTime && b.ModTime && a.ModTime != b.ModTime))
     return false;
 
   if (llvm::sys::path::is_absolute(a.Filename) &&
@@ -1533,14 +1556,15 @@ HeaderFileInfoTrait::ReadData(internal_key_ref key, const unsigned char *d,
   using namespace llvm::support;
   HeaderFileInfo HFI;
   unsigned Flags = *d++;
-  HFI.HeaderRole = static_cast<ModuleMap::ModuleHeaderRole>
-                   ((Flags >> 6) & 0x03);
-  HFI.isImport = (Flags >> 5) & 0x01;
-  HFI.isPragmaOnce = (Flags >> 4) & 0x01;
-  HFI.DirInfo = (Flags >> 2) & 0x03;
-  HFI.Resolved = (Flags >> 1) & 0x01;
+  // FIXME: Refactor with mergeHeaderFileInfo in HeaderSearch.cpp.
+  HFI.isImport |= (Flags >> 4) & 0x01;
+  HFI.isPragmaOnce |= (Flags >> 3) & 0x01;
+  HFI.DirInfo = (Flags >> 1) & 0x03;
   HFI.IndexHeaderMapHeader = Flags & 0x01;
-  HFI.NumIncludes = endian::readNext<uint16_t, little, unaligned>(d);
+  // FIXME: Find a better way to handle this. Maybe just store a
+  // "has been included" flag?
+  HFI.NumIncludes = std::max(endian::readNext<uint16_t, little, unaligned>(d),
+                             HFI.NumIncludes);
   HFI.ControllingMacroID = Reader.getGlobalIdentifierID(
       M, endian::readNext<uint32_t, little, unaligned>(d));
   if (unsigned FrameworkOffset =
@@ -1550,32 +1574,32 @@ HeaderFileInfoTrait::ReadData(internal_key_ref key, const unsigned char *d,
     StringRef FrameworkName(FrameworkStrings + FrameworkOffset - 1);
     HFI.Framework = HS->getUniqueFrameworkName(FrameworkName);
   }
-  
-  if (d != End) {
+
+  assert((End - d) % 4 == 0 &&
+         "Wrong data length in HeaderFileInfo deserialization");
+  while (d != End) {
     uint32_t LocalSMID = endian::readNext<uint32_t, little, unaligned>(d);
-    if (LocalSMID) {
-      // This header is part of a module. Associate it with the module to enable
-      // implicit module import.
-      SubmoduleID GlobalSMID = Reader.getGlobalSubmoduleID(M, LocalSMID);
-      Module *Mod = Reader.getSubmodule(GlobalSMID);
-      HFI.isModuleHeader = true;
-      FileManager &FileMgr = Reader.getFileManager();
-      ModuleMap &ModMap =
-          Reader.getPreprocessor().getHeaderSearchInfo().getModuleMap();
-      // FIXME: This information should be propagated through the
-      // SUBMODULE_HEADER etc records rather than from here.
-      // FIXME: We don't ever mark excluded headers.
-      std::string Filename = key.Filename;
-      if (key.Imported)
-        Reader.ResolveImportedPath(M, Filename);
-      Module::Header H = { key.Filename, FileMgr.getFile(Filename) };
-      ModMap.addHeader(Mod, H, HFI.getHeaderRole());
-    }
+    auto HeaderRole = static_cast<ModuleMap::ModuleHeaderRole>(LocalSMID & 3);
+    LocalSMID >>= 2;
+
+    // This header is part of a module. Associate it with the module to enable
+    // implicit module import.
+    SubmoduleID GlobalSMID = Reader.getGlobalSubmoduleID(M, LocalSMID);
+    Module *Mod = Reader.getSubmodule(GlobalSMID);
+    FileManager &FileMgr = Reader.getFileManager();
+    ModuleMap &ModMap =
+        Reader.getPreprocessor().getHeaderSearchInfo().getModuleMap();
+
+    std::string Filename = key.Filename;
+    if (key.Imported)
+      Reader.ResolveImportedPath(M, Filename);
+    // FIXME: This is not always the right filename-as-written, but we're not
+    // going to use this information to rebuild the module, so it doesn't make
+    // a lot of difference.
+    Module::Header H = { key.Filename, FileMgr.getFile(Filename) };
+    ModMap.addHeader(Mod, H, HeaderRole);
   }
 
-  assert(End == d && "Wrong data length in HeaderFileInfo deserialization");
-  (void)End;
-        
   // This HeaderFileInfo was externally loaded.
   HFI.External = true;
   return HFI;
@@ -1592,16 +1616,15 @@ void ASTReader::ReadDefinedMacros() {
   // Note that we are loading defined macros.
   Deserializing Macros(this);
 
-  for (ModuleReverseIterator I = ModuleMgr.rbegin(),
-      E = ModuleMgr.rend(); I != E; ++I) {
-    BitstreamCursor &MacroCursor = (*I)->MacroCursor;
+  for (auto &I : llvm::reverse(ModuleMgr)) {
+    BitstreamCursor &MacroCursor = I->MacroCursor;
 
     // If there was no preprocessor block, skip this file.
     if (!MacroCursor.getBitStreamReader())
       continue;
 
     BitstreamCursor Cursor = MacroCursor;
-    Cursor.JumpToBit((*I)->MacroStartOffset);
+    Cursor.JumpToBit(I->MacroStartOffset);
 
     RecordData Record;
     while (true) {
@@ -1623,7 +1646,7 @@ void ASTReader::ReadDefinedMacros() {
           
         case PP_MACRO_OBJECT_LIKE:
         case PP_MACRO_FUNCTION_LIKE:
-          getLocalIdentifier(**I, Record[0]);
+          getLocalIdentifier(*I, Record[0]);
           break;
           
         case PP_TOKEN:
@@ -1869,10 +1892,6 @@ ASTReader::readInputFileInfo(ModuleFile &F, unsigned ID) {
   return R;
 }
 
-std::string ASTReader::getInputFileName(ModuleFile &F, unsigned int ID) {
-  return readInputFileInfo(F, ID).Filename;
-}
-
 InputFile ASTReader::getInputFile(ModuleFile &F, unsigned ID, bool Complain) {
   // If this ID is bogus, just return an empty input file.
   if (ID == 0 || ID > F.InputFilesLoaded.size())
@@ -1959,14 +1978,9 @@ InputFile ASTReader::getInputFile(ModuleFile &F, unsigned ID, bool Complain) {
        // have inconsistent modification times that sometimes
        // erroneously trigger this error-handling path.
        //
-       // This also happens in networked file systems, so disable this
-       // check if validation is disabled or if we have an explicitly
-       // built PCM file.
-       //
-       // FIXME: Should we also do this for PCH files? They could also
-       // reasonably get shared across a network during a distributed build.
-       (StoredTime != File->getModificationTime() && !DisableValidation &&
-        F.Kind != MK_ExplicitModule)
+       // FIXME: This probably also breaks HeaderFileInfo lookups on Windows.
+       (StoredTime && StoredTime != File->getModificationTime() &&
+        !DisableValidation)
 #endif
        )) {
     if (Complain) {
@@ -2020,6 +2034,21 @@ void ASTReader::ResolveImportedPath(std::string &Filename, StringRef Prefix) {
   Filename.assign(Buffer.begin(), Buffer.end());
 }
 
+static bool isDiagnosedResult(ASTReader::ASTReadResult ARR, unsigned Caps) {
+  switch (ARR) {
+  case ASTReader::Failure: return true;
+  case ASTReader::Missing: return !(Caps & ASTReader::ARR_Missing);
+  case ASTReader::OutOfDate: return !(Caps & ASTReader::ARR_OutOfDate);
+  case ASTReader::VersionMismatch: return !(Caps & ASTReader::ARR_VersionMismatch);
+  case ASTReader::ConfigurationMismatch:
+    return !(Caps & ASTReader::ARR_ConfigurationMismatch);
+  case ASTReader::HadErrors: return true;
+  case ASTReader::Success: return false;
+  }
+
+  llvm_unreachable("unknown ASTReadResult");
+}
+
 ASTReader::ASTReadResult
 ASTReader::ReadControlBlock(ModuleFile &F,
                             SmallVectorImpl<ImportedModule> &Loaded,
@@ -2055,8 +2084,9 @@ ASTReader::ReadControlBlock(ModuleFile &F,
           PP.getHeaderSearchInfo().getHeaderSearchOpts();
 
       // All user input files reside at the index range [0, NumUserInputs), and
-      // system input files reside at [NumUserInputs, NumInputs).
-      if (!DisableValidation) {
+      // system input files reside at [NumUserInputs, NumInputs). For explicitly
+      // loaded module files, ignore missing inputs.
+      if (!DisableValidation && F.Kind != MK_ExplicitModule) {
         bool Complain = (ClientLoadCapabilities & ARR_OutOfDate) == 0;
 
         // If we are reading a module, we will create a verification timestamp,
@@ -2078,7 +2108,7 @@ ASTReader::ReadControlBlock(ModuleFile &F,
       }
 
       if (Listener)
-        Listener->visitModuleFile(F.FileName);
+        Listener->visitModuleFile(F.FileName, F.Kind);
 
       if (Listener && Listener->needsInputFileVisitation()) {
         unsigned N = Listener->needsSystemInputFileVisitation() ? NumInputs
@@ -2086,7 +2116,8 @@ ASTReader::ReadControlBlock(ModuleFile &F,
         for (unsigned I = 0; I < N; ++I) {
           bool IsSystem = I >= NumUserInputs;
           InputFileInfo FI = readInputFileInfo(F, I+1);
-          Listener->visitInputFile(FI.Filename, IsSystem, FI.Overridden);
+          Listener->visitInputFile(FI.Filename, IsSystem, FI.Overridden,
+                                   F.Kind == MK_ExplicitModule);
         }
       }
 
@@ -2130,7 +2161,7 @@ ASTReader::ReadControlBlock(ModuleFile &F,
         return VersionMismatch;
       }
 
-      bool hasErrors = Record[5];
+      bool hasErrors = Record[6];
       if (hasErrors && !DisableValidation && !AllowASTWithCompilerErrors) {
         Diag(diag::err_pch_with_compiler_errors);
         return HadErrors;
@@ -2140,6 +2171,8 @@ ASTReader::ReadControlBlock(ModuleFile &F,
       // Relative paths in a relocatable PCH are relative to our sysroot.
       if (F.RelocatablePCH)
         F.BaseDirectory = isysroot.empty() ? "/" : isysroot;
+
+      F.HasTimestamps = Record[5];
 
       const std::string &CurBranch = getClangFullRepositoryVersion();
       StringRef ASTBranch = Blob;
@@ -2172,10 +2205,23 @@ ASTReader::ReadControlBlock(ModuleFile &F,
         ASTFileSignature StoredSignature = Record[Idx++];
         auto ImportedFile = ReadPath(F, Record, Idx);
 
+        // If our client can't cope with us being out of date, we can't cope with
+        // our dependency being missing.
+        unsigned Capabilities = ClientLoadCapabilities;
+        if ((ClientLoadCapabilities & ARR_OutOfDate) == 0)
+          Capabilities &= ~ARR_Missing;
+
         // Load the AST file.
-        switch(ReadASTCore(ImportedFile, ImportedKind, ImportLoc, &F, Loaded,
-                           StoredSize, StoredModTime, StoredSignature,
-                           ClientLoadCapabilities)) {
+        auto Result = ReadASTCore(ImportedFile, ImportedKind, ImportLoc, &F,
+                                  Loaded, StoredSize, StoredModTime,
+                                  StoredSignature, Capabilities);
+
+        // If we diagnosed a problem, produce a backtrace.
+        if (isDiagnosedResult(Result, Capabilities))
+          Diag(diag::note_module_file_imported_by)
+              << F.FileName << !F.ModuleName.empty() << F.ModuleName;
+
+        switch (Result) {
         case Failure: return Failure;
           // If we have to ignore the dependency, we'll have to ignore this too.
         case Missing:
@@ -2188,9 +2234,6 @@ ASTReader::ReadControlBlock(ModuleFile &F,
       }
       break;
     }
-
-    case KNOWN_MODULE_FILES:
-      break;
 
     case LANGUAGE_OPTIONS: {
       bool Complain = (ClientLoadCapabilities & ARR_ConfigurationMismatch) == 0;
@@ -2493,10 +2536,11 @@ ASTReader::ReadASTBlock(ModuleFile &F, unsigned ClientLoadCapabilities) {
         
     case TU_UPDATE_LEXICAL: {
       DeclContext *TU = Context.getTranslationUnitDecl();
-      DeclContextInfo &Info = F.DeclContextInfos[TU];
-      Info.LexicalDecls = llvm::makeArrayRef(
-          reinterpret_cast<const KindDeclIDPair *>(Blob.data()),
-          static_cast<unsigned int>(Blob.size() / sizeof(KindDeclIDPair)));
+      LexicalContents Contents(
+          reinterpret_cast<const llvm::support::unaligned_uint32_t *>(
+              Blob.data()),
+          static_cast<unsigned int>(Blob.size() / 4));
+      TULexicalDecls.push_back(std::make_pair(&F, Contents));
       TU->setHasExternalLexicalStorage(true);
       break;
     }
@@ -2504,20 +2548,14 @@ ASTReader::ReadASTBlock(ModuleFile &F, unsigned ClientLoadCapabilities) {
     case UPDATE_VISIBLE: {
       unsigned Idx = 0;
       serialization::DeclID ID = ReadDeclID(F, Record, Idx);
-      ASTDeclContextNameLookupTable *Table =
-          ASTDeclContextNameLookupTable::Create(
-              (const unsigned char *)Blob.data() + Record[Idx++],
-              (const unsigned char *)Blob.data() + sizeof(uint32_t),
-              (const unsigned char *)Blob.data(),
-              ASTDeclContextNameLookupTrait(*this, F));
-      if (Decl *D = GetExistingDecl(ID)) {
-        auto *DC = cast<DeclContext>(D);
-        DC->getPrimaryContext()->setHasExternalVisibleStorage(true);
-        auto *&LookupTable = F.DeclContextInfos[DC].NameLookupTableData;
-        delete LookupTable;
-        LookupTable = Table;
-      } else
-        PendingVisibleUpdates[ID].push_back(std::make_pair(Table, &F));
+      auto *Data = (const unsigned char*)Blob.data();
+      unsigned BucketOffset = Record[Idx++];
+      PendingVisibleUpdates[ID].push_back(
+          PendingVisibleUpdate{&F, Data, BucketOffset});
+      // If we've already loaded the decl, perform the updates when we finish
+      // loading this block.
+      if (Decl *D = GetExistingDecl(ID))
+        PendingUpdateRecords.push_back(std::make_pair(ID, D));
       break;
     }
 
@@ -2694,6 +2732,10 @@ ASTReader::ReadASTBlock(ModuleFile &F, unsigned ClientLoadCapabilities) {
       std::tie(F.SLocEntryBaseID, F.SLocEntryBaseOffset) =
           SourceMgr.AllocateLoadedSLocEntries(F.LocalNumSLocEntries,
                                               SLocSpaceSize);
+      if (!F.SLocEntryBaseID) {
+        Error("ran out of source locations");
+        break;
+      }
       // Make our entry in the range map. BaseID is negative and growing, so
       // we invert it. Because we invert it, though, we need the other end of
       // the range.
@@ -3148,11 +3190,18 @@ ASTReader::ReadModuleMapFileBlock(RecordData &Record, ModuleFile &F,
     const FileEntry *ModMap = M ? Map.getModuleMapFileForUniquing(M) : nullptr;
     if (!ModMap) {
       assert(ImportedBy && "top-level import should be verified");
-      if ((ClientLoadCapabilities & ARR_Missing) == 0)
-        Diag(diag::err_imported_module_not_found) << F.ModuleName << F.FileName
-                                                  << ImportedBy->FileName
-                                                  << F.ModuleMapPath;
-      return Missing;
+      if ((ClientLoadCapabilities & ARR_OutOfDate) == 0) {
+        if (auto *ASTFE = M ? M->getASTFile() : nullptr)
+          // This module was defined by an imported (explicit) module.
+          Diag(diag::err_module_file_conflict) << F.ModuleName << F.FileName
+                                               << ASTFE->getName();
+        else
+          // This module was built with a different module map.
+          Diag(diag::err_imported_module_not_found)
+              << F.ModuleName << F.FileName << ImportedBy->FileName
+              << F.ModuleMapPath;
+      }
+      return OutOfDate;
     }
 
     assert(M->Name == F.ModuleName && "found module with different name");
@@ -3553,6 +3602,20 @@ static bool startsWithASTFileMagic(BitstreamCursor &Stream) {
          Stream.Read(8) == 'H';
 }
 
+static unsigned moduleKindForDiagnostic(ModuleKind Kind) {
+  switch (Kind) {
+  case MK_PCH:
+    return 0; // PCH
+  case MK_ImplicitModule:
+  case MK_ExplicitModule:
+    return 1; // module
+  case MK_MainFile:
+  case MK_Preamble:
+    return 2; // main source file
+  }
+  llvm_unreachable("unknown module kind");
+}
+
 ASTReader::ASTReadResult
 ASTReader::ReadASTCore(StringRef FileName,
                        ModuleKind Type,
@@ -3585,11 +3648,9 @@ ASTReader::ReadASTCore(StringRef FileName,
       return Missing;
 
     // Otherwise, return an error.
-    {
-      std::string Msg = "Unable to load module \"" + FileName.str() + "\": "
-                      + ErrorStr;
-      Error(Msg);
-    }
+    Diag(diag::err_module_file_not_found) << moduleKindForDiagnostic(Type)
+                                          << FileName << ErrorStr.empty()
+                                          << ErrorStr;
     return Failure;
 
   case ModuleManager::OutOfDate:
@@ -3599,11 +3660,9 @@ ASTReader::ReadASTCore(StringRef FileName,
       return OutOfDate;
 
     // Otherwise, return an error.
-    {
-      std::string Msg = "Unable to load module \"" + FileName.str() + "\": "
-                      + ErrorStr;
-      Error(Msg);
-    }
+    Diag(diag::err_module_file_out_of_date) << moduleKindForDiagnostic(Type)
+                                            << FileName << ErrorStr.empty()
+                                            << ErrorStr;
     return Failure;
   }
 
@@ -3624,7 +3683,8 @@ ASTReader::ReadASTCore(StringRef FileName,
   
   // Sniff for the signature.
   if (!startsWithASTFileMagic(Stream)) {
-    Diag(diag::err_not_a_pch_file) << FileName;
+    Diag(diag::err_module_file_invalid) << moduleKindForDiagnostic(Type)
+                                        << FileName;
     return Failure;
   }
 
@@ -3657,6 +3717,18 @@ ASTReader::ReadASTCore(StringRef FileName,
       HaveReadControlBlock = true;
       switch (ReadControlBlock(F, Loaded, ImportedBy, ClientLoadCapabilities)) {
       case Success:
+        // Check that we didn't try to load a non-module AST file as a module.
+        //
+        // FIXME: Should we also perform the converse check? Loading a module as
+        // a PCH file sort of works, but it's a bit wonky.
+        if ((Type == MK_ImplicitModule || Type == MK_ExplicitModule) &&
+            F.ModuleName.empty()) {
+          auto Result = (Type == MK_ImplicitModule) ? OutOfDate : Failure;
+          if (Result != OutOfDate ||
+              (ClientLoadCapabilities & ARR_OutOfDate) == 0)
+            Diag(diag::err_module_file_not_module) << FileName;
+          return Result;
+        }
         break;
 
       case Failure: return Failure;
@@ -3686,8 +3758,6 @@ ASTReader::ReadASTCore(StringRef FileName,
       break;
     }
   }
-  
-  return Success;
 }
 
 void ASTReader::InitializeContext() {
@@ -4129,8 +4199,8 @@ bool ASTReader::readASTFileControlBlock(
           bool Overridden = static_cast<bool>(Record[3]);
           std::string Filename = Blob;
           ResolveImportedPath(Filename, ModuleDir);
-          shouldContinue =
-              Listener.visitInputFile(Filename, isSystemFile, Overridden);
+          shouldContinue = Listener.visitInputFile(
+              Filename, isSystemFile, Overridden, /*IsExplicitModule*/false);
           break;
         }
         if (!shouldContinue)
@@ -4147,20 +4217,6 @@ bool ASTReader::readASTFileControlBlock(
       while (Idx < N) {
         // Read information about the AST file.
         Idx += 5; // ImportLoc, Size, ModTime, Signature
-        std::string Filename = ReadString(Record, Idx);
-        ResolveImportedPath(Filename, ModuleDir);
-        Listener.visitImport(Filename);
-      }
-      break;
-    }
-
-    case KNOWN_MODULE_FILES: {
-      // Known-but-not-technically-used module files are treated as imports.
-      if (!NeedsImports)
-        break;
-
-      unsigned Idx = 0, N = Record.size();
-      while (Idx < N) {
         std::string Filename = ReadString(Record, Idx);
         ResolveImportedPath(Filename, ModuleDir);
         Listener.visitImport(Filename);
@@ -5911,8 +5967,13 @@ void ASTReader::CompleteRedeclChain(const Decl *D) {
       } else
         DC->lookup(Name);
     } else if (needsAnonymousDeclarationNumber(cast<NamedDecl>(D))) {
-      // FIXME: It'd be nice to do something a bit more targeted here.
-      D->getDeclContext()->decls_begin();
+      // Find all declarations of this kind from the relevant context.
+      for (auto *DCDecl : cast<Decl>(D->getLexicalDeclContext())->redecls()) {
+        auto *DC = cast<DeclContext>(DCDecl);
+        SmallVector<Decl*, 8> Decls;
+        FindExternalLexicalDecls(
+            DC, [&](Decl::Kind K) { return K == D->getKind(); }, Decls);
+      }
     }
   }
 
@@ -6171,69 +6232,47 @@ Stmt *ASTReader::GetExternalDeclStmt(uint64_t Offset) {
   return ReadStmtFromStream(*Loc.F);
 }
 
-namespace {
-  class FindExternalLexicalDeclsVisitor {
-    ASTReader &Reader;
-    const DeclContext *DC;
-    bool (*isKindWeWant)(Decl::Kind);
-    
-    SmallVectorImpl<Decl*> &Decls;
-    bool PredefsVisited[NUM_PREDEF_DECL_IDS];
+void ASTReader::FindExternalLexicalDecls(
+    const DeclContext *DC, llvm::function_ref<bool(Decl::Kind)> IsKindWeWant,
+    SmallVectorImpl<Decl *> &Decls) {
+  bool PredefsVisited[NUM_PREDEF_DECL_IDS] = {};
 
-  public:
-    FindExternalLexicalDeclsVisitor(ASTReader &Reader, const DeclContext *DC,
-                                    bool (*isKindWeWant)(Decl::Kind),
-                                    SmallVectorImpl<Decl*> &Decls)
-      : Reader(Reader), DC(DC), isKindWeWant(isKindWeWant), Decls(Decls) 
-    {
-      for (unsigned I = 0; I != NUM_PREDEF_DECL_IDS; ++I)
-        PredefsVisited[I] = false;
-    }
+  auto Visit = [&] (ModuleFile *M, LexicalContents LexicalDecls) {
+    assert(LexicalDecls.size() % 2 == 0 && "expected an even number of entries");
+    for (int I = 0, N = LexicalDecls.size(); I != N; I += 2) {
+      auto K = (Decl::Kind)+LexicalDecls[I];
+      if (!IsKindWeWant(K))
+        continue;
 
-    static bool visitPostorder(ModuleFile &M, void *UserData) {
-      FindExternalLexicalDeclsVisitor *This
-        = static_cast<FindExternalLexicalDeclsVisitor *>(UserData);
+      auto ID = (serialization::DeclID)+LexicalDecls[I + 1];
 
-      ModuleFile::DeclContextInfosMap::iterator Info
-        = M.DeclContextInfos.find(This->DC);
-      if (Info == M.DeclContextInfos.end() || Info->second.LexicalDecls.empty())
-        return false;
-
-      // Load all of the declaration IDs
-      for (const KindDeclIDPair &P : Info->second.LexicalDecls) {
-        if (This->isKindWeWant && !This->isKindWeWant((Decl::Kind)P.first))
+      // Don't add predefined declarations to the lexical context more
+      // than once.
+      if (ID < NUM_PREDEF_DECL_IDS) {
+        if (PredefsVisited[ID])
           continue;
 
-        // Don't add predefined declarations to the lexical context more
-        // than once.
-        if (P.second < NUM_PREDEF_DECL_IDS) {
-          if (This->PredefsVisited[P.second])
-            continue;
-
-          This->PredefsVisited[P.second] = true;
-        }
-
-        if (Decl *D = This->Reader.GetLocalDecl(M, P.second)) {
-          if (!This->DC->isDeclInLexicalTraversal(D))
-            This->Decls.push_back(D);
-        }
+        PredefsVisited[ID] = true;
       }
 
-      return false;
+      if (Decl *D = GetLocalDecl(*M, ID)) {
+        assert(D->getKind() == K && "wrong kind for lexical decl");
+        if (!DC->isDeclInLexicalTraversal(D))
+          Decls.push_back(D);
+      }
     }
   };
-}
 
-ExternalLoadResult ASTReader::FindExternalLexicalDecls(const DeclContext *DC,
-                                         bool (*isKindWeWant)(Decl::Kind),
-                                         SmallVectorImpl<Decl*> &Decls) {
-  // There might be lexical decls in multiple modules, for the TU at
-  // least. Walk all of the modules in the order they were loaded.
-  FindExternalLexicalDeclsVisitor Visitor(*this, DC, isKindWeWant, Decls);
-  ModuleMgr.visitDepthFirst(
-      nullptr, &FindExternalLexicalDeclsVisitor::visitPostorder, &Visitor);
+  if (isa<TranslationUnitDecl>(DC)) {
+    for (auto Lexical : TULexicalDecls)
+      Visit(Lexical.first, Lexical.second);
+  } else {
+    auto I = LexicalDecls.find(DC);
+    if (I != LexicalDecls.end())
+      Visit(I->second.first, I->second.second);
+  }
+
   ++NumLexicalDeclContextsRead;
-  return ELR_Success;
 }
 
 namespace {
@@ -6338,7 +6377,7 @@ namespace {
   /// declaration context.
   class DeclContextNameLookupVisitor {
     ASTReader &Reader;
-    ArrayRef<const DeclContext *> Contexts;
+    const DeclContext *Context;
     DeclarationName Name;
     ASTDeclContextNameLookupTrait::DeclNameKey NameKey;
     unsigned NameHash;
@@ -6347,50 +6386,25 @@ namespace {
 
   public:
     DeclContextNameLookupVisitor(ASTReader &Reader,
+                                 const DeclContext *Context,
                                  DeclarationName Name,
                                  SmallVectorImpl<NamedDecl *> &Decls,
                                  llvm::SmallPtrSetImpl<NamedDecl *> &DeclSet)
-      : Reader(Reader), Name(Name),
+      : Reader(Reader), Context(Context), Name(Name),
         NameKey(ASTDeclContextNameLookupTrait::GetInternalKey(Name)),
         NameHash(ASTDeclContextNameLookupTrait::ComputeHash(NameKey)),
         Decls(Decls), DeclSet(DeclSet) {}
 
-    void visitContexts(ArrayRef<const DeclContext*> Contexts) {
-      if (Contexts.empty())
-        return;
-      this->Contexts = Contexts;
-
-      // If we can definitively determine which module file to look into,
-      // only look there. Otherwise, look in all module files.
-      ModuleFile *Definitive;
-      if (Contexts.size() == 1 &&
-          (Definitive = getDefinitiveModuleFileFor(Contexts[0], Reader))) {
-        (*this)(*Definitive);
-      } else {
-        Reader.getModuleManager().visit(*this);
-      }
-    }
-
     bool operator()(ModuleFile &M) {
       // Check whether we have any visible declaration information for
       // this context in this module.
-      ModuleFile::DeclContextInfosMap::iterator Info;
-      bool FoundInfo = false;
-      for (auto *DC : Contexts) {
-        Info = M.DeclContextInfos.find(DC);
-        if (Info != M.DeclContextInfos.end() &&
-            Info->second.NameLookupTableData) {
-          FoundInfo = true;
-          break;
-        }
-      }
-
-      if (!FoundInfo)
+      auto Info = M.DeclContextInfos.find(Context);
+      if (Info == M.DeclContextInfos.end() || !Info->second.NameLookupTableData)
         return false;
 
       // Look for this name within this module.
       ASTDeclContextNameLookupTable *LookupTable =
-        Info->second.NameLookupTableData;
+          Info->second.NameLookupTableData;
       ASTDeclContextNameLookupTable::iterator Pos =
           LookupTable->find_hashed(NameKey, NameHash);
       if (Pos == LookupTable->end())
@@ -6437,40 +6451,14 @@ ASTReader::FindExternalVisibleDeclsByName(const DeclContext *DC,
   SmallVector<NamedDecl *, 64> Decls;
   llvm::SmallPtrSet<NamedDecl*, 64> DeclSet;
 
-  // Compute the declaration contexts we need to look into. Multiple such
-  // declaration contexts occur when two declaration contexts from disjoint
-  // modules get merged, e.g., when two namespaces with the same name are 
-  // independently defined in separate modules.
-  SmallVector<const DeclContext *, 2> Contexts;
-  Contexts.push_back(DC);
+  DeclContextNameLookupVisitor Visitor(*this, DC, Name, Decls, DeclSet);
 
-  if (DC->isNamespace()) {
-    auto Key = KeyDecls.find(const_cast<Decl *>(cast<Decl>(DC)));
-    if (Key != KeyDecls.end()) {
-      for (unsigned I = 0, N = Key->second.size(); I != N; ++I)
-        Contexts.push_back(cast<DeclContext>(GetDecl(Key->second[I])));
-    }
-  }
-
-  DeclContextNameLookupVisitor Visitor(*this, Name, Decls, DeclSet);
-  Visitor.visitContexts(Contexts);
-
-  // If this might be an implicit special member function, then also search
-  // all merged definitions of the surrounding class. We need to search them
-  // individually, because finding an entity in one of them doesn't imply that
-  // we can't find a different entity in another one.
-  if (isa<CXXRecordDecl>(DC)) {
-    auto Merged = MergedLookups.find(DC);
-    if (Merged != MergedLookups.end()) {
-      for (unsigned I = 0; I != Merged->second.size(); ++I) {
-        const DeclContext *Context = Merged->second[I];
-        Visitor.visitContexts(Context);
-        // We might have just added some more merged lookups. If so, our
-        // iterator is now invalid, so grab a fresh one before continuing.
-        Merged = MergedLookups.find(DC);
-      }
-    }
-  }
+  // If we can definitively determine which module file to look into,
+  // only look there. Otherwise, look in all module files.
+  if (ModuleFile *Definitive = getDefinitiveModuleFileFor(DC, *this))
+    Visitor(*Definitive);
+  else
+    ModuleMgr.visit(Visitor);
 
   ++NumVisibleDeclContextsRead;
   SetExternalVisibleDeclsForName(DC, Name, Decls);
@@ -7633,9 +7621,19 @@ ASTReader::ReadTemplateName(ModuleFile &F, const RecordData &Record,
   llvm_unreachable("Unhandled template name kind!");
 }
 
-TemplateArgument
-ASTReader::ReadTemplateArgument(ModuleFile &F,
-                                const RecordData &Record, unsigned &Idx) {
+TemplateArgument ASTReader::ReadTemplateArgument(ModuleFile &F,
+                                                 const RecordData &Record,
+                                                 unsigned &Idx,
+                                                 bool Canonicalize) {
+  if (Canonicalize) {
+    // The caller wants a canonical template argument. Sometimes the AST only
+    // wants template arguments in canonical form (particularly as the template
+    // argument lists of template specializations) so ensure we preserve that
+    // canonical form across serialization.
+    TemplateArgument Arg = ReadTemplateArgument(F, Record, Idx, false);
+    return Context.getCanonicalTemplateArgument(Arg);
+  }
+
   TemplateArgument::ArgKind Kind = (TemplateArgument::ArgKind)Record[Idx++];
   switch (Kind) {
   case TemplateArgument::Null:
@@ -7669,7 +7667,7 @@ ASTReader::ReadTemplateArgument(ModuleFile &F,
     TemplateArgument *Args = new (Context) TemplateArgument[NumArgs];
     for (unsigned I = 0; I != NumArgs; ++I)
       Args[I] = ReadTemplateArgument(F, Record, Idx);
-    return TemplateArgument(Args, NumArgs);
+    return TemplateArgument(llvm::makeArrayRef(Args, NumArgs));
   }
   }
 
@@ -7699,11 +7697,11 @@ void
 ASTReader::
 ReadTemplateArgumentList(SmallVectorImpl<TemplateArgument> &TemplArgs,
                          ModuleFile &F, const RecordData &Record,
-                         unsigned &Idx) {
+                         unsigned &Idx, bool Canonicalize) {
   unsigned NumTemplateArgs = Record[Idx++];
   TemplArgs.reserve(NumTemplateArgs);
   while (NumTemplateArgs--)
-    TemplArgs.push_back(ReadTemplateArgument(F, Record, Idx));
+    TemplArgs.push_back(ReadTemplateArgument(F, Record, Idx, Canonicalize));
 }
 
 /// \brief Read a UnresolvedSet structure.
@@ -8084,14 +8082,6 @@ void ASTReader::ReadComments() {
   }
 }
 
-void ASTReader::getInputFiles(ModuleFile &F,
-                             SmallVectorImpl<serialization::InputFile> &Files) {
-  for (unsigned I = 0, E = F.InputFilesLoaded.size(); I != E; ++I) {
-    unsigned ID = I+1;
-    Files.push_back(getInputFile(F, ID));
-  }
-}
-
 std::string ASTReader::getOwningModuleNameForDiagnostic(const Decl *D) {
   // If we know the owning module, use it.
   if (Module *M = D->getImportedOwningModule())
@@ -8248,9 +8238,8 @@ void ASTReader::finishPendingActions() {
 
   // Load the bodies of any functions or methods we've encountered. We do
   // this now (delayed) so that we can be sure that the declaration chains
-  // have been fully wired up.
-  // FIXME: There seems to be no point in delaying this, it does not depend
-  // on the redecl chains having been wired up.
+  // have been fully wired up (hasBody relies on this).
+  // FIXME: We shouldn't require complete redeclaration chains here.
   for (PendingBodiesMap::iterator PB = PendingBodies.begin(),
                                PBEnd = PendingBodies.end();
        PB != PBEnd; ++PB) {
@@ -8326,21 +8315,26 @@ void ASTReader::diagnoseOdrViolations() {
     if (Found)
       continue;
 
+    // Quick check failed, time to do the slow thing. Note, we can't just
+    // look up the name of D in CanonDef here, because the member that is
+    // in CanonDef might not be found by name lookup (it might have been
+    // replaced by a more recent declaration in the lookup table), and we
+    // can't necessarily find it in the redeclaration chain because it might
+    // be merely mergeable, not redeclarable.
     llvm::SmallVector<const NamedDecl*, 4> Candidates;
-    DeclContext::lookup_result R = CanonDef->lookup(D->getDeclName());
-    for (DeclContext::lookup_iterator I = R.begin(), E = R.end();
-         !Found && I != E; ++I) {
-      for (auto RI : (*I)->redecls()) {
-        if (RI->getLexicalDeclContext() == CanonDef) {
-          // This declaration is present in the canonical definition. If it's
-          // in the same redecl chain, it's the one we're looking for.
-          if (RI->getCanonicalDecl() == DCanon)
-            Found = true;
-          else
-            Candidates.push_back(cast<NamedDecl>(RI));
-          break;
-        }
+    for (auto *CanonMember : CanonDef->decls()) {
+      if (CanonMember->getCanonicalDecl() == DCanon) {
+        // This can happen if the declaration is merely mergeable and not
+        // actually redeclarable (we looked for redeclarations earlier).
+        //
+        // FIXME: We should be able to detect this more efficiently, without
+        // pulling in all of the members of CanonDef.
+        Found = true;
+        break;
       }
+      if (auto *ND = dyn_cast<NamedDecl>(CanonMember))
+        if (ND->getDeclName() == D->getDeclName())
+          Candidates.push_back(ND);
     }
 
     if (!Found) {
@@ -8444,15 +8438,16 @@ void ASTReader::FinishedDeserializing() {
       PendingExceptionSpecUpdates.clear();
       for (auto Update : Updates) {
         auto *FPT = Update.second->getType()->castAs<FunctionProtoType>();
-        SemaObj->UpdateExceptionSpec(Update.second,
-                                     FPT->getExtProtoInfo().ExceptionSpec);
+        auto ESI = FPT->getExtProtoInfo().ExceptionSpec;
+        for (auto *Redecl : Update.second->redecls())
+          Context.adjustExceptionSpec(cast<FunctionDecl>(Redecl), ESI);
       }
     }
 
-    diagnoseOdrViolations();
-
     if (ReadTimer)
       ReadTimer->stopTimer();
+
+    diagnoseOdrViolations();
 
     // We are not in recursive loading, so it's safe to pass the "interesting"
     // decls to the consumer.
@@ -8522,14 +8517,4 @@ ASTReader::ASTReader(Preprocessor &PP, ASTContext &Context,
 ASTReader::~ASTReader() {
   if (OwnsDeserializationListener)
     delete DeserializationListener;
-
-  for (DeclContextVisibleUpdatesPending::iterator
-           I = PendingVisibleUpdates.begin(),
-           E = PendingVisibleUpdates.end();
-       I != E; ++I) {
-    for (DeclContextVisibleUpdates::iterator J = I->second.begin(),
-                                             F = I->second.end();
-         J != F; ++J)
-      delete J->first;
-  }
 }

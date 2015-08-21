@@ -2329,13 +2329,16 @@ TEST_F(FormatTest, IncompleteTryCatchBlocks) {
 
 TEST_F(FormatTest, FormatTryCatchBraceStyles) {
   FormatStyle Style = getLLVMStyle();
-  Style.BreakBeforeBraces = FormatStyle::BS_Attach;
-  verifyFormat("try {\n"
-               "  // something\n"
-               "} catch (...) {\n"
-               "  // something\n"
-               "}",
-               Style);
+  for (auto BraceStyle :
+       {FormatStyle::BS_Attach, FormatStyle::BS_Mozilla, FormatStyle::BS_WebKit}) {
+    Style.BreakBeforeBraces = BraceStyle;
+    verifyFormat("try {\n"
+                 "  // something\n"
+                 "} catch (...) {\n"
+                 "  // something\n"
+                 "}",
+                 Style);
+  }
   Style.BreakBeforeBraces = FormatStyle::BS_Stroustrup;
   verifyFormat("try {\n"
                "  // something\n"
@@ -5405,6 +5408,7 @@ TEST_F(FormatTest, UnderstandsUsesOfStarAndAmp) {
   verifyFormat("auto PointerBinding = [](const char *S) {};");
   verifyFormat("typedef typeof(int(int, int)) *MyFunc;");
   verifyFormat("[](const decltype(*a) &value) {}");
+  verifyFormat("decltype(a * b) F();");
   verifyFormat("#define MACRO() [](A *a) { return 1; }");
   verifyIndependentOfContext("typedef void (*f)(int *a);");
   verifyIndependentOfContext("int i{a * b};");
@@ -6552,6 +6556,8 @@ TEST_F(FormatTest, DoNotInterfereWithErrorAndWarning) {
 
 TEST_F(FormatTest, FormatHashIfExpressions) {
   verifyFormat("#if AAAA && BBBB");
+  verifyFormat("#if (AAAA && BBBB)");
+  verifyFormat("#elif (AAAA && BBBB)");
   // FIXME: Come up with a better indentation for #elif.
   verifyFormat(
       "#if !defined(AAAAAAA) && (defined CCCCCC || defined DDDDDD) &&  \\\n"
@@ -8276,6 +8282,8 @@ TEST_F(FormatTest, ConfigurableSpaceBeforeParens) {
   verifyFormat("static_assert(sizeof(char) == 1, \"Impossible!\");", NoSpace);
   verifyFormat("int f() throw(Deprecated);", NoSpace);
   verifyFormat("typedef void (*cb)(int);", NoSpace);
+  verifyFormat("T A::operator()();", NoSpace);
+  verifyFormat("X A::operator++(T);", NoSpace);
 
   FormatStyle Space = getLLVMStyle();
   Space.SpaceBeforeParens = FormatStyle::SBPO_Always;
@@ -8321,6 +8329,8 @@ TEST_F(FormatTest, ConfigurableSpaceBeforeParens) {
   verifyFormat("static_assert (sizeof (char) == 1, \"Impossible!\");", Space);
   verifyFormat("int f () throw (Deprecated);", Space);
   verifyFormat("typedef void (*cb) (int);", Space);
+  verifyFormat("T A::operator() ();", Space);
+  verifyFormat("X A::operator++ (T);", Space);
 }
 
 TEST_F(FormatTest, ConfigurableSpacesInParentheses) {
@@ -9060,6 +9070,45 @@ TEST_F(FormatTest, GNUBraceBreaking) {
                "#endif",
                GNUBraceStyle);
 }
+
+TEST_F(FormatTest, WebKitBraceBreaking) {
+  FormatStyle WebKitBraceStyle = getLLVMStyle();
+  WebKitBraceStyle.BreakBeforeBraces = FormatStyle::BS_WebKit;
+  verifyFormat("namespace a {\n"
+               "class A {\n"
+               "  void f()\n"
+               "  {\n"
+               "    if (true) {\n"
+               "      a();\n"
+               "      b();\n"
+               "    }\n"
+               "  }\n"
+               "  void g() { return; }\n"
+               "};\n"
+               "enum E {\n"
+               "  A,\n"
+               "  // foo\n"
+               "  B,\n"
+               "  C\n"
+               "};\n"
+               "struct B {\n"
+               "  int x;\n"
+               "};\n"
+               "}\n",
+               WebKitBraceStyle);
+  verifyFormat("struct S {\n"
+               "  int Type;\n"
+               "  union {\n"
+               "    int x;\n"
+               "    double y;\n"
+               "  } Value;\n"
+               "  class C {\n"
+               "    MyFavoriteType Value;\n"
+               "  } Class;\n"
+               "};\n",
+               WebKitBraceStyle);
+}
+
 TEST_F(FormatTest, CatchExceptionReferenceBinding) {
   verifyFormat("void f() {\n"
                "  try {\n"
@@ -9336,6 +9385,7 @@ TEST_F(FormatTest, ParsesConfiguration) {
   CHECK_PARSE("BreakBeforeBraces: Allman", BreakBeforeBraces,
               FormatStyle::BS_Allman);
   CHECK_PARSE("BreakBeforeBraces: GNU", BreakBeforeBraces, FormatStyle::BS_GNU);
+  CHECK_PARSE("BreakBeforeBraces: WebKit", BreakBeforeBraces, FormatStyle::BS_WebKit);
 
   Style.AlwaysBreakAfterDefinitionReturnType = FormatStyle::DRTBS_All;
   CHECK_PARSE("AlwaysBreakAfterDefinitionReturnType: None",
@@ -9956,6 +10006,7 @@ TEST_F(FormatTest, FormatsLambdas) {
   verifyGoogleFormat("auto a = [&b, c](D* d) -> pair<D*, D*> {};");
   verifyGoogleFormat("auto a = [&b, c](D* d) -> D& {};");
   verifyGoogleFormat("auto a = [&b, c](D* d) -> const D* {};");
+  verifyFormat("[a, a]() -> a<1> {};");
   verifyFormat("auto aaaaaaaa = [](int i, // break for some reason\n"
                "                   int j) -> int {\n"
                "  return ffffffffffffffffffffffffffffffffffffffffffff(i * j);\n"

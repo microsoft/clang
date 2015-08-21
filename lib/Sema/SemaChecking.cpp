@@ -2142,7 +2142,7 @@ Sema::SemaBuiltinAtomicOverloaded(ExprResult TheCallResult) {
   // Get the decl for the concrete builtin from this, we can tell what the
   // concrete integer type we should convert to is.
   unsigned NewBuiltinID = BuiltinIndices[BuiltinIndex][SizeIndex];
-  const char *NewBuiltinName = Context.BuiltinInfo.GetName(NewBuiltinID);
+  const char *NewBuiltinName = Context.BuiltinInfo.getName(NewBuiltinID);
   FunctionDecl *NewBuiltinDecl;
   if (NewBuiltinID == BuiltinID)
     NewBuiltinDecl = FDecl;
@@ -4833,7 +4833,7 @@ static void emitReplacement(Sema &S, SourceLocation Loc, SourceRange Range,
       }
     }
   } else {
-    FunctionName = S.Context.BuiltinInfo.GetName(AbsKind);
+    FunctionName = S.Context.BuiltinInfo.getName(AbsKind);
     HeaderName = S.Context.BuiltinInfo.getHeaderName(AbsKind);
 
     if (HeaderName) {
@@ -4909,7 +4909,7 @@ void Sema::CheckAbsoluteValueFunction(const CallExpr *Call,
   // function call.
   if (ArgType->isUnsignedIntegerType()) {
     const char *FunctionName =
-        IsStdAbs ? "std::abs" : Context.BuiltinInfo.GetName(AbsKind);
+        IsStdAbs ? "std::abs" : Context.BuiltinInfo.getName(AbsKind);
     Diag(Call->getExprLoc(), diag::warn_unsigned_abs) << ArgType << ParamType;
     Diag(Call->getExprLoc(), diag::note_remove_abs)
         << FunctionName
@@ -8727,23 +8727,10 @@ static bool isSetterLikeSelector(Selector sel) {
 
 static Optional<int> GetNSMutableArrayArgumentIndex(Sema &S,
                                                     ObjCMessageExpr *Message) {
-  if (S.NSMutableArrayPointer.isNull()) {
-    IdentifierInfo *NSMutableArrayId =
-      S.NSAPIObj->getNSClassId(NSAPI::ClassId_NSMutableArray);
-    NamedDecl *IF = S.LookupSingleName(S.TUScope, NSMutableArrayId,
-                                       Message->getLocStart(),
-                                       Sema::LookupOrdinaryName);
-    ObjCInterfaceDecl *InterfaceDecl = dyn_cast_or_null<ObjCInterfaceDecl>(IF);
-    if (!InterfaceDecl) {
-      return None;
-    }
-    QualType NSMutableArrayObject =
-      S.Context.getObjCInterfaceType(InterfaceDecl);
-    S.NSMutableArrayPointer =
-      S.Context.getObjCObjectPointerType(NSMutableArrayObject);
-  }
-
-  if (S.NSMutableArrayPointer != Message->getReceiverType()) {
+  bool IsMutableArray = S.NSAPIObj->isSubclassOfNSClass(
+                                                Message->getReceiverInterface(),
+                                                NSAPI::ClassId_NSMutableArray);
+  if (!IsMutableArray) {
     return None;
   }
 
@@ -8775,24 +8762,10 @@ static Optional<int> GetNSMutableArrayArgumentIndex(Sema &S,
 static
 Optional<int> GetNSMutableDictionaryArgumentIndex(Sema &S,
                                                   ObjCMessageExpr *Message) {
-
-  if (S.NSMutableDictionaryPointer.isNull()) {
-    IdentifierInfo *NSMutableDictionaryId =
-      S.NSAPIObj->getNSClassId(NSAPI::ClassId_NSMutableDictionary);
-    NamedDecl *IF = S.LookupSingleName(S.TUScope, NSMutableDictionaryId,
-                                       Message->getLocStart(),
-                                       Sema::LookupOrdinaryName);
-    ObjCInterfaceDecl *InterfaceDecl = dyn_cast_or_null<ObjCInterfaceDecl>(IF);
-    if (!InterfaceDecl) {
-      return None;
-    }
-    QualType NSMutableDictionaryObject =
-      S.Context.getObjCInterfaceType(InterfaceDecl);
-    S.NSMutableDictionaryPointer =
-      S.Context.getObjCObjectPointerType(NSMutableDictionaryObject);
-  }
-
-  if (S.NSMutableDictionaryPointer != Message->getReceiverType()) {
+  bool IsMutableDictionary = S.NSAPIObj->isSubclassOfNSClass(
+                                            Message->getReceiverInterface(),
+                                            NSAPI::ClassId_NSMutableDictionary);
+  if (!IsMutableDictionary) {
     return None;
   }
 
@@ -8820,63 +8793,14 @@ Optional<int> GetNSMutableDictionaryArgumentIndex(Sema &S,
 }
 
 static Optional<int> GetNSSetArgumentIndex(Sema &S, ObjCMessageExpr *Message) {
+  bool IsMutableSet = S.NSAPIObj->isSubclassOfNSClass(
+                                                Message->getReceiverInterface(),
+                                                NSAPI::ClassId_NSMutableSet);
 
-  ObjCInterfaceDecl *InterfaceDecl;
-  if (S.NSMutableSetPointer.isNull()) {
-    IdentifierInfo *NSMutableSetId =
-      S.NSAPIObj->getNSClassId(NSAPI::ClassId_NSMutableSet);
-    NamedDecl *IF = S.LookupSingleName(S.TUScope, NSMutableSetId,
-                                       Message->getLocStart(),
-                                       Sema::LookupOrdinaryName);
-    InterfaceDecl = dyn_cast_or_null<ObjCInterfaceDecl>(IF);
-    if (InterfaceDecl) {
-      QualType NSMutableSetObject =
-        S.Context.getObjCInterfaceType(InterfaceDecl);
-      S.NSMutableSetPointer =
-        S.Context.getObjCObjectPointerType(NSMutableSetObject);
-    }
-  }
-
-  if (S.NSCountedSetPointer.isNull()) {
-    IdentifierInfo *NSCountedSetId =
-      S.NSAPIObj->getNSClassId(NSAPI::ClassId_NSCountedSet);
-    NamedDecl *IF = S.LookupSingleName(S.TUScope, NSCountedSetId,
-                                       Message->getLocStart(),
-                                       Sema::LookupOrdinaryName);
-    InterfaceDecl = dyn_cast_or_null<ObjCInterfaceDecl>(IF);
-    if (InterfaceDecl) {
-      QualType NSCountedSetObject =
-        S.Context.getObjCInterfaceType(InterfaceDecl);
-      S.NSCountedSetPointer =
-        S.Context.getObjCObjectPointerType(NSCountedSetObject);
-    }
-  }
-
-  if (S.NSMutableOrderedSetPointer.isNull()) {
-    IdentifierInfo *NSOrderedSetId =
-      S.NSAPIObj->getNSClassId(NSAPI::ClassId_NSMutableOrderedSet);
-    NamedDecl *IF = S.LookupSingleName(S.TUScope, NSOrderedSetId,
-                                       Message->getLocStart(),
-                                       Sema::LookupOrdinaryName);
-    InterfaceDecl = dyn_cast_or_null<ObjCInterfaceDecl>(IF);
-    if (InterfaceDecl) {
-      QualType NSOrderedSetObject =
-        S.Context.getObjCInterfaceType(InterfaceDecl);
-      S.NSMutableOrderedSetPointer =
-        S.Context.getObjCObjectPointerType(NSOrderedSetObject);
-    }
-  }
-
-  QualType ReceiverType = Message->getReceiverType();
-
-  bool IsMutableSet = !S.NSMutableSetPointer.isNull() &&
-    ReceiverType == S.NSMutableSetPointer;
-  bool IsMutableOrderedSet = !S.NSMutableOrderedSetPointer.isNull() &&
-    ReceiverType == S.NSMutableOrderedSetPointer;
-  bool IsCountedSet = !S.NSCountedSetPointer.isNull() &&
-    ReceiverType == S.NSCountedSetPointer;
-
-  if (!IsMutableSet && !IsMutableOrderedSet && !IsCountedSet) {
+  bool IsMutableOrderedSet = S.NSAPIObj->isSubclassOfNSClass(
+                                            Message->getReceiverInterface(),
+                                            NSAPI::ClassId_NSMutableOrderedSet);
+  if (!IsMutableSet && !IsMutableOrderedSet) {
     return None;
   }
 
@@ -8917,38 +8841,51 @@ void Sema::CheckObjCCircularContainer(ObjCMessageExpr *Message) {
 
   int ArgIndex = *ArgOpt;
 
-  Expr *Receiver = Message->getInstanceReceiver()->IgnoreImpCasts();
-  if (OpaqueValueExpr *OE = dyn_cast<OpaqueValueExpr>(Receiver)) {
-    Receiver = OE->getSourceExpr()->IgnoreImpCasts();
-  }
-
   Expr *Arg = Message->getArg(ArgIndex)->IgnoreImpCasts();
   if (OpaqueValueExpr *OE = dyn_cast<OpaqueValueExpr>(Arg)) {
     Arg = OE->getSourceExpr()->IgnoreImpCasts();
   }
 
-  if (DeclRefExpr *ReceiverRE = dyn_cast<DeclRefExpr>(Receiver)) {
+  if (Message->getReceiverKind() == ObjCMessageExpr::SuperInstance) {
     if (DeclRefExpr *ArgRE = dyn_cast<DeclRefExpr>(Arg)) {
-      if (ReceiverRE->getDecl() == ArgRE->getDecl()) {
-        ValueDecl *Decl = ReceiverRE->getDecl();
+      if (ArgRE->isObjCSelfExpr()) {
         Diag(Message->getSourceRange().getBegin(),
              diag::warn_objc_circular_container)
-          << Decl->getName();
-        Diag(Decl->getLocation(),
-             diag::note_objc_circular_container_declared_here)
-          << Decl->getName();
+          << ArgRE->getDecl()->getName() << StringRef("super");
       }
     }
-  } else if (ObjCIvarRefExpr *IvarRE = dyn_cast<ObjCIvarRefExpr>(Receiver)) {
-    if (ObjCIvarRefExpr *IvarArgRE = dyn_cast<ObjCIvarRefExpr>(Arg)) {
-      if (IvarRE->getDecl() == IvarArgRE->getDecl()) {
-        ObjCIvarDecl *Decl = IvarRE->getDecl();
-        Diag(Message->getSourceRange().getBegin(),
-             diag::warn_objc_circular_container)
-          << Decl->getName();
-        Diag(Decl->getLocation(),
-             diag::note_objc_circular_container_declared_here)
-          << Decl->getName();
+  } else {
+    Expr *Receiver = Message->getInstanceReceiver()->IgnoreImpCasts();
+
+    if (OpaqueValueExpr *OE = dyn_cast<OpaqueValueExpr>(Receiver)) {
+      Receiver = OE->getSourceExpr()->IgnoreImpCasts();
+    }
+
+    if (DeclRefExpr *ReceiverRE = dyn_cast<DeclRefExpr>(Receiver)) {
+      if (DeclRefExpr *ArgRE = dyn_cast<DeclRefExpr>(Arg)) {
+        if (ReceiverRE->getDecl() == ArgRE->getDecl()) {
+          ValueDecl *Decl = ReceiverRE->getDecl();
+          Diag(Message->getSourceRange().getBegin(),
+               diag::warn_objc_circular_container)
+            << Decl->getName() << Decl->getName();
+          if (!ArgRE->isObjCSelfExpr()) {
+            Diag(Decl->getLocation(),
+                 diag::note_objc_circular_container_declared_here)
+              << Decl->getName();
+          }
+        }
+      }
+    } else if (ObjCIvarRefExpr *IvarRE = dyn_cast<ObjCIvarRefExpr>(Receiver)) {
+      if (ObjCIvarRefExpr *IvarArgRE = dyn_cast<ObjCIvarRefExpr>(Arg)) {
+        if (IvarRE->getDecl() == IvarArgRE->getDecl()) {
+          ObjCIvarDecl *Decl = IvarRE->getDecl();
+          Diag(Message->getSourceRange().getBegin(),
+               diag::warn_objc_circular_container)
+            << Decl->getName() << Decl->getName();
+          Diag(Decl->getLocation(),
+               diag::note_objc_circular_container_declared_here)
+            << Decl->getName();
+        }
       }
     }
   }

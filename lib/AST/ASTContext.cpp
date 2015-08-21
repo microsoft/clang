@@ -783,6 +783,10 @@ ASTContext::~ASTContext() {
        A != AEnd; ++A)
     A->second->~AttrVec();
 
+  for (std::pair<const MaterializeTemporaryExpr *, APValue *> &MTVPair :
+       MaterializedTemporaryValues)
+    MTVPair.second->~APValue();
+
   llvm::DeleteContainerSeconds(MangleNumberingContexts);
 }
 
@@ -4311,7 +4315,7 @@ ASTContext::getCanonicalTemplateArgument(const TemplateArgument &Arg) const {
            A != AEnd; (void)++A, ++Idx)
         CanonArgs[Idx] = getCanonicalTemplateArgument(*A);
 
-      return TemplateArgument(CanonArgs, Arg.pack_size());
+      return TemplateArgument(llvm::makeArrayRef(CanonArgs, Arg.pack_size()));
     }
   }
 
@@ -8118,7 +8122,7 @@ static QualType DecodeTypeFromStr(const char *&Str, const ASTContext &Context,
 QualType ASTContext::GetBuiltinType(unsigned Id,
                                     GetBuiltinTypeError &Error,
                                     unsigned *IntegerConstantArgs) const {
-  const char *TypeStr = BuiltinInfo.GetTypeString(Id);
+  const char *TypeStr = BuiltinInfo.getTypeString(Id);
 
   SmallVector<QualType, 8> ArgTypes;
 
@@ -8307,6 +8311,9 @@ bool ASTContext::DeclMustBeEmitted(const Decl *D) {
     // Global named register variables (GNU extension) are never emitted.
     if (VD->getStorageClass() == SC_Register)
       return false;
+    if (VD->getDescribedVarTemplate() ||
+        isa<VarTemplatePartialSpecializationDecl>(VD))
+      return false;
   } else if (const FunctionDecl *FD = dyn_cast<FunctionDecl>(D)) {
     // We never need to emit an uninstantiated function template.
     if (FD->getTemplatedKind() == FunctionDecl::TK_FunctionTemplate)
@@ -8379,7 +8386,8 @@ bool ASTContext::DeclMustBeEmitted(const Decl *D) {
     return true;
 
   // Variables that have initialization with side-effects are required.
-  if (VD->getInit() && VD->getInit()->HasSideEffects(*this))
+  if (VD->getInit() && VD->getInit()->HasSideEffects(*this) &&
+      !VD->evaluateValue())
     return true;
 
   return false;
@@ -8553,12 +8561,14 @@ ASTContext::getMaterializedTemporaryValue(const MaterializeTemporaryExpr *E,
                                           bool MayCreate) {
   assert(E && E->getStorageDuration() == SD_Static &&
          "don't need to cache the computed value for this temporary");
-  if (MayCreate)
-    return &MaterializedTemporaryValues[E];
+  if (MayCreate) {
+    APValue *&MTVI = MaterializedTemporaryValues[E];
+    if (!MTVI)
+      MTVI = new (*this) APValue;
+    return MTVI;
+  }
 
-  llvm::DenseMap<const MaterializeTemporaryExpr *, APValue>::iterator I =
-      MaterializedTemporaryValues.find(E);
-  return I == MaterializedTemporaryValues.end() ? nullptr : &I->second;
+  return MaterializedTemporaryValues.lookup(E);
 }
 
 bool ASTContext::AtomicUsesUnsupportedLibcall(const AtomicExpr *E) const {

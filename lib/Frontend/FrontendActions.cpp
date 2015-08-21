@@ -137,7 +137,9 @@ GenerateModuleAction::CreateASTConsumer(CompilerInstance &CI,
   auto Buffer = std::make_shared<PCHBuffer>();
   std::vector<std::unique_ptr<ASTConsumer>> Consumers;
   Consumers.push_back(llvm::make_unique<PCHGenerator>(
-      CI.getPreprocessor(), OutputFile, Module, Sysroot, Buffer));
+      CI.getPreprocessor(), OutputFile, Module, Sysroot, Buffer,
+      /*AllowASTWithErrors*/false,
+      /*IncludeTimestamps*/+CI.getFrontendOpts().BuildingImplicitModule));
   Consumers.push_back(
       CI.getPCHContainerWriter().CreatePCHContainerGenerator(
           CI.getDiagnostics(), CI.getHeaderSearchOpts(),
@@ -268,8 +270,9 @@ collectModuleHeaderIncludes(const LangOptions &LangOpts, FileManager &FileMgr,
 
 bool GenerateModuleAction::BeginSourceFileAction(CompilerInstance &CI, 
                                                  StringRef Filename) {
-  // Find the module map file.  
-  const FileEntry *ModuleMap = CI.getFileManager().getFile(Filename);
+  // Find the module map file.
+  const FileEntry *ModuleMap =
+      CI.getFileManager().getFile(Filename, /*openFile*/true);
   if (!ModuleMap)  {
     CI.getDiagnostics().Report(diag::err_module_map_not_found)
       << Filename;
@@ -289,6 +292,14 @@ bool GenerateModuleAction::BeginSourceFileAction(CompilerInstance &CI,
     // default. Then it would be fairly trivial to just "compile" a module
     // map with a single module (the common case).
     return false;
+  }
+
+  // Set up embedding for any specified files.
+  for (const auto &F : CI.getFrontendOpts().ModulesEmbedFiles) {
+    if (const auto *FE = CI.getFileManager().getFile(F, /*openFile*/true))
+      CI.getSourceManager().embedFileContentsInModule(FE);
+    else
+      CI.getDiagnostics().Report(diag::err_modules_embed_file_not_found) << F;
   }
 
   // If we're being run from the command-line, the module build stack will not

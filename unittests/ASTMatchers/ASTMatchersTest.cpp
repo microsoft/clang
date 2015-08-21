@@ -1420,6 +1420,13 @@ TEST(Callee, MatchesDeclarations) {
                          CallMethodX));
 }
 
+TEST(ConversionDeclaration, IsExplicit) {
+  EXPECT_TRUE(matches("struct S { explicit operator int(); };",
+                      conversionDecl(isExplicit())));
+  EXPECT_TRUE(notMatches("struct S { operator int(); };",
+                         conversionDecl(isExplicit())));
+}
+
 TEST(Callee, MatchesMemberExpressions) {
   EXPECT_TRUE(matches("class Y { void x() { this->x(); } };",
               callExpr(callee(memberExpr()))));
@@ -1992,6 +1999,36 @@ TEST(ConstructorDeclaration, IsImplicit) {
                       methodDecl(isImplicit(), hasName("operator="))));
 }
 
+TEST(ConstructorDeclaration, IsExplicit) {
+  EXPECT_TRUE(matches("struct S { explicit S(int); };",
+                      constructorDecl(isExplicit())));
+  EXPECT_TRUE(notMatches("struct S { S(int); };",
+                         constructorDecl(isExplicit())));
+}
+
+TEST(ConstructorDeclaration, Kinds) {
+  EXPECT_TRUE(matches("struct S { S(); };",
+                      constructorDecl(isDefaultConstructor())));
+  EXPECT_TRUE(notMatches("struct S { S(); };",
+                         constructorDecl(isCopyConstructor())));
+  EXPECT_TRUE(notMatches("struct S { S(); };",
+                         constructorDecl(isMoveConstructor())));
+
+  EXPECT_TRUE(notMatches("struct S { S(const S&); };",
+                         constructorDecl(isDefaultConstructor())));
+  EXPECT_TRUE(matches("struct S { S(const S&); };",
+                      constructorDecl(isCopyConstructor())));
+  EXPECT_TRUE(notMatches("struct S { S(const S&); };",
+                         constructorDecl(isMoveConstructor())));
+
+  EXPECT_TRUE(notMatches("struct S { S(S&&); };",
+                         constructorDecl(isDefaultConstructor())));
+  EXPECT_TRUE(notMatches("struct S { S(S&&); };",
+                         constructorDecl(isCopyConstructor())));
+  EXPECT_TRUE(matches("struct S { S(S&&); };",
+                      constructorDecl(isMoveConstructor())));
+}
+
 TEST(DestructorDeclaration, MatchesVirtualDestructor) {
   EXPECT_TRUE(matches("class Foo { virtual ~Foo(); };",
                       destructorDecl(ofClass(hasName("Foo")))));
@@ -2056,6 +2093,30 @@ TEST(HasAnyConstructorInitializer, IsWritten) {
       allOf(forField(hasName("bar_")), isWritten())))));
   EXPECT_TRUE(matches(Code, constructorDecl(hasAnyConstructorInitializer(
       allOf(forField(hasName("bar_")), unless(isWritten()))))));
+}
+
+TEST(HasAnyConstructorInitializer, IsBaseInitializer) {
+  static const char Code[] =
+      "struct B {};"
+      "struct D : B {"
+      "  int I;"
+      "  D(int i) : I(i) {}"
+      "};"
+      "struct E : B {"
+      "  E() : B() {}"
+      "};";
+  EXPECT_TRUE(matches(Code, constructorDecl(allOf(
+    hasAnyConstructorInitializer(allOf(isBaseInitializer(), isWritten())),
+    hasName("E")))));
+  EXPECT_TRUE(notMatches(Code, constructorDecl(allOf(
+    hasAnyConstructorInitializer(allOf(isBaseInitializer(), isWritten())),
+    hasName("D")))));
+  EXPECT_TRUE(matches(Code, constructorDecl(allOf(
+    hasAnyConstructorInitializer(allOf(isMemberInitializer(), isWritten())),
+    hasName("D")))));
+  EXPECT_TRUE(notMatches(Code, constructorDecl(allOf(
+    hasAnyConstructorInitializer(allOf(isMemberInitializer(), isWritten())),
+    hasName("E")))));
 }
 
 TEST(Matcher, NewExpression) {
@@ -4291,6 +4352,11 @@ TEST(NullStatement, SimpleCases) {
   EXPECT_TRUE(notMatches("void f() {int i;}", nullStmt()));
 }
 
+TEST(NS, Anonymous) {
+  EXPECT_TRUE(notMatches("namespace N {}", namespaceDecl(isAnonymous())));
+  EXPECT_TRUE(matches("namespace {}", namespaceDecl(isAnonymous())));
+}
+
 TEST(NNS, MatchesTypes) {
   NestedNameSpecifierMatcher Matcher = nestedNameSpecifier(
     specifiesType(hasDeclaration(recordDecl(hasName("A")))));
@@ -4708,6 +4774,13 @@ TEST(EqualsBoundNodeMatcher, UnlessDescendantsOfAncestorsMatch) {
 TEST(TypeDefDeclMatcher, Match) {
   EXPECT_TRUE(matches("typedef int typedefDeclTest;",
                       typedefDecl(hasName("typedefDeclTest"))));
+}
+
+TEST(IsInlineMatcher, IsInline) {
+  EXPECT_TRUE(matches("void g(); inline void f();",
+                      functionDecl(isInline(), hasName("f"))));
+  EXPECT_TRUE(matches("namespace n { inline namespace m {} }",
+                      namespaceDecl(isInline(), hasName("m"))));
 }
 
 // FIXME: Figure out how to specify paths so the following tests pass on Windows.

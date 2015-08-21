@@ -120,8 +120,9 @@ private:
     }
 
     if (Left->Previous &&
-        (Left->Previous->isOneOf(tok::kw_static_assert, tok::kw_if,
-                                 tok::kw_while, tok::l_paren, tok::comma) ||
+        (Left->Previous->isOneOf(tok::kw_static_assert, tok::kw_decltype,
+                                 tok::kw_if, tok::kw_while, tok::l_paren,
+                                 tok::comma) ||
          Left->Previous->is(TT_BinaryOperator))) {
       // static_assert, if and while usually contain expressions.
       Contexts.back().IsExpression = true;
@@ -1894,7 +1895,7 @@ bool TokenAnnotator::spaceRequiredBetween(const AnnotatedLine &Line,
       return true;
     return Line.Type == LT_ObjCDecl || Left.is(tok::semi) ||
            (Style.SpaceBeforeParens != FormatStyle::SBPO_Never &&
-            (Left.isOneOf(tok::kw_if, tok::kw_for, tok::kw_while,
+            (Left.isOneOf(tok::kw_if, tok::pp_elif, tok::kw_for, tok::kw_while,
                           tok::kw_switch, tok::kw_case, TT_ForEachMacro) ||
              (Left.isOneOf(tok::kw_try, Keywords.kw___except, tok::kw_catch,
                            tok::kw_new, tok::kw_delete) &&
@@ -1997,7 +1998,7 @@ bool TokenAnnotator::spaceRequiredBefore(const AnnotatedLine &Line,
   if (Right.isOneOf(TT_CtorInitializerColon, TT_ObjCBlockLParen))
     return true;
   if (Right.is(TT_OverloadedOperatorLParen))
-    return false;
+    return Style.SpaceBeforeParens == FormatStyle::SBPO_Always;
   if (Right.is(tok::colon)) {
     if (Line.First->isOneOf(tok::kw_case, tok::kw_default) ||
         !Right.getNextNonComment() || Right.getNextNonComment()->is(tok::semi))

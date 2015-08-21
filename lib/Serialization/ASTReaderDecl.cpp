@@ -779,8 +779,9 @@ void ASTDeclReader::VisitFunctionDecl(FunctionDecl *FD) {
     
     // Template arguments.
     SmallVector<TemplateArgument, 8> TemplArgs;
-    Reader.ReadTemplateArgumentList(TemplArgs, F, Record, Idx);
-    
+    Reader.ReadTemplateArgumentList(TemplArgs, F, Record, Idx,
+                                    /*Canonicalize*/ true);
+
     // Template args as written.
     SmallVector<TemplateArgumentLoc, 8> TemplArgLocs;
     SourceLocation LAngleLoc, RAngleLoc;
@@ -1178,6 +1179,8 @@ void ASTDeclReader::VisitIndirectFieldDecl(IndirectFieldDecl *FD) {
 
   for (unsigned I = 0; I != FD->ChainingSize; ++I)
     FD->Chaining[I] = ReadDeclAs<NamedDecl>(Record, Idx);
+
+  mergeMergeable(FD);
 }
 
 ASTDeclReader::RedeclarableResult ASTDeclReader::VisitVarDeclImpl(VarDecl *VD) {
@@ -1302,8 +1305,7 @@ void ASTDeclReader::VisitBlockDecl(BlockDecl *BD) {
 
     captures.push_back(BlockDecl::Capture(decl, byRef, nested, copyExpr));
   }
-  BD->setCaptures(Reader.getContext(), captures.begin(),
-                  captures.end(), capturesCXXThis);
+  BD->setCaptures(Reader.getContext(), captures, capturesCXXThis);
 }
 
 void ASTDeclReader::VisitCapturedDecl(CapturedDecl *CD) {
@@ -1518,15 +1520,6 @@ void ASTDeclReader::MergeDefinitionData(
   auto &DD = *D->DefinitionData.getNotUpdated();
 
   if (DD.Definition != MergeDD.Definition) {
-    // If the new definition has new special members, let the name lookup
-    // code know that it needs to look in the new definition too.
-    //
-    // FIXME: We only need to do this if the merged definition declares members
-    // that this definition did not declare, or if it defines members that this
-    // definition did not define.
-    Reader.MergedLookups[DD.Definition].push_back(MergeDD.Definition);
-    DD.Definition->setHasExternalVisibleStorage();
-
     // Track that we merged the definitions.
     Reader.MergedDeclContexts.insert(std::make_pair(MergeDD.Definition,
                                                     DD.Definition));
@@ -1945,7 +1938,8 @@ ASTDeclReader::VisitClassTemplateSpecializationDeclImpl(
   }
 
   SmallVector<TemplateArgument, 8> TemplArgs;
-  Reader.ReadTemplateArgumentList(TemplArgs, F, Record, Idx);
+  Reader.ReadTemplateArgumentList(TemplArgs, F, Record, Idx,
+                                  /*Canonicalize*/ true);
   D->TemplateArgs = TemplateArgumentList::CreateCopy(C, TemplArgs.data(), 
                                                      TemplArgs.size());
   D->PointOfInstantiation = ReadSourceLocation(Record, Idx);
@@ -2072,7 +2066,8 @@ ASTDeclReader::VisitVarTemplateSpecializationDeclImpl(
   }
 
   SmallVector<TemplateArgument, 8> TemplArgs;
-  Reader.ReadTemplateArgumentList(TemplArgs, F, Record, Idx);
+  Reader.ReadTemplateArgumentList(TemplArgs, F, Record, Idx,
+                                  /*Canonicalize*/ true);
   D->TemplateArgs =
       TemplateArgumentList::CreateCopy(C, TemplArgs.data(), TemplArgs.size());
   D->PointOfInstantiation = ReadSourceLocation(Record, Idx);
@@ -2636,6 +2631,13 @@ static bool isSameEntity(NamedDecl *X, NamedDecl *Y) {
     FieldDecl *FDY = cast<FieldDecl>(Y);
     // FIXME: Also check the bitwidth is odr-equivalent, if any.
     return X->getASTContext().hasSameType(FDX->getType(), FDY->getType());
+  }
+
+  // Indirect fields with the same target field match.
+  if (auto *IFDX = dyn_cast<IndirectFieldDecl>(X)) {
+    auto *IFDY = cast<IndirectFieldDecl>(Y);
+    return IFDX->getAnonField()->getCanonicalDecl() ==
+           IFDY->getAnonField()->getCanonicalDecl();
   }
 
   // Enumerators with the same name match.
@@ -3331,37 +3333,13 @@ Decl *ASTReader::ReadDeclRecord(DeclID ID) {
   // If this declaration is also a declaration context, get the
   // offsets for its tables of lexical and visible declarations.
   if (DeclContext *DC = dyn_cast<DeclContext>(D)) {
-    // FIXME: This should really be
-    //     DeclContext *LookupDC = DC->getPrimaryContext();
-    // but that can walk the redeclaration chain, which might not work yet.
-    DeclContext *LookupDC = DC;
-    if (isa<NamespaceDecl>(DC))
-      LookupDC = DC->getPrimaryContext();
     std::pair<uint64_t, uint64_t> Offsets = Reader.VisitDeclContext(DC);
-    if (Offsets.first || Offsets.second) {
-      if (Offsets.first != 0)
-        DC->setHasExternalLexicalStorage(true);
-      if (Offsets.second != 0)
-        LookupDC->setHasExternalVisibleStorage(true);
-      if (ReadDeclContextStorage(*Loc.F, DeclsCursor, Offsets, 
-                                 Loc.F->DeclContextInfos[DC]))
-        return nullptr;
-    }
-
-    // Now add the pending visible updates for this decl context, if it has any.
-    DeclContextVisibleUpdatesPending::iterator I =
-        PendingVisibleUpdates.find(ID);
-    if (I != PendingVisibleUpdates.end()) {
-      // There are updates. This means the context has external visible
-      // storage, even if the original stored version didn't.
-      LookupDC->setHasExternalVisibleStorage(true);
-      for (const auto &Update : I->second) {
-        DeclContextInfo &Info = Update.second->DeclContextInfos[DC];
-        delete Info.NameLookupTableData;
-        Info.NameLookupTableData = Update.first;
-      }
-      PendingVisibleUpdates.erase(I);
-    }
+    if (Offsets.first &&
+        ReadLexicalDeclContextStorage(*Loc.F, DeclsCursor, Offsets.first, DC))
+      return nullptr;
+    if (Offsets.second &&
+        ReadVisibleDeclContextStorage(*Loc.F, DeclsCursor, Offsets.second, ID))
+      return nullptr;
   }
   assert(Idx == Record.size());
 
@@ -3384,17 +3362,37 @@ Decl *ASTReader::ReadDeclRecord(DeclID ID) {
 }
 
 void ASTReader::loadDeclUpdateRecords(serialization::DeclID ID, Decl *D) {
+  // Load the pending visible updates for this decl context, if it has any.
+  auto I = PendingVisibleUpdates.find(ID);
+  if (I != PendingVisibleUpdates.end()) {
+    auto VisibleUpdates = std::move(I->second);
+    PendingVisibleUpdates.erase(I);
+
+    auto *DC = cast<DeclContext>(D)->getPrimaryContext();
+    for (const PendingVisibleUpdate &Update : VisibleUpdates) {
+      auto *&LookupTable = Update.Mod->DeclContextInfos[DC].NameLookupTableData;
+      assert(!LookupTable && "multiple lookup tables for DC in module");
+      LookupTable = reader::ASTDeclContextNameLookupTable::Create(
+          Update.Data + Update.BucketOffset,
+          Update.Data + sizeof(uint32_t),
+          Update.Data,
+          reader::ASTDeclContextNameLookupTrait(*this, *Update.Mod));
+    }
+    DC->setHasExternalVisibleStorage(true);
+  }
+
   // The declaration may have been modified by files later in the chain.
   // If this is the case, read the record containing the updates from each file
   // and pass it to ASTDeclReader to make the modifications.
   DeclUpdateOffsetsMap::iterator UpdI = DeclUpdateOffsets.find(ID);
   if (UpdI != DeclUpdateOffsets.end()) {
-    FileOffsetsTy &UpdateOffsets = UpdI->second;
+    auto UpdateOffsets = std::move(UpdI->second);
+    DeclUpdateOffsets.erase(UpdI);
+
     bool WasInteresting = isConsumerInterestedIn(D, false);
-    for (FileOffsetsTy::iterator
-         I = UpdateOffsets.begin(), E = UpdateOffsets.end(); I != E; ++I) {
-      ModuleFile *F = I->first;
-      uint64_t Offset = I->second;
+    for (auto &FileAndOffset : UpdateOffsets) {
+      ModuleFile *F = FileAndOffset.first;
+      uint64_t Offset = FileAndOffset.second;
       llvm::BitstreamCursor &Cursor = F->DeclsCursor;
       SavedStreamPosition SavedPosition(Cursor);
       Cursor.JumpToBit(Offset);
@@ -3727,17 +3725,6 @@ void ASTDeclReader::UpdateDecl(Decl *D, ModuleFile &ModuleFile,
       // FIXME: We should call addHiddenDecl instead, to add the member
       // to its DeclContext.
       RD->addedMember(MD);
-
-      // If we've added a new special member to a class definition that is not
-      // the canonical definition, then we need special member lookups in the
-      // canonical definition to also look into our class.
-      auto *DD = RD->DefinitionData.getNotUpdated();
-      if (DD && DD->Definition != RD) {
-        auto &Merged = Reader.MergedLookups[DD->Definition];
-        // FIXME: Avoid the linear-time scan here.
-        if (std::find(Merged.begin(), Merged.end(), RD) == Merged.end())
-          Merged.push_back(RD);
-      }
       break;
     }
 
@@ -3809,10 +3796,8 @@ void ASTDeclReader::UpdateDecl(Decl *D, ModuleFile &ModuleFile,
       // Visible update is handled separately.
       uint64_t LexicalOffset = Record[Idx++];
       if (!HadRealDefinition && LexicalOffset) {
-        RD->setHasExternalLexicalStorage(true);
-        Reader.ReadDeclContextStorage(ModuleFile, ModuleFile.DeclsCursor,
-                                      std::make_pair(LexicalOffset, 0),
-                                      ModuleFile.DeclContextInfos[RD]);
+        Reader.ReadLexicalDeclContextStorage(ModuleFile, ModuleFile.DeclsCursor,
+                                             LexicalOffset, RD);
         Reader.PendingFakeDefinitionData.erase(OldDD);
       }
 

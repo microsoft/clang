@@ -15,6 +15,7 @@
 #include "clang/ASTMatchers/Dynamic/Registry.h"
 #include "Marshallers.h"
 #include "clang/ASTMatchers/ASTMatchers.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/ManagedStatic.h"
@@ -239,17 +240,23 @@ RegistryMaps::RegistryMaps() {
   REGISTER_MATCHER(initListExpr);
   REGISTER_MATCHER(innerType);
   REGISTER_MATCHER(integerLiteral);
+  REGISTER_MATCHER(isAnonymous);
   REGISTER_MATCHER(isArrow);
+  REGISTER_MATCHER(isBaseInitializer);
   REGISTER_MATCHER(isCatchAll);
   REGISTER_MATCHER(isConst);
   REGISTER_MATCHER(isConstQualified);
+  REGISTER_MATCHER(isCopyConstructor);
+  REGISTER_MATCHER(isDefaultConstructor);
   REGISTER_MATCHER(isDefinition);
   REGISTER_MATCHER(isDeleted);
   REGISTER_MATCHER(isExceptionVariable);
+  REGISTER_MATCHER(isExplicit);
   REGISTER_MATCHER(isExplicitTemplateSpecialization);
   REGISTER_MATCHER(isExpr);
   REGISTER_MATCHER(isExternC);
   REGISTER_MATCHER(isFinal);
+  REGISTER_MATCHER(isInline);
   REGISTER_MATCHER(isImplicit);
   REGISTER_MATCHER(isExpansionInFileMatching);
   REGISTER_MATCHER(isExpansionInMainFile);
@@ -259,6 +266,8 @@ RegistryMaps::RegistryMaps() {
   REGISTER_MATCHER(isIntegral);
   REGISTER_MATCHER(isInTemplateInstantiation);
   REGISTER_MATCHER(isListInitialization);
+  REGISTER_MATCHER(isMemberInitializer);
+  REGISTER_MATCHER(isMoveConstructor);
   REGISTER_MATCHER(isOverride);
   REGISTER_MATCHER(isPrivate);
   REGISTER_MATCHER(isProtected);
@@ -352,11 +361,7 @@ RegistryMaps::RegistryMaps() {
 }
 
 RegistryMaps::~RegistryMaps() {
-  for (ConstructorMap::iterator it = Constructors.begin(),
-                                end = Constructors.end();
-       it != end; ++it) {
-    delete it->second;
-  }
+  llvm::DeleteContainerSeconds(Constructors);
 }
 
 static llvm::ManagedStatic<RegistryMaps> RegistryData;
@@ -427,12 +432,13 @@ Registry::getMatcherCompletions(ArrayRef<ArgKind> AcceptedTypes) {
   std::vector<MatcherCompletion> Completions;
 
   // Search the registry for acceptable matchers.
-  for (ConstructorMap::const_iterator I = RegistryData->constructors().begin(),
-                                      E = RegistryData->constructors().end();
-       I != E; ++I) {
+  for (const auto &M : RegistryData->constructors()) {
+    const auto *Matcher = M.getValue();
+    StringRef Name = M.getKey();
+
     std::set<ASTNodeKind> RetKinds;
-    unsigned NumArgs = I->second->isVariadic() ? 1 : I->second->getNumArgs();
-    bool IsPolymorphic = I->second->isPolymorphic();
+    unsigned NumArgs = Matcher->isVariadic() ? 1 : Matcher->getNumArgs();
+    bool IsPolymorphic = Matcher->isPolymorphic();
     std::vector<std::vector<ArgKind>> ArgsKinds(NumArgs);
     unsigned MaxSpecificity = 0;
     for (const ArgKind& Kind : AcceptedTypes) {
@@ -440,13 +446,13 @@ Registry::getMatcherCompletions(ArrayRef<ArgKind> AcceptedTypes) {
         continue;
       unsigned Specificity;
       ASTNodeKind LeastDerivedKind;
-      if (I->second->isConvertibleTo(Kind.getMatcherKind(), &Specificity,
-                                     &LeastDerivedKind)) {
+      if (Matcher->isConvertibleTo(Kind.getMatcherKind(), &Specificity,
+                                   &LeastDerivedKind)) {
         if (MaxSpecificity < Specificity)
           MaxSpecificity = Specificity;
         RetKinds.insert(LeastDerivedKind);
         for (unsigned Arg = 0; Arg != NumArgs; ++Arg)
-          I->second->getArgKinds(Kind.getMatcherKind(), Arg, ArgsKinds[Arg]);
+          Matcher->getArgKinds(Kind.getMatcherKind(), Arg, ArgsKinds[Arg]);
         if (IsPolymorphic)
           break;
       }
@@ -457,9 +463,9 @@ Registry::getMatcherCompletions(ArrayRef<ArgKind> AcceptedTypes) {
       llvm::raw_string_ostream OS(Decl);
 
       if (IsPolymorphic) {
-        OS << "Matcher<T> " << I->first() << "(Matcher<T>";
+        OS << "Matcher<T> " << Name << "(Matcher<T>";
       } else {
-        OS << "Matcher<" << RetKinds << "> " << I->first() << "(";
+        OS << "Matcher<" << RetKinds << "> " << Name << "(";
         for (const std::vector<ArgKind> &Arg : ArgsKinds) {
           if (&Arg != &ArgsKinds[0])
             OS << ", ";
@@ -482,11 +488,11 @@ Registry::getMatcherCompletions(ArrayRef<ArgKind> AcceptedTypes) {
           }
         }
       }
-      if (I->second->isVariadic())
+      if (Matcher->isVariadic())
         OS << "...";
       OS << ")";
 
-      std::string TypedText = I->first();
+      std::string TypedText = Name;
       TypedText += "(";
       if (ArgsKinds.empty())
         TypedText += ")";

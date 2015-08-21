@@ -375,7 +375,7 @@ bool FrontendAction::BeginSourceFile(CompilerInstance &CI,
     if (CI.getLangOpts().Modules)
       CI.createModuleManager();
 
-    PP.getBuiltinInfo().InitializeBuiltins(PP.getIdentifierTable(),
+    PP.getBuiltinInfo().initializeBuiltins(PP.getIdentifierTable(),
                                            PP.getLangOpts());
   } else {
     // FIXME: If this is a problem, recover from it by creating a multiplex
@@ -442,9 +442,11 @@ bool FrontendAction::Execute() {
   // there were any module-build failures.
   if (CI.shouldBuildGlobalModuleIndex() && CI.hasFileManager() &&
       CI.hasPreprocessor()) {
-    GlobalModuleIndex::writeIndex(
-        CI.getFileManager(), CI.getPCHContainerReader(),
-        CI.getPreprocessor().getHeaderSearchInfo().getModuleCachePath());
+    StringRef Cache =
+        CI.getPreprocessor().getHeaderSearchInfo().getModuleCachePath();
+    if (!Cache.empty())
+      GlobalModuleIndex::writeIndex(CI.getFileManager(),
+                                    CI.getPCHContainerReader(), Cache);
   }
 
   return true;

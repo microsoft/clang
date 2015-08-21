@@ -358,6 +358,10 @@ def err_invalid_pixel_decl_spec_combination : Error<
   "'%0' declaration specifier not allowed here">;
 def err_invalid_vector_bool_decl_spec : Error<
   "cannot use '%0' with '__vector bool'">;
+def err_invalid_vector_long_decl_spec : Error<
+  "cannot use 'long' with '__vector'">;
+def err_invalid_vector_float_decl_spec : Error<
+  "cannot use 'float' with '__vector'">;
 def err_invalid_vector_double_decl_spec : Error <
   "use of 'double' with '__vector' requires VSX support to be enabled "
   "(available on POWER7 or later)">;
@@ -993,12 +997,12 @@ def err_omp_expected_identifier_for_critical : Error<
 // Pragma loop support.
 def err_pragma_loop_missing_argument : Error<
   "missing argument; expected %select{an integer value|"
-  "%select{'enable', 'assume_safety'|'full'}1 or 'disable'}0">;
+  "'enable', %select{'assume_safety'|'full'}1 or 'disable'}0">;
 def err_pragma_loop_invalid_option : Error<
   "%select{invalid|missing}0 option%select{ %1|}0; expected vectorize, "
   "vectorize_width, interleave, interleave_count, unroll, or unroll_count">;
 def err_pragma_invalid_keyword : Error<
-  "invalid argument; expected %select{'enable', 'assume_safety'|'full'}0 or 'disable'">;
+  "invalid argument; expected 'enable', %select{'assume_safety'|'full'}0 or 'disable'">;
 
 // Pragma unroll support.
 def warn_pragma_unroll_cuda_value_in_parens : Warning<

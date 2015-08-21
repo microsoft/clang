@@ -58,7 +58,7 @@ public:
                         const std::string &OutputFileName,
                         raw_pwrite_stream *OS,
                         std::shared_ptr<PCHBuffer> Buffer)
-      : Diags(diags), HeaderSearchOpts(HSO), PreprocessorOpts(PPO),
+      : Diags(diags), Ctx(nullptr), HeaderSearchOpts(HSO), PreprocessorOpts(PPO),
         TargetOpts(TO), LangOpts(LO), OS(OS), Buffer(Buffer) {
     // The debug info output isn't affected by CodeModel and
     // ThreadModel, but the backend expects them to be nonempty.
@@ -71,10 +71,12 @@ public:
   virtual ~PCHContainerGenerator() {}
 
   void Initialize(ASTContext &Context) override {
+    assert(!Ctx && "initialized multiple times");
+
     Ctx = &Context;
     VMContext.reset(new llvm::LLVMContext());
     M.reset(new llvm::Module(MainFileName, *VMContext));
-    M->setDataLayout(Ctx->getTargetInfo().getTargetDescription());
+    M->setDataLayout(Ctx->getTargetInfo().getDataLayoutString());
     Builder.reset(new CodeGen::CodeGenModule(
         *Ctx, HeaderSearchOpts, PreprocessorOpts, CodeGenOpts, *M, Diags));
   }
@@ -91,7 +93,7 @@ public:
       return;
 
     M->setTargetTriple(Ctx.getTargetInfo().getTriple().getTriple());
-    M->setDataLayout(Ctx.getTargetInfo().getTargetDescription());
+    M->setDataLayout(Ctx.getTargetInfo().getDataLayoutString());
 
     // Finalize the Builder.
     if (Builder)
@@ -132,15 +134,14 @@ public:
       llvm::SmallString<0> Buffer;
       llvm::raw_svector_ostream OS(Buffer);
       clang::EmitBackendOutput(Diags, CodeGenOpts, TargetOpts, LangOpts,
-                               Ctx.getTargetInfo().getTargetDescription(),
+                               Ctx.getTargetInfo().getDataLayoutString(),
                                M.get(), BackendAction::Backend_EmitLL, &OS);
-      OS.flush();
       llvm::dbgs() << Buffer;
     });
 
     // Use the LLVM backend to emit the pch container.
     clang::EmitBackendOutput(Diags, CodeGenOpts, TargetOpts, LangOpts,
-                             Ctx.getTargetInfo().getTargetDescription(),
+                             Ctx.getTargetInfo().getDataLayoutString(),
                              M.get(), BackendAction::Backend_EmitObj, OS);
 
     // Make sure the pch container hits disk.

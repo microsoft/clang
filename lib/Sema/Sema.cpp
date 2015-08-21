@@ -138,10 +138,6 @@ void Sema::addImplicitTypedef(StringRef Name, QualType T) {
 }
 
 void Sema::Initialize() {
-  // Tell the AST consumer about this Sema object.
-  Consumer.Initialize(Context);
-
-  // FIXME: Isn't this redundant with the initialization above?
   if (SemaConsumer *SC = dyn_cast<SemaConsumer>(&Consumer))
     SC->InitializeSema(*this);
 
@@ -690,6 +686,9 @@ void Sema::ActOnEndOfTranslationUnit() {
   // write out the lists to the AST file (if any).
   assert(DelayedDefaultedMemberExceptionSpecs.empty());
   assert(DelayedExceptionSpecChecks.empty());
+
+  // All dllexport classes should have been processed already.
+  assert(DelayedDllExportClasses.empty());
 
   // Remove file scoped decls that turned out to be used.
   UnusedFileScopedDecls.erase(

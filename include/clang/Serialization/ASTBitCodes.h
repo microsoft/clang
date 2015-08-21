@@ -61,9 +61,6 @@ namespace clang {
     /// used for the translation unit declaration.
     typedef uint32_t DeclID;
 
-    /// \brief a Decl::Kind/DeclID pair.
-    typedef std::pair<uint32_t, DeclID> KindDeclIDPair;
-
     // FIXME: Turn these into classes so we can have some type safety when
     // we go from local ID to global and vice-versa.
     typedef DeclID LocalDeclID;
@@ -299,10 +296,6 @@ namespace clang {
 
       /// \brief Record code for the module build directory.
       MODULE_DIRECTORY = 16,
-
-      /// \brief Record code for the list of other AST files made available by
-      /// this AST file but not actually used by it.
-      KNOWN_MODULE_FILES = 17,
     };
 
     /// \brief Record types that occur within the input-files block

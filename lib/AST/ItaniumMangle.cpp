@@ -700,8 +700,7 @@ void CXXNameMangler::mangleFloat(const llvm::APFloat &f) {
   assert(numCharacters != 0);
 
   // Allocate a buffer of the right number of characters.
-  SmallVector<char, 20> buffer;
-  buffer.set_size(numCharacters);
+  SmallVector<char, 20> buffer(numCharacters);
 
   // Fill the buffer left-to-right.
   for (unsigned stringIndex = 0; stringIndex != numCharacters; ++stringIndex) {
@@ -2056,9 +2055,23 @@ void CXXNameMangler::mangleType(const FunctionProtoType *T) {
 
   Out << 'E';
 }
+
 void CXXNameMangler::mangleType(const FunctionNoProtoType *T) {
-  llvm_unreachable("Can't mangle K&R function prototypes");
+  // Function types without prototypes can arise when mangling a function type
+  // within an overloadable function in C. We mangle these as the absence of any
+  // parameter types (not even an empty parameter list).
+  Out << 'F';
+
+  FunctionTypeDepthState saved = FunctionTypeDepth.push();
+
+  FunctionTypeDepth.enterResultType();
+  mangleType(T->getReturnType());
+  FunctionTypeDepth.leaveResultType();
+
+  FunctionTypeDepth.pop(saved);
+  Out << 'E';
 }
+
 void CXXNameMangler::mangleBareFunctionType(const FunctionType *T,
                                             bool MangleReturnType) {
   // We should never be mangling something without a prototype.
@@ -2392,7 +2405,6 @@ void CXXNameMangler::mangleType(const ObjCObjectType *T) {
       StringRef name = I->getName();
       QualOS << name.size() << name;
     }
-    QualOS.flush();
     Out << 'U' << QualStr.size() << QualStr;
   }
 

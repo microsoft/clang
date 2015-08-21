@@ -498,7 +498,6 @@ std::string PredefinedExpr::ComputeName(IdentType IT, const Decl *CurrentDecl) {
         else
           MC->mangleName(ND, Out);
 
-        Out.flush();
         if (!Buffer.empty() && Buffer.front() == '\01')
           return Buffer.substr(1);
         return Buffer.str();
@@ -660,7 +659,6 @@ std::string PredefinedExpr::ComputeName(IdentType IT, const Decl *CurrentDecl) {
 
     Out << Proto;
 
-    Out.flush();
     return Name.str().str();
   }
   if (const CapturedDecl *CD = dyn_cast<CapturedDecl>(CurrentDecl)) {
@@ -692,7 +690,6 @@ std::string PredefinedExpr::ComputeName(IdentType IT, const Decl *CurrentDecl) {
     MD->getSelector().print(Out);
     Out <<  ']';
 
-    Out.flush();
     return Name.str().str();
   }
   if (isa<TranslationUnitDecl>(CurrentDecl) && IT == PrettyFunction) {
@@ -3433,6 +3430,18 @@ bool Expr::refersToVectorElement() const {
 
   if (isa<ExtVectorElementExpr>(E))
     return true;
+
+  return false;
+}
+
+bool Expr::refersToGlobalRegisterVar() const {
+  const Expr *E = this->IgnoreParenImpCasts();
+
+  if (const DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(E))
+    if (const auto *VD = dyn_cast<VarDecl>(DRE->getDecl()))
+      if (VD->getStorageClass() == SC_Register &&
+          VD->hasAttr<AsmLabelAttr>() && !VD->isLocalVarDecl())
+        return true;
 
   return false;
 }

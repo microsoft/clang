@@ -1447,6 +1447,16 @@ public:
         Kind, ChunkSize, StartLoc, LParenLoc, KindLoc, CommaLoc, EndLoc);
   }
 
+  /// \brief Build a new OpenMP 'ordered' clause.
+  ///
+  /// By default, performs semantic analysis to build the new OpenMP clause.
+  /// Subclasses may override this routine to provide different behavior.
+  OMPClause *RebuildOMPOrderedClause(SourceLocation StartLoc,
+                                     SourceLocation EndLoc,
+                                     SourceLocation LParenLoc, Expr *Num) {
+    return getSema().ActOnOpenMPOrderedClause(StartLoc, EndLoc, LParenLoc, Num);
+  }
+
   /// \brief Build a new OpenMP 'private' clause.
   ///
   /// By default, performs semantic analysis to build the new OpenMP clause.
@@ -1518,10 +1528,13 @@ public:
   OMPClause *RebuildOMPLinearClause(ArrayRef<Expr *> VarList, Expr *Step,
                                     SourceLocation StartLoc,
                                     SourceLocation LParenLoc,
+                                    OpenMPLinearClauseKind Modifier,
+                                    SourceLocation ModifierLoc,
                                     SourceLocation ColonLoc,
                                     SourceLocation EndLoc) {
     return getSema().ActOnOpenMPLinearClause(VarList, Step, StartLoc, LParenLoc,
-                                             ColonLoc, EndLoc);
+                                             Modifier, ModifierLoc, ColonLoc,
+                                             EndLoc);
   }
 
   /// \brief Build a new OpenMP 'aligned' clause.
@@ -1584,6 +1597,17 @@ public:
                          SourceLocation EndLoc) {
     return getSema().ActOnOpenMPDependClause(DepKind, DepLoc, ColonLoc, VarList,
                                              StartLoc, LParenLoc, EndLoc);
+  }
+
+  /// \brief Build a new OpenMP 'device' clause.
+  ///
+  /// By default, performs semantic analysis to build the new statement.
+  /// Subclasses may override this routine to provide different behavior.
+  OMPClause *RebuildOMPDeviceClause(Expr *Device, SourceLocation StartLoc,
+                                    SourceLocation LParenLoc,
+                                    SourceLocation EndLoc) {
+    return getSema().ActOnOpenMPDeviceClause(Device, StartLoc, LParenLoc, 
+                                             EndLoc);
   }
 
   /// \brief Rebuild the operand to an Objective-C \@synchronized statement.
@@ -4698,9 +4722,7 @@ QualType TreeTransform<Derived>::TransformFunctionProtoType(
 
   QualType Result = TL.getType();
   if (getDerived().AlwaysRebuild() || ResultType != T->getReturnType() ||
-      T->getNumParams() != ParamTypes.size() ||
-      !std::equal(T->param_type_begin(), T->param_type_end(),
-                  ParamTypes.begin()) || EPIChanged) {
+      T->getParamTypes() != llvm::makeArrayRef(ParamTypes) || EPIChanged) {
     Result = getDerived().RebuildFunctionProtoType(ResultType, ParamTypes, EPI);
     if (Result.isNull())
       return QualType();
@@ -7237,8 +7259,14 @@ TreeTransform<Derived>::TransformOMPScheduleClause(OMPScheduleClause *C) {
 template <typename Derived>
 OMPClause *
 TreeTransform<Derived>::TransformOMPOrderedClause(OMPOrderedClause *C) {
-  // No need to rebuild this clause, no template-dependent parameters.
-  return C;
+  ExprResult E;
+  if (auto *Num = C->getNumForLoops()) {
+    E = getDerived().TransformExpr(Num);
+    if (E.isInvalid())
+      return nullptr;
+  }
+  return getDerived().RebuildOMPOrderedClause(C->getLocStart(), C->getLocEnd(),
+                                              C->getLParenLoc(), E.get());
 }
 
 template <typename Derived>
@@ -7394,9 +7422,9 @@ TreeTransform<Derived>::TransformOMPLinearClause(OMPLinearClause *C) {
   ExprResult Step = getDerived().TransformExpr(C->getStep());
   if (Step.isInvalid())
     return nullptr;
-  return getDerived().RebuildOMPLinearClause(Vars, Step.get(), C->getLocStart(),
-                                             C->getLParenLoc(),
-                                             C->getColonLoc(), C->getLocEnd());
+  return getDerived().RebuildOMPLinearClause(
+      Vars, Step.get(), C->getLocStart(), C->getLParenLoc(), C->getModifier(),
+      C->getModifierLoc(), C->getColonLoc(), C->getLocEnd());
 }
 
 template <typename Derived>
@@ -7476,6 +7504,16 @@ TreeTransform<Derived>::TransformOMPDependClause(OMPDependClause *C) {
   return getDerived().RebuildOMPDependClause(
       C->getDependencyKind(), C->getDependencyLoc(), C->getColonLoc(), Vars,
       C->getLocStart(), C->getLParenLoc(), C->getLocEnd());
+}
+
+template <typename Derived>
+OMPClause *
+TreeTransform<Derived>::TransformOMPDeviceClause(OMPDeviceClause *C) {
+  ExprResult E = getDerived().TransformExpr(C->getDevice());
+  if (E.isInvalid())
+    return nullptr;
+  return getDerived().RebuildOMPDeviceClause(
+      E.get(), C->getLocStart(), C->getLParenLoc(), C->getLocEnd());
 }
 
 //===----------------------------------------------------------------------===//

@@ -1788,6 +1788,9 @@ OMPClause *OMPClauseReader::readClause() {
   case OMPC_depend:
     C = OMPDependClause::CreateEmpty(Context, Record[Idx++]);
     break;
+  case OMPC_device:
+    C = new (Context) OMPDeviceClause();
+    break;
   }
   Visit(C);
   C->setLocStart(Reader->ReadSourceLocation(Record, Idx));
@@ -1845,7 +1848,10 @@ void OMPClauseReader::VisitOMPScheduleClause(OMPScheduleClause *C) {
   C->setCommaLoc(Reader->ReadSourceLocation(Record, Idx));
 }
 
-void OMPClauseReader::VisitOMPOrderedClause(OMPOrderedClause *) {}
+void OMPClauseReader::VisitOMPOrderedClause(OMPOrderedClause *C) {
+  C->setNumForLoops(Reader->Reader.ReadSubExpr());
+  C->setLParenLoc(Reader->ReadSourceLocation(Record, Idx));
+}
 
 void OMPClauseReader::VisitOMPNowaitClause(OMPNowaitClause *) {}
 
@@ -1964,12 +1970,18 @@ void OMPClauseReader::VisitOMPReductionClause(OMPReductionClause *C) {
 void OMPClauseReader::VisitOMPLinearClause(OMPLinearClause *C) {
   C->setLParenLoc(Reader->ReadSourceLocation(Record, Idx));
   C->setColonLoc(Reader->ReadSourceLocation(Record, Idx));
+  C->setModifier(static_cast<OpenMPLinearClauseKind>(Record[Idx++]));
+  C->setModifierLoc(Reader->ReadSourceLocation(Record, Idx));
   unsigned NumVars = C->varlist_size();
   SmallVector<Expr *, 16> Vars;
   Vars.reserve(NumVars);
   for (unsigned i = 0; i != NumVars; ++i)
     Vars.push_back(Reader->Reader.ReadSubExpr());
   C->setVarRefs(Vars);
+  Vars.clear();
+  for (unsigned i = 0; i != NumVars; ++i)
+    Vars.push_back(Reader->Reader.ReadSubExpr());
+  C->setPrivates(Vars);
   Vars.clear();
   for (unsigned i = 0; i != NumVars; ++i)
     Vars.push_back(Reader->Reader.ReadSubExpr());
@@ -2065,6 +2077,11 @@ void OMPClauseReader::VisitOMPDependClause(OMPDependClause *C) {
   C->setVarRefs(Vars);
 }
 
+void OMPClauseReader::VisitOMPDeviceClause(OMPDeviceClause *C) {
+  C->setDevice(Reader->Reader.ReadSubExpr());
+  C->setLParenLoc(Reader->ReadSourceLocation(Record, Idx));
+}
+
 //===----------------------------------------------------------------------===//
 // OpenMP Directives.
 //===----------------------------------------------------------------------===//
@@ -2107,6 +2124,14 @@ void ASTStmtReader::VisitOMPLoopDirective(OMPLoopDirective *D) {
   for (unsigned i = 0; i < CollapsedNum; ++i)
     Sub.push_back(Reader.ReadSubExpr());
   D->setCounters(Sub);
+  Sub.clear();
+  for (unsigned i = 0; i < CollapsedNum; ++i)
+    Sub.push_back(Reader.ReadSubExpr());
+  D->setPrivateCounters(Sub);
+  Sub.clear();
+  for (unsigned i = 0; i < CollapsedNum; ++i)
+    Sub.push_back(Reader.ReadSubExpr());
+  D->setInits(Sub);
   Sub.clear();
   for (unsigned i = 0; i < CollapsedNum; ++i)
     Sub.push_back(Reader.ReadSubExpr());

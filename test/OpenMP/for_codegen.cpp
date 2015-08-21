@@ -329,14 +329,9 @@ void test_precond() {
   // CHECK: [[A_ADDR:%.+]] = alloca i8,
   // CHECK: [[I_ADDR:%.+]] = alloca i8,
   char a = 0;
-  // CHECK: store i32 0, i32* [[IV_ADDR:%.+]],
-  // CHECK: [[A:%.+]] = load i8, i8* [[A_ADDR]],
-  // CHECK: [[CONV:%.+]] = sext i8 [[A]] to i32
-  // CHECK: [[IV:%.+]] = load i32, i32* [[IV_ADDR]],
-  // CHECK: [[MUL:%.+]] = mul nsw i32 [[IV]], 1
-  // CHECK: [[ADD:%.+]] = add nsw i32 [[CONV]], [[MUL]]
-  // CHECK: [[CONV:%.+]] = trunc i32 [[ADD]] to i8
-  // CHECK: store i8 [[CONV]], i8* [[I_ADDR]],
+  // CHECK: store i8 0,
+  // CHECK: store i32
+  // CHECK: store i8
   // CHECK: [[A:%.+]] = load i8, i8* [[A_ADDR]],
   // CHECK: [[CONV:%.+]] = sext i8 [[A]] to i32
   // CHECK: [[CMP:%.+]] = icmp slt i32 [[CONV]], 10
@@ -409,6 +404,25 @@ void for_with_global_lcv() {
     k = i;
     k = j;
   }
+  char &cnt = i;
+#pragma omp for
+  for (cnt = 0; cnt < 2; ++cnt)
+    k = cnt;
+}
+
+// CHECK-LABEL: for_with_references
+void for_with_references() {
+// CHECK: [[I:%.+]] = alloca i8,
+// CHECK: [[CNT:%.+]] = alloca i8*,
+// CHECK: [[CNT_PRIV:%.+]] = alloca i8,
+// CHECK: call void @__kmpc_for_static_init_4(
+// CHECK-NOT: load i8, i8* [[CNT]],
+// CHECK: call void @__kmpc_for_static_fini(
+  char i = 0;
+  char &cnt = i;
+#pragma omp for
+  for (cnt = 0; cnt < 2; ++cnt)
+    k = cnt;
 }
 
 struct Bool {
@@ -465,6 +479,16 @@ void loop_with_It(It<char> begin, It<char> end) {
 // CHECK-LABEL: loop_with_It
 // CHECK: call i32 @__kmpc_global_thread_num(
 // CHECK: call void @__kmpc_for_static_init_8(
+// CHECK: call void @__kmpc_for_static_fini(
+
+void loop_with_stmt_expr() {
+#pragma omp for
+  for (int i = __extension__({float b = 0;b; }); i < __extension__({double c = 1;c; }); i += __extension__({char d = 1; d; }))
+    ;
+}
+// CHECK-LABEL: loop_with_stmt_expr
+// CHECK: call i32 @__kmpc_global_thread_num(
+// CHECK: call void @__kmpc_for_static_init_4(
 // CHECK: call void @__kmpc_for_static_fini(
 
 #endif // HEADER

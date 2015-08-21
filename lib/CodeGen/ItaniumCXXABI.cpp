@@ -306,17 +306,15 @@ public:
   void emitCXXStructor(const CXXMethodDecl *MD, StructorType Type) override;
 
  private:
-  /// Checks if function has any virtual inline function.
-  bool hasAnyVirtualInlineFunction(const CXXRecordDecl *RD) const {
+   bool hasAnyUsedVirtualInlineFunction(const CXXRecordDecl *RD) const {
     const auto &VtableLayout =
         CGM.getItaniumVTableContext().getVTableLayout(RD);
 
     for (const auto &VtableComponent : VtableLayout.vtable_components()) {
-      if (VtableComponent.getKind() !=
-          VTableComponent::Kind::CK_FunctionPointer)
+      if (!VtableComponent.isUsedFunctionPointerKind())
         continue;
 
-      const auto &Method = VtableComponent.getFunctionDecl();
+      const CXXMethodDecl *Method = VtableComponent.getFunctionDecl();
       if (Method->getCanonicalDecl()->isInlined())
         return true;
     }
@@ -1439,7 +1437,6 @@ llvm::GlobalVariable *ItaniumCXXABI::getAddrOfVTable(const CXXRecordDecl *RD,
   SmallString<256> Name;
   llvm::raw_svector_ostream Out(Name);
   getMangleContext().mangleCXXVTable(RD, Out);
-  Out.flush();
 
   ItaniumVTableContext &VTContext = CGM.getItaniumVTableContext();
   llvm::ArrayType *ArrayType = llvm::ArrayType::get(
@@ -1511,7 +1508,7 @@ bool ItaniumCXXABI::canEmitAvailableExternallyVTable(
   // then we are safe to emit available_externally copy of vtable.
   // FIXME we can still emit a copy of the vtable if we
   // can emit definition of the inline functions.
-  return !hasAnyVirtualInlineFunction(RD);
+  return !hasAnyUsedVirtualInlineFunction(RD);
 }
 static llvm::Value *performTypeAdjustment(CodeGenFunction &CGF,
                                           llvm::Value *Ptr,
@@ -1767,7 +1764,7 @@ static llvm::Constant *getGuardAbortFn(CodeGenModule &CGM,
 }
 
 namespace {
-  struct CallGuardAbort : EHScopeStack::Cleanup {
+  struct CallGuardAbort final : EHScopeStack::Cleanup {
     llvm::GlobalVariable *Guard;
     CallGuardAbort(llvm::GlobalVariable *Guard) : Guard(Guard) {}
 
@@ -1814,7 +1811,6 @@ void ItaniumCXXABI::EmitGuardedInit(CodeGenFunction &CGF,
     {
       llvm::raw_svector_ostream out(guardName);
       getMangleContext().mangleStaticGuardVariable(&D, out);
-      out.flush();
     }
 
     // Create the guard variable with a zero-initializer.
@@ -2038,7 +2034,6 @@ ItaniumCXXABI::getOrCreateThreadLocalWrapper(const VarDecl *VD,
   {
     llvm::raw_svector_ostream Out(WrapperName);
     getMangleContext().mangleItaniumThreadLocalWrapper(VD, Out);
-    Out.flush();
   }
 
   if (llvm::Value *V = CGM.getModule().getNamedValue(WrapperName))
@@ -2079,9 +2074,9 @@ void ItaniumCXXABI::EmitThreadLocalInitFuncs(
     CodeGenFunction(CGM)
         .GenerateCXXGlobalInitFunc(InitFunc, CXXThreadLocalInits, Guard);
   }
-  for (unsigned I = 0, N = CXXThreadLocals.size(); I != N; ++I) {
-    const VarDecl *VD = CXXThreadLocals[I].first;
-    llvm::GlobalVariable *Var = CXXThreadLocals[I].second;
+  for (auto &I : CXXThreadLocals) {
+    const VarDecl *VD = I.first;
+    llvm::GlobalVariable *Var = I.second;
 
     // Some targets require that all access to thread local variables go through
     // the thread wrapper.  This means that we cannot attempt to create a thread
@@ -2094,7 +2089,6 @@ void ItaniumCXXABI::EmitThreadLocalInitFuncs(
     {
       llvm::raw_svector_ostream Out(InitFnName);
       getMangleContext().mangleItaniumThreadLocalInit(VD, Out);
-      Out.flush();
     }
 
     // If we have a definition for the variable, emit the initialization
@@ -2290,7 +2284,6 @@ llvm::GlobalVariable *ItaniumRTTIBuilder::GetAddrOfTypeName(
   SmallString<256> Name;
   llvm::raw_svector_ostream Out(Name);
   CGM.getCXXABI().getMangleContext().mangleCXXRTTIName(Ty, Out);
-  Out.flush();
 
   // We know that the mangled name of the type starts at index 4 of the
   // mangled name of the typename, so we can just index into it in order to
@@ -2312,7 +2305,6 @@ ItaniumRTTIBuilder::GetAddrOfExternalRTTIDescriptor(QualType Ty) {
   SmallString<256> Name;
   llvm::raw_svector_ostream Out(Name);
   CGM.getCXXABI().getMangleContext().mangleCXXRTTI(Ty, Out);
-  Out.flush();
 
   // Look for an existing global.
   llvm::GlobalVariable *GV = CGM.getModule().getNamedGlobal(Name);
@@ -2450,10 +2442,13 @@ static bool ShouldUseExternalRTTIDescriptor(CodeGenModule &CGM,
 
     // FIXME: this may need to be reconsidered if the key function
     // changes.
+    // N.B. We must always emit the RTTI data ourselves if there exists a key
+    // function.
+    bool IsDLLImport = RD->hasAttr<DLLImportAttr>();
     if (CGM.getVTables().isVTableExternal(RD))
-      return true;
+      return IsDLLImport ? false : true;
 
-    if (RD->hasAttr<DLLImportAttr>())
+    if (IsDLLImport)
       return true;
   }
 
@@ -2683,8 +2678,15 @@ static llvm::GlobalVariable::LinkageTypes getTypeInfoLinkage(CodeGenModule &CGM,
       const CXXRecordDecl *RD = cast<CXXRecordDecl>(Record->getDecl());
       if (RD->hasAttr<WeakAttr>())
         return llvm::GlobalValue::WeakODRLinkage;
-      if (RD->isDynamicClass())
-        return CGM.getVTableLinkage(RD);
+      if (RD->isDynamicClass()) {
+        llvm::GlobalValue::LinkageTypes LT = CGM.getVTableLinkage(RD);
+        // MinGW won't export the RTTI information when there is a key function.
+        // Make sure we emit our own copy instead of attempting to dllimport it.
+        if (RD->hasAttr<DLLImportAttr>() &&
+            llvm::GlobalValue::isAvailableExternallyLinkage(LT))
+          LT = llvm::GlobalValue::LinkOnceODRLinkage;
+        return LT;
+      }
     }
 
     return llvm::GlobalValue::LinkOnceODRLinkage;
@@ -2701,7 +2703,6 @@ llvm::Constant *ItaniumRTTIBuilder::BuildTypeInfo(QualType Ty, bool Force) {
   SmallString<256> Name;
   llvm::raw_svector_ostream Out(Name);
   CGM.getCXXABI().getMangleContext().mangleCXXRTTI(Ty, Out);
-  Out.flush();
 
   llvm::GlobalVariable *OldGV = CGM.getModule().getNamedGlobal(Name);
   if (OldGV && !OldGV->isDeclaration()) {
@@ -3364,7 +3365,7 @@ namespace {
   ///     of the caught type, so we have to assume the actual thrown
   ///     exception type might have a throwing destructor, even if the
   ///     caught type's destructor is trivial or nothrow.
-  struct CallEndCatch : EHScopeStack::Cleanup {
+  struct CallEndCatch final : EHScopeStack::Cleanup {
     CallEndCatch(bool MightThrow) : MightThrow(MightThrow) {}
     bool MightThrow;
 

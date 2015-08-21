@@ -82,11 +82,8 @@ namespace clang {
     }
 
     void Initialize(ASTContext &Ctx) override {
-      if (Context) {
-        assert(Context == &Ctx);
-        return;
-      }
-        
+      assert(!Context && "initialized multiple times");
+
       Context = &Ctx;
 
       if (llvm::TimePassesIsEnabled)
@@ -180,7 +177,7 @@ namespace clang {
       Ctx.setDiagnosticHandler(DiagnosticHandler, this);
 
       EmitBackendOutput(Diags, CodeGenOpts, TargetOpts, LangOpts,
-                        C.getTargetInfo().getTargetDescription(),
+                        C.getTargetInfo().getDataLayoutString(),
                         TheModule.get(), Action, AsmOutStream);
 
       Ctx.setInlineAsmDiagnosticHandler(OldHandler, OldContext);
@@ -256,6 +253,10 @@ namespace clang {
         const llvm::DiagnosticInfoOptimizationRemarkMissed &D);
     void OptimizationRemarkHandler(
         const llvm::DiagnosticInfoOptimizationRemarkAnalysis &D);
+    void OptimizationRemarkHandler(
+        const llvm::DiagnosticInfoOptimizationRemarkAnalysisFPCommute &D);
+    void OptimizationRemarkHandler(
+        const llvm::DiagnosticInfoOptimizationRemarkAnalysisAliasing &D);
     void OptimizationFailureHandler(
         const llvm::DiagnosticInfoOptimizationFailure &D);
   };
@@ -333,8 +334,7 @@ void BackendConsumer::InlineAsmDiagHandler2(const llvm::SMDiagnostic &D,
       DiagnosticBuilder B = Diags.Report(Loc, diag::note_fe_inline_asm_here);
       // Convert the SMDiagnostic ranges into SourceRange and attach them
       // to the diagnostic.
-      for (unsigned i = 0, e = D.getRanges().size(); i != e; ++i) {
-        std::pair<unsigned, unsigned> Range = D.getRanges()[i];
+      for (const std::pair<unsigned, unsigned> &Range : D.getRanges()) {
         unsigned Column = D.getColumnNo();
         B << SourceRange(Loc.getLocWithOffset(Range.first - Column),
                          Loc.getLocWithOffset(Range.second - Column));
@@ -492,13 +492,41 @@ void BackendConsumer::OptimizationRemarkHandler(
 
 void BackendConsumer::OptimizationRemarkHandler(
     const llvm::DiagnosticInfoOptimizationRemarkAnalysis &D) {
-  // Optimization analysis remarks are active only if the -Rpass-analysis
-  // flag has a regular expression that matches the name of the pass
-  // name in \p D.
-  if (CodeGenOpts.OptimizationRemarkAnalysisPattern &&
-      CodeGenOpts.OptimizationRemarkAnalysisPattern->match(D.getPassName()))
+  // Optimization analysis remarks are active if the pass name is set to
+  // llvm::DiagnosticInfo::AlwasyPrint or if the -Rpass-analysis flag has a
+  // regular expression that matches the name of the pass name in \p D.
+
+  if (D.getPassName() == llvm::DiagnosticInfo::AlwaysPrint ||
+      (CodeGenOpts.OptimizationRemarkAnalysisPattern &&
+       CodeGenOpts.OptimizationRemarkAnalysisPattern->match(D.getPassName())))
     EmitOptimizationMessage(
         D, diag::remark_fe_backend_optimization_remark_analysis);
+}
+
+void BackendConsumer::OptimizationRemarkHandler(
+    const llvm::DiagnosticInfoOptimizationRemarkAnalysisFPCommute &D) {
+  // Optimization analysis remarks are active if the pass name is set to
+  // llvm::DiagnosticInfo::AlwasyPrint or if the -Rpass-analysis flag has a
+  // regular expression that matches the name of the pass name in \p D.
+
+  if (D.getPassName() == llvm::DiagnosticInfo::AlwaysPrint ||
+      (CodeGenOpts.OptimizationRemarkAnalysisPattern &&
+       CodeGenOpts.OptimizationRemarkAnalysisPattern->match(D.getPassName())))
+    EmitOptimizationMessage(
+        D, diag::remark_fe_backend_optimization_remark_analysis_fpcommute);
+}
+
+void BackendConsumer::OptimizationRemarkHandler(
+    const llvm::DiagnosticInfoOptimizationRemarkAnalysisAliasing &D) {
+  // Optimization analysis remarks are active if the pass name is set to
+  // llvm::DiagnosticInfo::AlwasyPrint or if the -Rpass-analysis flag has a
+  // regular expression that matches the name of the pass name in \p D.
+
+  if (D.getPassName() == llvm::DiagnosticInfo::AlwaysPrint ||
+      (CodeGenOpts.OptimizationRemarkAnalysisPattern &&
+       CodeGenOpts.OptimizationRemarkAnalysisPattern->match(D.getPassName())))
+    EmitOptimizationMessage(
+        D, diag::remark_fe_backend_optimization_remark_analysis_aliasing);
 }
 
 void BackendConsumer::OptimizationFailureHandler(
@@ -553,6 +581,18 @@ void BackendConsumer::DiagnosticHandlerImpl(const DiagnosticInfo &DI) {
     // handler. There is no generic way of emitting them.
     OptimizationRemarkHandler(
         cast<DiagnosticInfoOptimizationRemarkAnalysis>(DI));
+    return;
+  case llvm::DK_OptimizationRemarkAnalysisFPCommute:
+    // Optimization remarks are always handled completely by this
+    // handler. There is no generic way of emitting them.
+    OptimizationRemarkHandler(
+        cast<DiagnosticInfoOptimizationRemarkAnalysisFPCommute>(DI));
+    return;
+  case llvm::DK_OptimizationRemarkAnalysisAliasing:
+    // Optimization remarks are always handled completely by this
+    // handler. There is no generic way of emitting them.
+    OptimizationRemarkHandler(
+        cast<DiagnosticInfoOptimizationRemarkAnalysisAliasing>(DI));
     return;
   case llvm::DK_OptimizationFailure:
     // Optimization failures are always handled completely by this
@@ -735,7 +775,7 @@ void CodeGenAction::ExecuteAction() {
     LLVMContext &Ctx = TheModule->getContext();
     Ctx.setInlineAsmDiagnosticHandler(BitcodeInlineAsmDiagHandler);
     EmitBackendOutput(CI.getDiagnostics(), CI.getCodeGenOpts(), TargetOpts,
-                      CI.getLangOpts(), CI.getTarget().getTargetDescription(),
+                      CI.getLangOpts(), CI.getTarget().getDataLayoutString(),
                       TheModule.get(), BA, OS);
     return;
   }

@@ -67,6 +67,7 @@ static bool hasFeature(StringRef Feature, const LangOptions &LangOpts,
                         .Case("objc_arc", LangOpts.ObjCAutoRefCount)
                         .Case("opencl", LangOpts.OpenCL)
                         .Case("tls", Target.isTLSSupported())
+                        .Case("zvector", LangOpts.ZVector)
                         .Default(Target.hasFeature(Feature));
   if (!HasFeature)
     HasFeature = std::find(LangOpts.ModuleFeatures.begin(),
@@ -136,6 +137,15 @@ std::string Module::getFullModuleName() const {
   }
   
   return Result;
+}
+
+bool Module::fullModuleNameIs(ArrayRef<StringRef> nameParts) const {
+  for (const Module *M = this; M; M = M->Parent) {
+    if (nameParts.empty() || M->Name != nameParts.back())
+      return false;
+    nameParts = nameParts.drop_back();
+  }
+  return nameParts.empty();
 }
 
 Module::DirectoryName Module::getUmbrellaDir() const {

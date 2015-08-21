@@ -75,6 +75,9 @@
 #ifndef OPENMP_DEPEND_KIND
 #define OPENMP_DEPEND_KIND(Name)
 #endif
+#ifndef OPENMP_LINEAR_KIND
+#define OPENMP_LINEAR_KIND(Name)
+#endif
 
 // OpenMP directives.
 OPENMP_DIRECTIVE(threadprivate)
@@ -133,6 +136,7 @@ OPENMP_CLAUSE(update, OMPUpdateClause)
 OPENMP_CLAUSE(capture, OMPCaptureClause)
 OPENMP_CLAUSE(seq_cst, OMPSeqCstClause)
 OPENMP_CLAUSE(depend, OMPDependClause)
+OPENMP_CLAUSE(device, OMPDeviceClause)
 
 // Clauses allowed for OpenMP directive 'parallel'.
 OPENMP_PARALLEL_CLAUSE(if)
@@ -163,6 +167,7 @@ OPENMP_FOR_CLAUSE(collapse)
 OPENMP_FOR_CLAUSE(schedule)
 OPENMP_FOR_CLAUSE(ordered)
 OPENMP_FOR_CLAUSE(nowait)
+OPENMP_FOR_CLAUSE(linear)
 
 // Clauses allowed for directive 'omp for simd'.
 OPENMP_FOR_SIMD_CLAUSE(private)
@@ -210,6 +215,11 @@ OPENMP_DEPEND_KIND(in)
 OPENMP_DEPEND_KIND(out)
 OPENMP_DEPEND_KIND(inout)
 
+// Modifiers for 'linear' clause.
+OPENMP_LINEAR_KIND(val)
+OPENMP_LINEAR_KIND(ref)
+OPENMP_LINEAR_KIND(uval)
+
 // Clauses allowed for OpenMP directive 'parallel for'.
 OPENMP_PARALLEL_FOR_CLAUSE(if)
 OPENMP_PARALLEL_FOR_CLAUSE(num_threads)
@@ -224,6 +234,7 @@ OPENMP_PARALLEL_FOR_CLAUSE(lastprivate)
 OPENMP_PARALLEL_FOR_CLAUSE(collapse)
 OPENMP_PARALLEL_FOR_CLAUSE(schedule)
 OPENMP_PARALLEL_FOR_CLAUSE(ordered)
+OPENMP_PARALLEL_FOR_CLAUSE(linear)
 
 // Clauses allowed for OpenMP directive 'parallel for simd'.
 OPENMP_PARALLEL_FOR_SIMD_CLAUSE(if)
@@ -275,10 +286,12 @@ OPENMP_ATOMIC_CLAUSE(seq_cst)
 // Clauses allowed for OpenMP directive 'target'.
 // TODO More clauses for 'target' directive.
 OPENMP_TARGET_CLAUSE(if)
+OPENMP_TARGET_CLAUSE(device)
 
 // Clauses allowed for OpenMP directive 'target data'.
 // TODO More clauses for 'target data' directive.
 OPENMP_TARGET_DATA_CLAUSE(if)
+OPENMP_TARGET_DATA_CLAUSE(device)
 
 // Clauses allowed for OpenMP directive 'teams'.
 // TODO More clauses for 'teams' directive.
@@ -288,6 +301,7 @@ OPENMP_TEAMS_CLAUSE(firstprivate)
 OPENMP_TEAMS_CLAUSE(shared)
 OPENMP_TEAMS_CLAUSE(reduction)
 
+#undef OPENMP_LINEAR_KIND
 #undef OPENMP_DEPEND_KIND
 #undef OPENMP_SCHEDULE_KIND
 #undef OPENMP_PROC_BIND_KIND

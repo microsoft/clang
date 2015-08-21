@@ -300,6 +300,15 @@ static void insertArgsFromProgramName(StringRef ProgName,
   }
 }
 
+static void getCLEnvVarOptions(std::string &EnvValue, llvm::StringSaver &Saver,
+                               SmallVectorImpl<const char *> &Opts) {
+  llvm::cl::TokenizeWindowsCommandLine(EnvValue, Saver, Opts);
+  // The first instance of '#' should be replaced with '=' in each option.
+  for (const char *Opt : Opts)
+    if (char *NumberSignPtr = const_cast<char *>(::strchr(Opt, '#')))
+      *NumberSignPtr = '=';
+}
+
 static void SetBackdoorDriverOutputsFromEnvVars(Driver &TheDriver) {
   // Handle CC_PRINT_OPTIONS and CC_PRINT_OPTIONS_FILE.
   TheDriver.CCPrintOptions = !!::getenv("CC_PRINT_OPTIONS");
@@ -344,7 +353,7 @@ CreateAndPopulateDiagOpts(ArrayRef<const char *> argv) {
 }
 
 static void SetInstallDir(SmallVectorImpl<const char *> &argv,
-                          Driver &TheDriver) {
+                          Driver &TheDriver, bool CanonicalPrefixes) {
   // Attempt to find the original path used to invoke the driver, to determine
   // the installed path. We do this manually, because we want to support that
   // path being a symlink.
@@ -355,7 +364,11 @@ static void SetInstallDir(SmallVectorImpl<const char *> &argv,
     if (llvm::ErrorOr<std::string> Tmp = llvm::sys::findProgramByName(
             llvm::sys::path::filename(InstalledPath.str())))
       InstalledPath = *Tmp;
-  llvm::sys::fs::make_absolute(InstalledPath);
+
+  // FIXME: We don't actually canonicalize this, we just make it absolute.
+  if (CanonicalPrefixes)
+    llvm::sys::fs::make_absolute(InstalledPath);
+
   InstalledPath = llvm::sys::path::parent_path(InstalledPath);
   if (llvm::sys::fs::exists(InstalledPath.c_str()))
     TheDriver.setInstalledDir(InstalledPath);
@@ -393,7 +406,7 @@ int main(int argc_, const char **argv_) {
   const DriverSuffix *DS = parseDriverSuffix(ProgName);
 
   llvm::BumpPtrAllocator A;
-  llvm::BumpPtrStringSaver Saver(A);
+  llvm::StringSaver Saver(A);
 
   // Parse response files using the GNU syntax, unless we're in CL mode. There
   // are two ways to put clang in CL compatibility mode: argv[0] is either
@@ -441,6 +454,29 @@ int main(int argc_, const char **argv_) {
     }
   }
 
+  // Handle CL and _CL_ which permits additional command line options to be
+  // prepended or appended.
+  if (Tokenizer == &llvm::cl::TokenizeWindowsCommandLine) {
+    // Arguments in "CL" are prepended.
+    llvm::Optional<std::string> OptCL = llvm::sys::Process::GetEnv("CL");
+    if (OptCL.hasValue()) {
+      SmallVector<const char *, 8> PrependedOpts;
+      getCLEnvVarOptions(OptCL.getValue(), Saver, PrependedOpts);
+
+      // Insert right after the program name to prepend to the argument list.
+      argv.insert(argv.begin() + 1, PrependedOpts.begin(), PrependedOpts.end());
+    }
+    // Arguments in "_CL_" are appended.
+    llvm::Optional<std::string> Opt_CL_ = llvm::sys::Process::GetEnv("_CL_");
+    if (Opt_CL_.hasValue()) {
+      SmallVector<const char *, 8> AppendedOpts;
+      getCLEnvVarOptions(Opt_CL_.getValue(), Saver, AppendedOpts);
+
+      // Insert at the end of the argument list to append.
+      argv.append(AppendedOpts.begin(), AppendedOpts.end());
+    }
+  }
+
   std::set<std::string> SavedStrings;
   // Handle CCC_OVERRIDE_OPTIONS, used for editing a command line behind the
   // scenes.
@@ -473,7 +509,7 @@ int main(int argc_, const char **argv_) {
   ProcessWarningOptions(Diags, *DiagOpts, /*ReportDiags=*/false);
 
   Driver TheDriver(Path, llvm::sys::getDefaultTargetTriple(), Diags);
-  SetInstallDir(argv, TheDriver);
+  SetInstallDir(argv, TheDriver, CanonicalPrefixes);
 
   llvm::InitializeAllTargets();
   insertArgsFromProgramName(ProgName, DS, argv, SavedStrings);

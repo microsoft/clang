@@ -920,7 +920,7 @@ sub SetEnv {
     $ENV{$opt} = $Options->{$opt};
   }
   foreach my $opt ('CCC_ANALYZER_STORE_MODEL',
-                    'CCC_ANALYZER_PLUGINS',
+                    'CCC_ANALYZER_CONSTRAINTS_MODEL',
                     'CCC_ANALYZER_INTERNAL_STATS',
                     'CCC_ANALYZER_OUTPUT_FORMAT') {
     my $x = $Options->{$opt};
@@ -1145,10 +1145,21 @@ OPTIONS:
    scan-build to use a specific compiler for *compilation* then you can use
    this option to specify a path to that compiler.
 
+   If the given compiler is a cross compiler, you may also need to provide
+   --analyzer-target option to properly analyze the source code because static
+   analyzer runs as if the code is compiled for the host machine by default.
+
  --use-c++ [compiler path]
  --use-c++=[compiler path]
 
-   This is the same as "-use-cc" but for C++ code.
+   This is the same as "--use-cc" but for C++ code.
+
+ --analyzer-target [target triple name for analysis]
+ --analyzer-target=[target triple name for analysis]
+
+   This provides target triple information to clang static analyzer.
+   It only changes the target for analysis but doesn't change the target of a
+   real compiler given by --use-cc and --use-c++ options.
 
  -v
 
@@ -1462,6 +1473,24 @@ while (@ARGV) {
     next;
   }
 
+  if ($arg =~ /^--analyzer-target(=(.+))?$/) {
+    shift @ARGV;
+    my $AnalyzerTarget;
+
+    if (!defined $2 || $2 eq "") {
+      if (!@ARGV) {
+        DieDiag("'--analyzer-target' option requires a target triple name.\n");
+      }
+      $AnalyzerTarget = shift @ARGV;
+    }
+    else {
+      $AnalyzerTarget = $2;
+    }
+
+    $ENV{"CLANG_ANALYZER_TARGET"} = $AnalyzerTarget;
+    next;
+  }
+
   if ($arg eq "-v") {
     shift @ARGV;
     $Verbose++;
@@ -1617,14 +1646,20 @@ if ($ForceDisplayHelp || $RequestDisplayHelp) {
 }
 
 $ClangCXX = $Clang;
-# Determine operating system under which this copy of Perl was built.
-my $IsWinBuild = ($^O =~/msys|cygwin|MSWin32/);
-if($IsWinBuild) {
-  $ClangCXX =~ s/.exe$/++.exe/;
-}
-else {
-  $ClangCXX =~ s/\-\d+\.\d+$//;
-  $ClangCXX .= "++";
+if ($Clang !~ /\+\+(\.exe)?$/) {
+  # If $Clang holds the name of the clang++ executable then we leave
+  # $ClangCXX and $Clang equal, otherwise construct the name of the clang++
+  # executable from the clang executable name.
+
+  # Determine operating system under which this copy of Perl was built.
+  my $IsWinBuild = ($^O =~/msys|cygwin|MSWin32/);
+  if($IsWinBuild) {
+    $ClangCXX =~ s/.exe$/++.exe/;
+  }
+  else {
+    $ClangCXX =~ s/\-\d+\.\d+$//;
+    $ClangCXX .= "++";
+  }
 }
 
 # Make sure to use "" to handle paths with spaces.

@@ -345,7 +345,7 @@ llvm::Value *CodeGenFunction::GetVTTParameter(GlobalDecl GD,
 
 namespace {
   /// Call the destructor for a direct base class.
-  struct CallBaseDtor : EHScopeStack::Cleanup {
+  struct CallBaseDtor final : EHScopeStack::Cleanup {
     const CXXRecordDecl *BaseClass;
     bool BaseIsVirtual;
     CallBaseDtor(const CXXRecordDecl *Base, bool BaseIsVirtual)
@@ -1369,20 +1369,47 @@ static bool CanSkipVTablePointerInitialization(ASTContext &Context,
 
 // Generates function call for handling object poisoning, passing in
 // references to 'this' and its size as arguments.
+// Disables tail call elimination, to prevent the current stack frame from
+// disappearing from the stack trace.
 static void EmitDtorSanitizerCallback(CodeGenFunction &CGF,
                                       const CXXDestructorDecl *Dtor) {
   const ASTRecordLayout &Layout =
       CGF.getContext().getASTRecordLayout(Dtor->getParent());
 
+  // Nothing to poison
+  if(Layout.getFieldCount() == 0)
+    return;
+
+  // Construct pointer to region to begin poisoning, and calculate poison
+  // size, so that only members declared in this class are poisoned.
+  llvm::Value *OffsetPtr;
+  CharUnits::QuantityType PoisonSize;
+  ASTContext &Context = CGF.getContext();
+
+  llvm::ConstantInt *OffsetSizePtr = llvm::ConstantInt::get(
+      CGF.SizeTy, Context.toCharUnitsFromBits(Layout.getFieldOffset(0)).
+      getQuantity());
+
+  OffsetPtr = CGF.Builder.CreateGEP(CGF.Builder.CreateBitCast(
+      CGF.LoadCXXThis(), CGF.Int8PtrTy), OffsetSizePtr);
+
+  PoisonSize = Layout.getSize().getQuantity() -
+      Context.toCharUnitsFromBits(Layout.getFieldOffset(0)).getQuantity();
+
   llvm::Value *Args[] = {
-      CGF.Builder.CreateBitCast(CGF.LoadCXXThis(), CGF.VoidPtrTy),
-      llvm::ConstantInt::get(CGF.SizeTy, Layout.getSize().getQuantity())};
+    CGF.Builder.CreateBitCast(OffsetPtr, CGF.VoidPtrTy),
+    llvm::ConstantInt::get(CGF.SizeTy, PoisonSize)};
+
   llvm::Type *ArgTypes[] = {CGF.VoidPtrTy, CGF.SizeTy};
 
   llvm::FunctionType *FnType =
       llvm::FunctionType::get(CGF.VoidTy, ArgTypes, false);
   llvm::Value *Fn =
       CGF.CGM.CreateRuntimeFunction(FnType, "__sanitizer_dtor_callback");
+
+  // Disables tail call elimination, to prevent the current stack frame from
+  // disappearing from the stack trace.
+  CGF.CurFn->addFnAttr("disable-tail-calls", "true");
   CGF.EmitNounwindRuntimeCall(Fn, Args);
 }
 
@@ -1464,6 +1491,13 @@ void CodeGenFunction::EmitDestructorBody(FunctionArgList &Args) {
     // the caller's body.
     if (getLangOpts().AppleKext)
       CurFn->addFnAttr(llvm::Attribute::AlwaysInline);
+
+    // Insert memory-poisoning instrumentation, before final clean ups,
+    // to ensure this class's members are protected from invalid access.
+    if (CGM.getCodeGenOpts().SanitizeMemoryUseAfterDtor
+        && SanOpts.has(SanitizerKind::Memory))
+      EmitDtorSanitizerCallback(*this, Dtor);
+
     break;
   }
 
@@ -1473,10 +1507,6 @@ void CodeGenFunction::EmitDestructorBody(FunctionArgList &Args) {
   // Exit the try if applicable.
   if (isTryBody)
     ExitCXXTryStmt(*cast<CXXTryStmt>(Body), true);
-
-  // Insert memory-poisoning instrumentation.
-  if (CGM.getCodeGenOpts().SanitizeMemoryUseAfterDtor)
-    EmitDtorSanitizerCallback(*this, Dtor);
 }
 
 void CodeGenFunction::emitImplicitAssignmentOperatorBody(FunctionArgList &Args) {
@@ -1496,7 +1526,7 @@ void CodeGenFunction::emitImplicitAssignmentOperatorBody(FunctionArgList &Args) 
 
 namespace {
   /// Call the operator delete associated with the current destructor.
-  struct CallDtorDelete : EHScopeStack::Cleanup {
+  struct CallDtorDelete final : EHScopeStack::Cleanup {
     CallDtorDelete() {}
 
     void Emit(CodeGenFunction &CGF, Flags flags) override {
@@ -1507,7 +1537,7 @@ namespace {
     }
   };
 
-  struct CallDtorDeleteConditional : EHScopeStack::Cleanup {
+  struct CallDtorDeleteConditional final : EHScopeStack::Cleanup {
     llvm::Value *ShouldDeleteCondition;
   public:
     CallDtorDeleteConditional(llvm::Value *ShouldDeleteCondition)
@@ -1533,7 +1563,7 @@ namespace {
     }
   };
 
-  class DestroyField  : public EHScopeStack::Cleanup {
+  class DestroyField  final : public EHScopeStack::Cleanup {
     const FieldDecl *field;
     CodeGenFunction::Destroyer *destroyer;
     bool useEHCleanupForArray;
@@ -1903,7 +1933,7 @@ CodeGenFunction::EmitDelegateCXXConstructorCall(const CXXConstructorDecl *Ctor,
 }
 
 namespace {
-  struct CallDelegatingCtorDtor : EHScopeStack::Cleanup {
+  struct CallDelegatingCtorDtor final : EHScopeStack::Cleanup {
     const CXXDestructorDecl *Dtor;
     llvm::Value *Addr;
     CXXDtorType Type;
@@ -1957,7 +1987,7 @@ void CodeGenFunction::EmitCXXDestructorCall(const CXXDestructorDecl *DD,
 }
 
 namespace {
-  struct CallLocalDtor : EHScopeStack::Cleanup {
+  struct CallLocalDtor final : EHScopeStack::Cleanup {
     const CXXDestructorDecl *Dtor;
     llvm::Value *Addr;
 

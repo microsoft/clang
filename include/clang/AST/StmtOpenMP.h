@@ -311,11 +311,26 @@ class OMPLoopDirective : public OMPExecutableDirective {
     return MutableArrayRef<Expr *>(Storage, CollapsedNum);
   }
 
+  /// \brief Get the private counters storage.
+  MutableArrayRef<Expr *> getPrivateCounters() {
+    Expr **Storage = reinterpret_cast<Expr **>(&*std::next(
+        child_begin(), getArraysOffset(getDirectiveKind()) + CollapsedNum));
+    return MutableArrayRef<Expr *>(Storage, CollapsedNum);
+  }
+
+  /// \brief Get the updates storage.
+  MutableArrayRef<Expr *> getInits() {
+    Expr **Storage = reinterpret_cast<Expr **>(
+        &*std::next(child_begin(),
+                    getArraysOffset(getDirectiveKind()) + 2 * CollapsedNum));
+    return MutableArrayRef<Expr *>(Storage, CollapsedNum);
+  }
+
   /// \brief Get the updates storage.
   MutableArrayRef<Expr *> getUpdates() {
     Expr **Storage = reinterpret_cast<Expr **>(
         &*std::next(child_begin(),
-                    getArraysOffset(getDirectiveKind()) + CollapsedNum));
+                    getArraysOffset(getDirectiveKind()) + 3 * CollapsedNum));
     return MutableArrayRef<Expr *>(Storage, CollapsedNum);
   }
 
@@ -323,7 +338,7 @@ class OMPLoopDirective : public OMPExecutableDirective {
   MutableArrayRef<Expr *> getFinals() {
     Expr **Storage = reinterpret_cast<Expr **>(
         &*std::next(child_begin(),
-                    getArraysOffset(getDirectiveKind()) + 2 * CollapsedNum));
+                    getArraysOffset(getDirectiveKind()) + 4 * CollapsedNum));
     return MutableArrayRef<Expr *>(Storage, CollapsedNum);
   }
 
@@ -357,8 +372,9 @@ protected:
   /// \brief Children number.
   static unsigned numLoopChildren(unsigned CollapsedNum,
                                   OpenMPDirectiveKind Kind) {
-    return getArraysOffset(Kind) +
-           3 * CollapsedNum; // Counters, Updates and Finals
+    return getArraysOffset(Kind) + 5 * CollapsedNum; // Counters,
+                                                     // PrivateCounters, Inits,
+                                                     // Updates and Finals
   }
 
   void setIterationVariable(Expr *IV) {
@@ -414,6 +430,8 @@ protected:
     *std::next(child_begin(), NextUpperBoundOffset) = NUB;
   }
   void setCounters(ArrayRef<Expr *> A);
+  void setPrivateCounters(ArrayRef<Expr *> A);
+  void setInits(ArrayRef<Expr *> A);
   void setUpdates(ArrayRef<Expr *> A);
   void setFinals(ArrayRef<Expr *> A);
 
@@ -453,6 +471,10 @@ public:
     Expr *NUB;
     /// \brief Counters Loop counters.
     SmallVector<Expr *, 4> Counters;
+    /// \brief PrivateCounters Loop counters.
+    SmallVector<Expr *, 4> PrivateCounters;
+    /// \brief Expressions for loop counters inits for CodeGen.
+    SmallVector<Expr *, 4> Inits;
     /// \brief Expressions for loop counters update for CodeGen.
     SmallVector<Expr *, 4> Updates;
     /// \brief Final loop counter values for GodeGen.
@@ -484,10 +506,14 @@ public:
       NLB = nullptr;
       NUB = nullptr;
       Counters.resize(Size);
+      PrivateCounters.resize(Size);
+      Inits.resize(Size);
       Updates.resize(Size);
       Finals.resize(Size);
       for (unsigned i = 0; i < Size; ++i) {
         Counters[i] = nullptr;
+        PrivateCounters[i] = nullptr;
+        Inits[i] = nullptr;
         Updates[i] = nullptr;
         Finals[i] = nullptr;
       }
@@ -582,6 +608,18 @@ public:
 
   ArrayRef<Expr *> counters() const {
     return const_cast<OMPLoopDirective *>(this)->getCounters();
+  }
+
+  ArrayRef<Expr *> private_counters() { return getPrivateCounters(); }
+
+  ArrayRef<Expr *> private_counters() const {
+    return const_cast<OMPLoopDirective *>(this)->getPrivateCounters();
+  }
+
+  ArrayRef<Expr *> inits() { return getInits(); }
+
+  ArrayRef<Expr *> inits() const {
+    return const_cast<OMPLoopDirective *>(this)->getInits();
   }
 
   ArrayRef<Expr *> updates() { return getUpdates(); }

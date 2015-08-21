@@ -415,7 +415,7 @@ dash indicates that an operation is not accepted according to a corresponding
 specification.
 
 ============================== ======= ======= ======= =======
-         Opeator               OpenCL  AltiVec   GCC    NEON
+         Operator              OpenCL  AltiVec   GCC    NEON
 ============================== ======= ======= ======= =======
 []                               yes     yes     yes     --
 unary operators +, --            yes     yes     yes     --
@@ -1715,6 +1715,9 @@ The macros ``__ATOMIC_RELAXED``, ``__ATOMIC_CONSUME``, ``__ATOMIC_ACQUIRE``,
 provided, with values corresponding to the enumerators of C11's
 ``memory_order`` enumeration.
 
+(Note that Clang additionally provides GCC-compatible ``__atomic_*``
+builtins)
+
 Low-level ARM exclusive memory builtins
 ---------------------------------------
 
@@ -1990,11 +1993,23 @@ iterations. Full unrolling is only possible if the loop trip count is known at
 compile time. Partial unrolling replicates the loop body within the loop and
 reduces the trip count.
 
-If ``unroll(full)`` is specified the unroller will attempt to fully unroll the
+If ``unroll(enable)`` is specified the unroller will attempt to fully unroll the
 loop if the trip count is known at compile time. If the fully unrolled code size
 is greater than an internal limit the loop will be partially unrolled up to this
-limit. If the loop count is not known at compile time the loop will not be
-unrolled.
+limit. If the trip count is not known at compile time the loop will be partially
+unrolled with a heuristically chosen unroll factor.
+
+.. code-block:: c++
+
+  #pragma clang loop unroll(enable)
+  for(...) {
+    ...
+  }
+
+If ``unroll(full)`` is specified the unroller will attempt to fully unroll the
+loop if the trip count is known at compile time identically to
+``unroll(enable)``. However, with ``unroll(full)`` the loop will not be unrolled
+if the loop count is not known at compile time.
 
 .. code-block:: c++
 
@@ -2006,7 +2021,7 @@ unrolled.
 The unroll count can be specified explicitly with ``unroll_count(_value_)`` where
 _value_ is a positive integer. If this value is greater than the trip count the
 loop will be fully unrolled. Otherwise the loop is partially unrolled subject
-to the same code size limit as with ``unroll(full)``.
+to the same code size limit as with ``unroll(enable)``.
 
 .. code-block:: c++
 
