@@ -107,11 +107,21 @@ template<class I, class C> int foomain(I argc, C **argv) {
   for (int k = 0; k < argc; ++k) ++k;
   #pragma omp simd linear ( // expected-error {{expected expression}} expected-error {{expected ')'}} expected-note {{to match this '('}}
   for (int k = 0; k < argc; ++k) ++k;
+  #pragma omp simd linear (val // expected-error {{use of undeclared identifier 'val'}} expected-error {{expected ')'}} expected-note {{to match this '('}}
+  for (int k = 0; k < argc; ++k) ++k;
+  #pragma omp simd linear (uval( // expected-error {{expected expression}} expected-error 2 {{expected ')'}} expected-note 2 {{to match this '('}}
+  for (int k = 0; k < argc; ++k) ++k;
+  #pragma omp simd linear (ref() // expected-error {{expected expression}} expected-error {{expected ')'}} expected-note {{to match this '('}}
+  for (int k = 0; k < argc; ++k) ++k;
+  #pragma omp simd linear (foo() // expected-error {{expected expression}} expected-error {{expected ')'}} expected-note {{to match this '('}}
+  for (int k = 0; k < argc; ++k) ++k;
   #pragma omp simd linear () // expected-error {{expected expression}}
   for (int k = 0; k < argc; ++k) ++k;
   #pragma omp simd linear (argc // expected-error {{expected ')'}} expected-note {{to match this '('}}
   for (int k = 0; k < argc; ++k) ++k;
-  #pragma omp simd linear (argc, // expected-error {{expected expression}} expected-error {{expected ')'}} expected-note {{to match this '('}}
+  #pragma omp simd linear (val argc // expected-error {{use of undeclared identifier 'val'}} expected-error {{expected ')'}} expected-note {{to match this '('}}
+  for (int k = 0; k < argc; ++k) ++k;
+  #pragma omp simd linear (val(argc, // expected-error {{expected expression}} expected-error 2 {{expected ')'}} expected-note 2 {{to match this '('}}
   for (int k = 0; k < argc; ++k) ++k;
   #pragma omp simd linear (argc > 0 ? argv[1] : argv[2]) // expected-error {{expected variable name}}
   for (int k = 0; k < argc; ++k) ++k;
@@ -121,15 +131,15 @@ template<class I, class C> int foomain(I argc, C **argv) {
   for (int k = 0; k < argc; ++k) ++k;
   // expected-error@+2 {{linear variable with incomplete type 'S1'}}
   // expected-error@+1 {{const-qualified variable cannot be linear}}
-  #pragma omp simd linear (a, b:B::ib)
+  #pragma omp simd linear (val(a, b):B::ib)
   for (int k = 0; k < argc; ++k) ++k;
   #pragma omp simd linear (argv[1]) // expected-error {{expected variable name}}
   for (int k = 0; k < argc; ++k) ++k;
-  #pragma omp simd linear(e, g)
+  #pragma omp simd linear(ref(e, g)) // expected-error 2 {{variable of non-reference type 'int' can be used only with 'val' modifier, but used with 'ref'}}
   for (int k = 0; k < argc; ++k) ++k;
   #pragma omp simd linear(h) // expected-error {{threadprivate or thread local variable cannot be linear}}
   for (int k = 0; k < argc; ++k) ++k;
-  #pragma omp simd linear(i)
+  #pragma omp simd linear(uval(i)) // expected-error {{variable of non-reference type 'int' can be used only with 'val' modifier, but used with 'uval'}}
   for (int k = 0; k < argc; ++k) ++k;
   #pragma omp parallel
   {
@@ -138,7 +148,9 @@ template<class I, class C> int foomain(I argc, C **argv) {
     #pragma omp simd linear(v:i)
     for (int k = 0; k < argc; ++k) { i = k; v += i; }
   }
-  #pragma omp simd linear(j)
+  #pragma omp simd linear(ref(j))
+  for (int k = 0; k < argc; ++k) ++k;
+  #pragma omp simd linear(uval(j))
   for (int k = 0; k < argc; ++k) ++k;
   int v = 0;
   #pragma omp simd linear(v:j)
@@ -154,6 +166,20 @@ double x;
 }
 namespace C {
 using A::x;
+}
+
+void linear_modifiers(int argc) {
+  int &f = argc;
+  #pragma omp simd linear(f)
+  for (int k = 0; k < argc; ++k) ++k;
+  #pragma omp simd linear(val(f))
+  for (int k = 0; k < argc; ++k) ++k;
+  #pragma omp simd linear(uval(f))
+  for (int k = 0; k < argc; ++k) ++k;
+  #pragma omp simd linear(ref(f))
+  for (int k = 0; k < argc; ++k) ++k;
+  #pragma omp simd linear(foo(f)) // expected-error {{expected one of 'ref', val' or 'uval' modifiers}}
+  for (int k = 0; k < argc; ++k) ++k;
 }
 
 int f;
@@ -176,6 +202,12 @@ int main(int argc, char **argv) {
   for (int k = 0; k < argc; ++k) ++k;
   #pragma omp simd linear () // expected-error {{expected expression}}
   for (int k = 0; k < argc; ++k) ++k;
+  #pragma omp simd linear (val // expected-error {{use of undeclared identifier 'val'}} expected-error {{expected ')'}} expected-note {{to match this '('}}
+  for (int k = 0; k < argc; ++k) ++k;
+  #pragma omp simd linear (ref()) // expected-error {{expected expression}}
+  for (int k = 0; k < argc; ++k) ++k;
+  #pragma omp simd linear (foo()) // expected-error {{expected expression}}
+  for (int k = 0; k < argc; ++k) ++k;
   #pragma omp simd linear (argc // expected-error {{expected ')'}} expected-note {{to match this '('}}
   for (int k = 0; k < argc; ++k) ++k;
   #pragma omp simd linear (argc, // expected-error {{expected expression}} expected-error {{expected ')'}} expected-note {{to match this '('}}
@@ -194,24 +226,24 @@ int main(int argc, char **argv) {
   for (int k = 0; k < argc; ++k) ++k;
   // expected-error@+2 {{argument of a linear clause should be of integral or pointer type, not 'S4'}}
   // expected-error@+1 {{argument of a linear clause should be of integral or pointer type, not 'S5'}}
-  #pragma omp simd linear(e, g)
+  #pragma omp simd linear(val(e, g))
   for (int k = 0; k < argc; ++k) ++k;
   #pragma omp simd linear(h, C::x) // expected-error 2 {{threadprivate or thread local variable cannot be linear}}
   for (int k = 0; k < argc; ++k) ++k;
   #pragma omp parallel
   {
     int i;
-    #pragma omp simd linear(i)
+    #pragma omp simd linear(val(i))
     for (int k = 0; k < argc; ++k) ++k;
-    #pragma omp simd linear(i : 4)
+    #pragma omp simd linear(uval(i) : 4) // expected-error {{variable of non-reference type 'int' can be used only with 'val' modifier, but used with 'uval'}}
     for (int k = 0; k < argc; ++k) { ++k; i += 4; }
   }
-  #pragma omp simd linear(j)
+  #pragma omp simd linear(ref(j))
   for (int k = 0; k < argc; ++k) ++k;
   #pragma omp simd linear(i)
   for (int k = 0; k < argc; ++k) ++k;
 
-  foomain<int,char>(argc,argv);
+  foomain<int,char>(argc,argv); // expected-note {{in instantiation of function template specialization 'foomain<int, char>' requested here}}
   return 0;
 }
 

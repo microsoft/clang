@@ -5254,7 +5254,7 @@ OMPClause *Sema::ActOnOpenMPVarListClause(
     SourceLocation StartLoc, SourceLocation LParenLoc, SourceLocation ColonLoc,
     SourceLocation EndLoc, CXXScopeSpec &ReductionIdScopeSpec,
     const DeclarationNameInfo &ReductionId, OpenMPDependClauseKind DepKind,
-    SourceLocation DepLoc) {
+    OpenMPLinearClauseKind LinKind, SourceLocation DepLinLoc) {
   OMPClause *Res = nullptr;
   switch (Kind) {
   case OMPC_private:
@@ -5275,7 +5275,7 @@ OMPClause *Sema::ActOnOpenMPVarListClause(
     break;
   case OMPC_linear:
     Res = ActOnOpenMPLinearClause(VarList, TailExpr, StartLoc, LParenLoc,
-                                  ColonLoc, EndLoc);
+                                  LinKind, DepLinLoc, ColonLoc, EndLoc);
     break;
   case OMPC_aligned:
     Res = ActOnOpenMPAlignedClause(VarList, TailExpr, StartLoc, LParenLoc,
@@ -5291,7 +5291,7 @@ OMPClause *Sema::ActOnOpenMPVarListClause(
     Res = ActOnOpenMPFlushClause(VarList, StartLoc, LParenLoc, EndLoc);
     break;
   case OMPC_depend:
-    Res = ActOnOpenMPDependClause(DepKind, DepLoc, ColonLoc, VarList, StartLoc,
+    Res = ActOnOpenMPDependClause(DepKind, DepLinLoc, ColonLoc, VarList, StartLoc,
                                   LParenLoc, EndLoc);
     break;
   case OMPC_if:
@@ -6313,14 +6313,18 @@ OMPClause *Sema::ActOnOpenMPReductionClause(
       RHSs, ReductionOps);
 }
 
-OMPClause *Sema::ActOnOpenMPLinearClause(ArrayRef<Expr *> VarList, Expr *Step,
-                                         SourceLocation StartLoc,
-                                         SourceLocation LParenLoc,
-                                         SourceLocation ColonLoc,
-                                         SourceLocation EndLoc) {
+OMPClause *Sema::ActOnOpenMPLinearClause(
+    ArrayRef<Expr *> VarList, Expr *Step, SourceLocation StartLoc,
+    SourceLocation LParenLoc, OpenMPLinearClauseKind LinKind,
+    SourceLocation LinLoc, SourceLocation ColonLoc, SourceLocation EndLoc) {
   SmallVector<Expr *, 8> Vars;
   SmallVector<Expr *, 8> Privates;
   SmallVector<Expr *, 8> Inits;
+  if ((!LangOpts.CPlusPlus && LinKind != OMPC_LINEAR_val) ||
+      LinKind == OMPC_LINEAR_unknown) {
+    Diag(LinLoc, diag::err_omp_wrong_linear_modifier) << LangOpts.CPlusPlus;
+    LinKind = OMPC_LINEAR_val;
+  }
   for (auto &RefExpr : VarList) {
     assert(RefExpr && "NULL expr in OpenMP linear clause.");
     if (isa<DependentScopeDeclRefExpr>(RefExpr)) {
@@ -6379,6 +6383,12 @@ OMPClause *Sema::ActOnOpenMPLinearClause(ArrayRef<Expr *> VarList, Expr *Step,
                             diag::err_omp_linear_incomplete_type)) {
       continue;
     }
+    if ((LinKind == OMPC_LINEAR_uval || LinKind == OMPC_LINEAR_ref) &&
+        !QType->isReferenceType()) {
+      Diag(ELoc, diag::err_omp_wrong_linear_modifier_non_reference)
+          << QType << getOpenMPSimpleClauseTypeName(OMPC_linear, LinKind);
+      continue;
+    }
     QType = QType.getNonReferenceType();
 
     // A list item must not be const-qualified.
@@ -6413,7 +6423,12 @@ OMPClause *Sema::ActOnOpenMPLinearClause(ArrayRef<Expr *> VarList, Expr *Step,
         *this, Private, DE->getType().getUnqualifiedType(), DE->getExprLoc());
     // Build var to save initial value.
     VarDecl *Init = buildVarDecl(*this, ELoc, QType, ".linear.start");
-    AddInitializerToDecl(Init, DefaultLvalueConversion(DE).get(),
+    Expr *InitExpr;
+    if (LinKind == OMPC_LINEAR_uval)
+      InitExpr = VD->getInit();
+    else
+      InitExpr = DE;
+    AddInitializerToDecl(Init, DefaultLvalueConversion(InitExpr).get(),
                          /*DirectInit*/ false, /*TypeMayContainAuto*/ false);
     auto InitRef = buildDeclRefExpr(
         *this, Init, DE->getType().getUnqualifiedType(), DE->getExprLoc());
@@ -6459,8 +6474,9 @@ OMPClause *Sema::ActOnOpenMPLinearClause(ArrayRef<Expr *> VarList, Expr *Step,
     }
   }
 
-  return OMPLinearClause::Create(Context, StartLoc, LParenLoc, ColonLoc, EndLoc,
-                                 Vars, Privates, Inits, StepExpr, CalcStepExpr);
+  return OMPLinearClause::Create(Context, StartLoc, LParenLoc, LinKind, LinLoc,
+                                 ColonLoc, EndLoc, Vars, Privates, Inits,
+                                 StepExpr, CalcStepExpr);
 }
 
 static bool FinishOpenMPLinearClause(OMPLinearClause &Clause, DeclRefExpr *IV,
@@ -6480,15 +6496,20 @@ static bool FinishOpenMPLinearClause(OMPLinearClause &Clause, DeclRefExpr *IV,
   bool HasErrors = false;
   auto CurInit = Clause.inits().begin();
   auto CurPrivate = Clause.privates().begin();
+  auto LinKind = Clause.getModifier();
   for (auto &RefExpr : Clause.varlists()) {
     Expr *InitExpr = *CurInit;
 
     // Build privatized reference to the current linear var.
     auto DE = cast<DeclRefExpr>(RefExpr);
-    auto CapturedRef =
-        buildDeclRefExpr(SemaRef, cast<VarDecl>(DE->getDecl()),
-                         DE->getType().getUnqualifiedType(), DE->getExprLoc(),
-                         /*RefersToCapture=*/true);
+    Expr *CapturedRef;
+    if (LinKind == OMPC_LINEAR_uval)
+      CapturedRef = cast<VarDecl>(DE->getDecl())->getInit();
+    else
+      CapturedRef =
+          buildDeclRefExpr(SemaRef, cast<VarDecl>(DE->getDecl()),
+                           DE->getType().getUnqualifiedType(), DE->getExprLoc(),
+                           /*RefersToCapture=*/true);
 
     // Build update: Var = InitExpr + IV * Step
     ExprResult Update =

@@ -2484,7 +2484,6 @@ static void linkSanitizerRuntimeDeps(const ToolChain &TC,
   CmdArgs.push_back("--no-as-needed");
   CmdArgs.push_back("-lpthread");
   CmdArgs.push_back("-lrt");
-  CmdArgs.push_back("-lutil");
   CmdArgs.push_back("-lm");
   // There's no libdl on FreeBSD.
   if (TC.getTriple().getOS() != llvm::Triple::FreeBSD)
@@ -3022,11 +3021,9 @@ ParsePICArgs(const ToolChain &ToolChain, const llvm::Triple &Triple,
   if (PIC && ToolChain.getTriple().isOSDarwin())
     IsPICLevelTwo |= ToolChain.isPICDefault();
 
-  // Note that these flags are trump-cards. Regardless of the order w.r.t. the
-  // PIC or PIE options above, if these show up, PIC is disabled.
+  // This kernel flags are a trump-card: they will disable PIC/PIE
+  // generation, independent of the argument order.
   if (KernelOrKext && (!Triple.isiOS() || Triple.isOSVersionLT(6)))
-    PIC = PIE = false;
-  if (Args.hasArg(options::OPT_static))
     PIC = PIE = false;
 
   if (Arg *A = Args.getLastArg(options::OPT_mdynamic_no_pic)) {
@@ -3063,7 +3060,7 @@ static const char *RelocationModelName(llvm::Reloc::Model Model) {
   case llvm::Reloc::DynamicNoPIC:
     return "dynamic-no-pic";
   }
-  assert(false && "Unknown Reloc::Model kind");
+  llvm_unreachable("Unknown Reloc::Model kind");
 }
 
 static void AddAssemblerKPIC(const ToolChain &ToolChain, const ArgList &Args,
@@ -5617,12 +5614,22 @@ void gcc::Common::ConstructJob(Compilation &C, const JobAction &JA,
   //
   // FIXME: The triple class should directly provide the information we want
   // here.
-  const llvm::Triple::ArchType Arch = getToolChain().getArch();
-  if (Arch == llvm::Triple::x86 || Arch == llvm::Triple::ppc)
+  switch (getToolChain().getArch()) {
+  default:
+    break;
+  case llvm::Triple::x86:
+  case llvm::Triple::ppc:
     CmdArgs.push_back("-m32");
-  else if (Arch == llvm::Triple::x86_64 || Arch == llvm::Triple::ppc64 ||
-           Arch == llvm::Triple::ppc64le)
+    break;
+  case llvm::Triple::x86_64:
+  case llvm::Triple::ppc64:
+  case llvm::Triple::ppc64le:
     CmdArgs.push_back("-m64");
+    break;
+  case llvm::Triple::sparcel:
+    CmdArgs.push_back("-EL");
+    break;
+  }
 
   if (Output.isFilename()) {
     CmdArgs.push_back("-o");
