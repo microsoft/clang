@@ -4188,15 +4188,15 @@ def warn_array_new_too_large : Warning<"array is too large (%0 elements)">,
 // -Wpadded, -Wpacked
 def warn_padded_struct_field : Warning<
   "padding %select{struct|interface|class}0 %1 with %2 "
-  "%select{byte|bit}3%select{|s}4 to align %5">,
+  "%select{byte|bit}3%s2 to align %4">,
   InGroup<Padded>, DefaultIgnore;
 def warn_padded_struct_anon_field : Warning<
   "padding %select{struct|interface|class}0 %1 with %2 "
-  "%select{byte|bit}3%select{|s}4 to align anonymous bit-field">,
+  "%select{byte|bit}3%s2 to align anonymous bit-field">,
   InGroup<Padded>, DefaultIgnore;
 def warn_padded_struct_size : Warning<
-  "padding size of %0 with %1 %select{byte|bit}2%select{|s}3 "
-  "to alignment boundary">, InGroup<Padded>, DefaultIgnore;
+  "padding size of %0 with %1 %select{byte|bit}2%s1 to alignment boundary">,
+  InGroup<Padded>, DefaultIgnore;
 def warn_unnecessary_packed : Warning<
   "packed attribute is unnecessary for %0">, InGroup<Packed>, DefaultIgnore;
 
@@ -7477,8 +7477,6 @@ def err_omp_expected_var_name_or_array_item : Error<
   "expected variable name, array element or array section">;
 def note_omp_task_predetermined_firstprivate_here : Note<
   "predetermined as a firstprivate in a task construct here">;
-def err_omp_task_predetermined_firstprivate_ref_type_arg : Error<
-  "predetermined as a firstprivate in a task construct variable cannot be of reference type %0">;
 def err_omp_threadprivate_incomplete_type : Error<
   "threadprivate variable with incomplete type %0">;
 def err_omp_no_dsa_for_variable : Error<
@@ -7671,6 +7669,8 @@ def err_omp_wrong_linear_modifier : Error<
   "expected %select{'val' modifier|one of 'ref', val' or 'uval' modifiers}0">;
 def err_omp_wrong_linear_modifier_non_reference : Error<
   "variable of non-reference type %0 can be used only with 'val' modifier, but used with '%1'">;
+def err_omp_wrong_simdlen_safelen_values : Error<
+  "the value of 'simdlen' parameter must be less than or equal to the value of the 'safelen' parameter">;
 } // end of OpenMP category
 
 let CategoryName = "Related Result Type Issue" in {
