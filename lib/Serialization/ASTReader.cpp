@@ -8123,14 +8123,9 @@ void ASTReader::finishPendingActions() {
     PendingIncompleteDeclChains.clear();
 
     // Load pending declaration chains.
-    for (unsigned I = 0; I != PendingDeclChains.size(); ++I) {
-      PendingDeclChainsKnown.erase(PendingDeclChains[I]);
+    for (unsigned I = 0; I != PendingDeclChains.size(); ++I)
       loadPendingDeclChain(PendingDeclChains[I]);
-    }
-    assert(PendingDeclChainsKnown.empty());
     PendingDeclChains.clear();
-
-    assert(RedeclsDeserialized.empty() && "some redecls not wired up");
 
     // Make the most recent of the top-level declarations visible.
     for (TopLevelDeclsMap::iterator TLD = TopLevelDecls.begin(),
