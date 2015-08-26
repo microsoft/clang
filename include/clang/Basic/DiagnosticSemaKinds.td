@@ -1977,6 +1977,8 @@ def err_function_concept_not_defined : Error<
   "function concept declaration must be a definition">;
 def err_var_concept_not_initialized : Error<
   "variable concept declaration must be initialized">;
+def err_function_concept_exception_spec : Error<
+  "function concept cannot have exception specification">;
 
 // C++11 char16_t/char32_t
 def warn_cxx98_compat_unicode_type : Warning<
@@ -5792,7 +5794,8 @@ def err_typecheck_bool_condition : Error<
 def err_typecheck_ambiguous_condition : Error<
   "conversion %diff{from $ to $|between types}0,1 is ambiguous">;
 def err_typecheck_nonviable_condition : Error<
-  "no viable conversion%diff{ from $ to $|}0,1">;
+  "no viable conversion%select{%diff{ from $ to $|}1,2|"
+  "%diff{ from returned value of type $ to function return type $|}1,2}0">;
 def err_typecheck_nonviable_condition_incomplete : Error<
   "no viable conversion%diff{ from $ to incomplete type $|}0,1">;
 def err_typecheck_deleted_function : Error<
@@ -7665,6 +7668,21 @@ def err_omp_parent_cancel_region_nowait : Error<
   "parent region for 'omp %select{cancellation point/cancel}0' construct cannot be nowait">;
 def err_omp_parent_cancel_region_ordered : Error<
   "parent region for 'omp %select{cancellation point/cancel}0' construct cannot be ordered">;
+def err_omp_array_section_use : Error<"OpenMP array section is not allowed here">;
+def err_omp_typecheck_section_value : Error<
+  "subscripted value is not an array or pointer">;
+def err_omp_typecheck_section_not_integer : Error<
+  "array section %select{lower bound|length}0 is not an integer">;
+def err_omp_section_function_type : Error<
+  "section of pointer to function type %0">;
+def warn_omp_section_is_char : Warning<"array section %select{lower bound|length}0 is of type 'char'">,
+  InGroup<CharSubscript>, DefaultIgnore;
+def err_omp_section_incomplete_type : Error<
+  "section of pointer to incomplete type %0">;
+def err_omp_section_negative : Error<
+  "section %select{lower bound|length}0 is evaluated to a negative value %1">;
+def err_omp_section_length_undefined : Error<
+  "section length is unspecified and cannot be inferred because subscripted value is %select{not an array|an array of unknown bound}0">;
 def err_omp_wrong_linear_modifier : Error<
   "expected %select{'val' modifier|one of 'ref', val' or 'uval' modifiers}0">;
 def err_omp_wrong_linear_modifier_non_reference : Error<
