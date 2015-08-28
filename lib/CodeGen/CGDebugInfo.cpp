@@ -45,6 +45,7 @@ using namespace clang::CodeGen;
 
 CGDebugInfo::CGDebugInfo(CodeGenModule &CGM)
     : CGM(CGM), DebugKind(CGM.getCodeGenOpts().getDebugInfo()),
+      DebugTypeExtRefs(CGM.getCodeGenOpts().DebugTypeExtRefs),
       DBuilder(CGM.getModule()) {
   CreateCompileUnit();
 }
@@ -1397,8 +1398,21 @@ llvm::DIType *CGDebugInfo::getOrCreateRecordType(QualType RTy,
 
 llvm::DIType *CGDebugInfo::getOrCreateInterfaceType(QualType D,
                                                     SourceLocation Loc) {
+  return getOrCreateStandaloneType(D, Loc);
+}
+
+llvm::DIType *CGDebugInfo::getOrCreateStandaloneType(QualType D,
+                                                     SourceLocation Loc) {
   assert(DebugKind >= CodeGenOptions::LimitedDebugInfo);
+  assert(!D.isNull() && "null type");
   llvm::DIType *T = getOrCreateType(D, getOrCreateFile(Loc));
+  assert(T && "could not create debug info for type");
+
+  // Composite types with UIDs were already retained by DIBuilder
+  // because they are only referenced by name in the IR.
+  if (auto *CTy = dyn_cast<llvm::DICompositeType>(T))
+    if (!CTy->getIdentifier().empty())
+      return T;
   RetainedTypes.push_back(D.getAsOpaquePtr());
   return T;
 }
@@ -3359,9 +3373,9 @@ void CGDebugInfo::finalize() {
 
   // We keep our own list of retained types, because we need to look
   // up the final type in the type cache.
-  for (std::vector<void *>::const_iterator RI = RetainedTypes.begin(),
-         RE = RetainedTypes.end(); RI != RE; ++RI)
-    DBuilder.retainType(cast<llvm::DIType>(TypeCache[*RI]));
+  for (auto &RT : RetainedTypes)
+    if (auto MD = TypeCache[RT])
+      DBuilder.retainType(cast<llvm::DIType>(MD));
 
   DBuilder.finalize();
 }
