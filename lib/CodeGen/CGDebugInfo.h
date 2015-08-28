@@ -52,6 +52,7 @@ class CGDebugInfo {
   friend class SaveAndRestoreLocation;
   CodeGenModule &CGM;
   const CodeGenOptions::DebugInfoKind DebugKind;
+  bool DebugTypeExtRefs;
   llvm::DIBuilder DBuilder;
   llvm::DICompileUnit *TheCU = nullptr;
   SourceLocation CurLoc;
@@ -342,6 +343,9 @@ public:
 
   /// Emit an Objective-C interface type standalone debug info.
   llvm::DIType *getOrCreateInterfaceType(QualType Ty, SourceLocation Loc);
+
+  /// Emit standalone debug info for a type.
+  llvm::DIType *getOrCreateStandaloneType(QualType Ty, SourceLocation Loc);
 
   void completeType(const EnumDecl *ED);
   void completeType(const RecordDecl *RD);
