@@ -1,3 +1,4 @@
+// REQUIRES: x86-registered-target
 // RUN: %clang_cc1 %s -O0 -triple=x86_64-unknown-unknown -target-feature +3dnow -emit-llvm -o - -Werror | FileCheck %s
 // RUN: %clang_cc1 %s -O0 -triple=x86_64-unknown-unknown -target-feature +3dnow -S -o - -Werror | FileCheck %s --check-prefix=CHECK-ASM
 

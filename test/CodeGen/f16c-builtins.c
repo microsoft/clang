@@ -1,3 +1,4 @@
+// REQUIRES: x86-registered-target
 // RUN: %clang_cc1 %s -O0 -triple=x86_64-apple-darwin -target-feature +f16c -emit-llvm -o - -Werror | FileCheck %s
 // RUN: %clang_cc1 %s -O0 -triple=x86_64-apple-darwin -target-feature +f16c -S -o - -Werror | FileCheck %s --check-prefix=CHECK-ASM
 
