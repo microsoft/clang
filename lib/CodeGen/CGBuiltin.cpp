@@ -6414,6 +6414,11 @@ Value *CodeGenFunction::EmitPPCBuiltinExpr(unsigned BuiltinID,
   switch (BuiltinID) {
   default: return nullptr;
 
+  // __builtin_ppc_get_timebase is GCC 4.8+'s PowerPC-specific name for what we
+  // call __builtin_readcyclecounter.
+  case PPC::BI__builtin_ppc_get_timebase:
+    return Builder.CreateCall(CGM.getIntrinsic(Intrinsic::readcyclecounter));
+
   // vec_ld, vec_lvsl, vec_lvsr
   case PPC::BI__builtin_altivec_lvx:
   case PPC::BI__builtin_altivec_lvxl:
@@ -6985,18 +6990,22 @@ Value *CodeGenFunction::EmitNVPTXBuiltinExpr(unsigned BuiltinID,
   case NVPTX::BI__nvvm_atom_max_gen_i:
   case NVPTX::BI__nvvm_atom_max_gen_l:
   case NVPTX::BI__nvvm_atom_max_gen_ll:
+    return MakeBinaryAtomicValue(*this, llvm::AtomicRMWInst::Max, E);
+
   case NVPTX::BI__nvvm_atom_max_gen_ui:
   case NVPTX::BI__nvvm_atom_max_gen_ul:
   case NVPTX::BI__nvvm_atom_max_gen_ull:
-    return MakeBinaryAtomicValue(*this, llvm::AtomicRMWInst::Max, E);
+    return MakeBinaryAtomicValue(*this, llvm::AtomicRMWInst::UMax, E);
 
   case NVPTX::BI__nvvm_atom_min_gen_i:
   case NVPTX::BI__nvvm_atom_min_gen_l:
   case NVPTX::BI__nvvm_atom_min_gen_ll:
+    return MakeBinaryAtomicValue(*this, llvm::AtomicRMWInst::Min, E);
+
   case NVPTX::BI__nvvm_atom_min_gen_ui:
   case NVPTX::BI__nvvm_atom_min_gen_ul:
   case NVPTX::BI__nvvm_atom_min_gen_ull:
-    return MakeBinaryAtomicValue(*this, llvm::AtomicRMWInst::Min, E);
+    return MakeBinaryAtomicValue(*this, llvm::AtomicRMWInst::UMin, E);
 
   case NVPTX::BI__nvvm_atom_cas_gen_i:
   case NVPTX::BI__nvvm_atom_cas_gen_l:
