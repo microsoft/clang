@@ -290,6 +290,8 @@ class Attr {
   // attribute to be applicable. If empty, no language options are required.
   list<LangOpt> LangOpts = [];
   // Any additional text that should be included verbatim in the class.
+  // Note: Any additional data members will leak and should be constructed
+  // externally on the ASTContext.
   code AdditionalMembers = [{}];
   // Any documentation that should be associated with the attribute. Since an
   // attribute may be documented under multiple categories, more than one
@@ -1319,20 +1321,9 @@ def Target : InheritableAttr {
   let Subjects = SubjectList<[Function], ErrorDiag>;
   let Documentation = [TargetDocs];
   let AdditionalMembers = [{
-    StringRef CPU;
-    std::vector<std::string> Features;
-    bool Parsed = false;
-    StringRef getCPU() {
-      if (!Parsed)
-        parse();
-      return CPU;
-    }
-    std::vector<std::string> &getFeatures() {
-      if (!Parsed)
-        parse();
-      return Features;
-    }
-    void parse() {
+    typedef std::pair<std::vector<std::string>, StringRef> ParsedTargetAttr;
+    ParsedTargetAttr parse() const {
+      ParsedTargetAttr Ret;
       SmallVector<StringRef, 1> AttrFeatures;
       getFeaturesStr().split(AttrFeatures, ",");
 
@@ -1352,13 +1343,13 @@ def Target : InheritableAttr {
 
         // While we're here iterating check for a different target cpu.
         if (Feature.startswith("arch="))
-          CPU = Feature.split("=").second.trim();
+          Ret.second = Feature.split("=").second.trim();
         else if (Feature.startswith("no-"))
-          Features.push_back("-" + Feature.split("-").second.str());
+          Ret.first.push_back("-" + Feature.split("-").second.str());
         else
-          Features.push_back("+" + Feature.str());
+          Ret.first.push_back("+" + Feature.str());
       }
-      Parsed = true;
+      return Ret;
     }
   }];
 }
