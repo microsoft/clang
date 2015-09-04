@@ -14014,17 +14014,22 @@ static void CheckForDuplicateEnumValues(Sema &S, ArrayRef<Decl *> Elements,
   }
 }
 
-bool
-Sema::IsValueInFlagEnum(const EnumDecl *ED, const llvm::APInt &Val,
-                        bool AllowMask) const {
-  FlagEnumAttr *FEAttr = ED->getAttr<FlagEnumAttr>();
-  assert(FEAttr && "looking for value in non-flag enum");
+bool Sema::IsValueInFlagEnum(const EnumDecl *ED, const llvm::APInt &Val,
+                             bool AllowMask) const {
+  assert(ED->hasAttr<FlagEnumAttr>() && "looking for value in non-flag enum");
+  assert(ED->isCompleteDefinition() && "expected enum definition");
 
-  llvm::APInt FlagMask = ~FEAttr->getFlagBits();
-  unsigned Width = FlagMask.getBitWidth();
+  auto R = FlagBitsCache.insert(std::make_pair(ED, llvm::APInt()));
+  llvm::APInt &FlagBits = R.first->second;
 
-  // We will try a zero-extended value for the regular check first.
-  llvm::APInt ExtVal = Val.zextOrSelf(Width);
+  if (R.second) {
+    for (auto *E : ED->enumerators()) {
+      const auto &EVal = E->getInitVal();
+      // Only single-bit enumerators introduce new flag values.
+      if (EVal.isPowerOf2())
+        FlagBits = FlagBits.zextOrSelf(EVal.getBitWidth()) | EVal;
+    }
+  }
 
   // A value is in a flag enum if either its bits are a subset of the enum's
   // flag bits (the first condition) or we are allowing masks and the same is
@@ -14034,27 +14039,8 @@ Sema::IsValueInFlagEnum(const EnumDecl *ED, const llvm::APInt &Val,
   // While it's true that any value could be used as a mask, the assumption is
   // that a mask will have all of the insignificant bits set. Anything else is
   // likely a logic error.
-  if (!(FlagMask & ExtVal))
-    return true;
-
-  if (AllowMask) {
-    // Try a one-extended value instead. This can happen if the enum is wider
-    // than the constant used, in C with extensions to allow for wider enums.
-    // The mask will still have the correct behaviour, so we give the user the
-    // benefit of the doubt.
-    //
-    // FIXME: This heuristic can cause weird results if the enum was extended
-    // to a larger type and is signed, because then bit-masks of smaller types
-    // that get extended will fall out of range (e.g. ~0x1u). We currently don't
-    // detect that case and will get a false positive for it. In most cases,
-    // though, it can be fixed by making it a signed type (e.g. ~0x1), so it may
-    // be fine just to accept this as a warning.
-    ExtVal |= llvm::APInt::getHighBitsSet(Width, Width - Val.getBitWidth());
-    if (!(FlagMask & ~ExtVal))
-      return true;
-  }
-
-  return false;
+  llvm::APInt FlagMask = ~FlagBits.zextOrTrunc(Val.getBitWidth());
+  return !(FlagMask & Val) || (AllowMask && !(FlagMask & ~Val));
 }
 
 void Sema::ActOnEnumBody(SourceLocation EnumLoc, SourceLocation LBraceLoc,
@@ -14208,13 +14194,8 @@ void Sema::ActOnEnumBody(SourceLocation EnumLoc, SourceLocation LBraceLoc,
     }
   }
 
-  FlagEnumAttr *FEAttr = Enum->getAttr<FlagEnumAttr>();
-  if (FEAttr)
-    FEAttr->getFlagBits() = llvm::APInt(BestWidth, 0);
-
   // Loop over all of the enumerator constants, changing their types to match
-  // the type of the enum if needed. If we have a flag type, we also prepare the
-  // FlagBits cache.
+  // the type of the enum if needed.
   for (auto *D : Elements) {
     auto *ECD = cast_or_null<EnumConstantDecl>(D);
     if (!ECD) continue;  // Already issued a diagnostic.
@@ -14246,7 +14227,7 @@ void Sema::ActOnEnumBody(SourceLocation EnumLoc, SourceLocation LBraceLoc,
         // enum-specifier, each enumerator has the type of its
         // enumeration.
         ECD->setType(EnumType);
-      goto flagbits;
+      continue;
     } else {
       NewTy = BestType;
       NewWidth = BestWidth;
@@ -14273,36 +14254,25 @@ void Sema::ActOnEnumBody(SourceLocation EnumLoc, SourceLocation LBraceLoc,
       ECD->setType(EnumType);
     else
       ECD->setType(NewTy);
-
-flagbits:
-    // Check to see if we have a constant with exactly one bit set. Note that x
-    // & (x - 1) will be nonzero if and only if x has more than one bit set.
-    if (FEAttr) {
-      llvm::APInt ExtVal = InitVal.zextOrSelf(BestWidth);
-      if (ExtVal != 0 && !(ExtVal & (ExtVal - 1))) {
-        FEAttr->getFlagBits() |= ExtVal;
-      }
-    }
   }
-
-  if (FEAttr) {
-    for (Decl *D : Elements) {
-      EnumConstantDecl *ECD = cast_or_null<EnumConstantDecl>(D);
-      if (!ECD) continue;  // Already issued a diagnostic.
-
-      llvm::APSInt InitVal = ECD->getInitVal();
-      if (InitVal != 0 && !IsValueInFlagEnum(Enum, InitVal, true))
-        Diag(ECD->getLocation(), diag::warn_flag_enum_constant_out_of_range)
-          << ECD << Enum;
-    }
-  }
-
-
 
   Enum->completeDefinition(BestType, BestPromotionType,
                            NumPositiveBits, NumNegativeBits);
 
   CheckForDuplicateEnumValues(*this, Elements, Enum, EnumType);
+
+  if (Enum->hasAttr<FlagEnumAttr>()) {
+    for (Decl *D : Elements) {
+      EnumConstantDecl *ECD = cast_or_null<EnumConstantDecl>(D);
+      if (!ECD) continue;  // Already issued a diagnostic.
+
+      llvm::APSInt InitVal = ECD->getInitVal();
+      if (InitVal != 0 && !InitVal.isPowerOf2() &&
+          !IsValueInFlagEnum(Enum, InitVal, true))
+        Diag(ECD->getLocation(), diag::warn_flag_enum_constant_out_of_range)
+          << ECD << Enum;
+    }
+  }
 
   // Now that the enum type is defined, ensure it's not been underaligned.
   if (Enum->hasAttrs())
