@@ -745,4 +745,26 @@ void foo_fun() {
   // CHECK: store i8* bitcast (void (%class.CA*)* @"\01?OnHelp@CA@@QAEXXZ" to i8*), i8**
   f func = (f)&CA::OnHelp;
 }
+namespace PR24703 {
+struct S;
 
+void f(int S::*&p) {}
+// CHECK-LABEL: define void @"\01?f@PR24703@@YAXAAPQS@1@H@Z"(
+}
+
+namespace ReferenceToMPTWithIncompleteClass {
+struct S;
+struct J;
+struct K;
+extern K *k;
+
+// CHECK-LABEL: @"\01?f@ReferenceToMPTWithIncompleteClass@@YAIAAPQS@1@H@Z"(
+// CHECK: ret i32 12
+unsigned f(int S::*&p) { return sizeof p; }
+
+// CHECK-LABEL: @"\01?g@ReferenceToMPTWithIncompleteClass@@YA_NAAPQJ@1@H0@Z"(
+bool g(int J::*&p, int J::*&q) { return p == q; }
+
+// CHECK-LABEL: @"\01?h@ReferenceToMPTWithIncompleteClass@@YAHAAPQK@1@H@Z"(
+int h(int K::*&p) { return k->*p; }
+}

@@ -1980,6 +1980,9 @@ def err_var_concept_not_initialized : Error<
   "variable concept declaration must be initialized">;
 def err_function_concept_exception_spec : Error<
   "function concept cannot have exception specification">;
+def err_concept_decl_invalid_specifiers : Error<
+  "%select{variable|function}0 concept cannot be declared "
+  "'%select{thread_local|inline|friend|constexpr}1'">;
 
 // C++11 char16_t/char32_t
 def warn_cxx98_compat_unicode_type : Warning<
@@ -6199,6 +6202,12 @@ def warn_atomic_op_has_invalid_memory_order : Warning<
 def err_atomic_load_store_uses_lib : Error<
   "atomic %select{load|store}0 requires runtime support that is not "
   "available for this target">;
+
+def err_nontemporal_builtin_must_be_pointer : Error<
+  "address argument to nontemporal builtin must be a pointer (%0 invalid)">;
+def err_nontemporal_builtin_must_be_pointer_intfltptr_or_vector : Error<
+  "address argument to nontemporal builtin must be a pointer to integer, float, "
+  "pointer, or a vector of such types (%0 invalid)">;
 
 def err_deleted_function_use : Error<"attempt to use a deleted function">;
 
