@@ -1417,7 +1417,8 @@ void CodeGenModule::ConstructAttributeList(const CGFunctionInfo &FI,
 
     if (const FunctionDecl *Fn = dyn_cast<FunctionDecl>(TargetDecl)) {
       const FunctionProtoType *FPT = Fn->getType()->getAs<FunctionProtoType>();
-      if (FPT && FPT->isNothrow(getContext()))
+      if (FPT && !isUnresolvedExceptionSpec(FPT->getExceptionSpecType()) &&
+          FPT->isNothrow(getContext()))
         FuncAttrs.addAttribute(llvm::Attribute::NoUnwind);
       // Don't use [[noreturn]] or _Noreturn for a call to a virtual function.
       // These attributes are not inherited by overloads.
@@ -1586,7 +1587,7 @@ void CodeGenModule::ConstructAttributeList(const CGFunctionInfo &FI,
 
   if (const auto *RefTy = RetTy->getAs<ReferenceType>()) {
     QualType PTy = RefTy->getPointeeType();
-    if (!PTy->isIncompleteType() && PTy->isConstantSizeType())
+    if (getCXXABI().isTypeInfoCalculable(PTy) && PTy->isConstantSizeType())
       RetAttrs.addDereferenceableAttr(getContext().getTypeSizeInChars(PTy)
                                         .getQuantity());
     else if (getContext().getTargetAddressSpace(PTy) == 0)
@@ -1698,7 +1699,7 @@ void CodeGenModule::ConstructAttributeList(const CGFunctionInfo &FI,
 
     if (const auto *RefTy = ParamType->getAs<ReferenceType>()) {
       QualType PTy = RefTy->getPointeeType();
-      if (!PTy->isIncompleteType() && PTy->isConstantSizeType())
+      if (getCXXABI().isTypeInfoCalculable(PTy) && PTy->isConstantSizeType())
         Attrs.addDereferenceableAttr(getContext().getTypeSizeInChars(PTy)
                                        .getQuantity());
       else if (getContext().getTargetAddressSpace(PTy) == 0)
@@ -2439,8 +2440,8 @@ void CodeGenFunction::EmitFunctionEpilog(const CGFunctionInfo &FI,
 
   llvm::Instruction *Ret;
   if (RV) {
-    if (SanOpts.has(SanitizerKind::ReturnsNonnullAttribute)) {
-      if (auto RetNNAttr = CurGD.getDecl()->getAttr<ReturnsNonNullAttr>()) {
+    if (CurCodeDecl && SanOpts.has(SanitizerKind::ReturnsNonnullAttribute)) {
+      if (auto RetNNAttr = CurCodeDecl->getAttr<ReturnsNonNullAttr>()) {
         SanitizerScope SanScope(this);
         llvm::Value *Cond = Builder.CreateICmpNE(
             RV, llvm::Constant::getNullValue(RV->getType()));
