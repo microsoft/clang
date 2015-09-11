@@ -840,6 +840,10 @@ public:
 
   bool getWindowsSDKDir(std::string &path, int &major, int &minor) const;
   bool getWindowsSDKLibraryPath(std::string &path) const;
+  /// \brief Check if Universal CRT should be used if available
+  bool useUniversalCRT(std::string &visualStudioDir) const;
+  bool getUniversalCRTSdkDir(std::string &path, std::string &ucrtVersion) const;
+  bool getUniversalCRTLibraryPath(std::string &path) const;
   bool getVisualStudioInstallDir(std::string &path) const;
   bool getVisualStudioBinariesFolder(const char *clangProgramPath,
                                      std::string &path) const;
@@ -923,7 +927,7 @@ public:
                  const llvm::opt::ArgList &Args);
   ~SHAVEToolChain() override;
 
-  virtual Tool *SelectTool(const JobAction &JA) const override;
+  Tool *SelectTool(const JobAction &JA) const override;
 
 protected:
   Tool *getTool(Action::ActionClass AC) const override;
@@ -960,4 +964,4 @@ private:
 } // end namespace driver
 } // end namespace clang
 
-#endif
+#endif // LLVM_CLANG_LIB_DRIVER_TOOLCHAINS_H

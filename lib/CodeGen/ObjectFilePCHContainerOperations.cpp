@@ -30,6 +30,7 @@
 #include "llvm/Object/ObjectFile.h"
 #include "llvm/Support/TargetRegistry.h"
 #include <memory>
+
 using namespace clang;
 
 #define DEBUG_TYPE "pchcontainer"
@@ -64,13 +65,6 @@ class PCHContainerGenerator : public ASTConsumer {
 
     bool VisitTypeDecl(TypeDecl *D) {
       QualType QualTy = Ctx.getTypeDeclType(D);
-      if (!QualTy.isNull() && CanRepresent(QualTy.getTypePtr()))
-        DI.getOrCreateStandaloneType(QualTy, D->getLocation());
-      return true;
-    }
-
-    bool VisitValueDecl(ValueDecl *D) {
-      QualType QualTy = D->getType();
       if (!QualTy.isNull() && CanRepresent(QualTy.getTypePtr()))
         DI.getOrCreateStandaloneType(QualTy, D->getLocation());
       return true;
@@ -139,7 +133,7 @@ public:
     CodeGenOpts.SplitDwarfFile = OutputFileName;
   }
 
-  virtual ~PCHContainerGenerator() {}
+  ~PCHContainerGenerator() override = default;
 
   void Initialize(ASTContext &Context) override {
     assert(!Ctx && "initialized multiple times");
@@ -254,7 +248,7 @@ public:
   }
 };
 
-} // namespace
+} // anonymous namespace
 
 std::unique_ptr<ASTConsumer>
 ObjectFilePCHContainerWriter::CreatePCHContainerGenerator(
@@ -290,5 +284,4 @@ void ObjectFilePCHContainerReader::ExtractPCH(
   // As a fallback, treat the buffer as a raw AST.
   StreamFile.init((const unsigned char *)Buffer.getBufferStart(),
                   (const unsigned char *)Buffer.getBufferEnd());
-  return;
 }
