@@ -295,6 +295,13 @@ unsigned AnalyzerOptions::getMaxTimesInlineLarge() {
   return MaxTimesInlineLarge.getValue();
 }
 
+unsigned AnalyzerOptions::getMinCFGSizeTreatFunctionsAsLarge() {
+  if (!MinCFGSizeTreatFunctionsAsLarge.hasValue())
+    MinCFGSizeTreatFunctionsAsLarge = getOptionAsInteger(
+      "min-cfg-size-treat-functions-as-large", 14);
+  return MinCFGSizeTreatFunctionsAsLarge.getValue();
+}
+
 unsigned AnalyzerOptions::getMaxNodesPerTopLevelFunction() {
   if (!MaxNodesPerTopLevelFunction.hasValue()) {
     int DefaultValue = 0;
@@ -324,4 +331,10 @@ bool AnalyzerOptions::shouldPrunePaths() {
 
 bool AnalyzerOptions::shouldConditionalizeStaticInitializers() {
   return getBooleanOption("cfg-conditional-static-initializers", true);
+}
+
+bool AnalyzerOptions::shouldInlineLambdas() {
+  if (!InlineLambdas.hasValue())
+    InlineLambdas = getBooleanOption("inline-lambdas", /*Default=*/true);
+  return InlineLambdas.getValue();
 }
