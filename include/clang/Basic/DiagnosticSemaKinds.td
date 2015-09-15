@@ -2375,6 +2375,9 @@ def err_cconv_varargs : Error<
 def warn_cconv_varargs : Warning<
   "%0 calling convention ignored on variadic function">,
   InGroup<IgnoredAttributes>;
+def warn_cconv_structors : Warning<
+  "%0 calling convention ignored on constructor/destructor">,
+  InGroup<IgnoredAttributes>;
 def err_regparm_mismatch : Error<"function declared with regparm(%0) "
   "attribute was previously declared "
   "%plural{0:without the regparm|:with the regparm(%1)}1 attribute">;
@@ -4314,20 +4317,21 @@ def err_bitfield_has_negative_width : Error<
 def err_anon_bitfield_has_negative_width : Error<
   "anonymous bit-field has negative width (%0)">;
 def err_bitfield_has_zero_width : Error<"named bit-field %0 has zero width">;
-def err_bitfield_width_exceeds_type_size : Error<
-  "size of bit-field %0 (%1 bits) exceeds size of its type (%2 bits)">;
-def err_anon_bitfield_width_exceeds_type_size : Error<
-  "size of anonymous bit-field (%0 bits) exceeds size of its type (%1 bits)">;
+def err_bitfield_width_exceeds_type_width : Error<
+  "width of bit-field %0 (%1 bits) exceeds width of its type (%2 bit%s2)">;
+def err_anon_bitfield_width_exceeds_type_width : Error<
+  "width of anonymous bit-field (%0 bits) exceeds width of its type "
+  "(%1 bit%s1)">;
 def err_incorrect_number_of_vector_initializers : Error<
   "number of elements must be either one or match the size of the vector">;
 
 // Used by C++ which allows bit-fields that are wider than the type.
-def warn_bitfield_width_exceeds_type_size: Warning<
-  "size of bit-field %0 (%1 bits) exceeds the size of its type; value will be "
-  "truncated to %2 bits">;
-def warn_anon_bitfield_width_exceeds_type_size : Warning<
-  "size of anonymous bit-field (%0 bits) exceeds size of its type; value will "
-  "be truncated to %1 bits">;
+def warn_bitfield_width_exceeds_type_width: Warning<
+  "width of bit-field %0 (%1 bits) exceeds the width of its type; value will "
+  "be truncated to %2 bit%s2">, InGroup<BitFieldWidth>;
+def warn_anon_bitfield_width_exceeds_type_width : Warning<
+  "width of anonymous bit-field (%0 bits) exceeds width of its type; value "
+  "will be truncated to %1 bit%s1">, InGroup<BitFieldWidth>;
 
 def warn_missing_braces : Warning<
   "suggest braces around initialization of subobject">,
