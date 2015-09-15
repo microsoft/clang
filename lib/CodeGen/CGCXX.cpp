@@ -109,9 +109,6 @@ bool CodeGenModule::TryEmitBaseDestructorAsAlias(const CXXDestructorDecl *D) {
       D->getType()->getAs<FunctionType>()->getCallConv())
     return true;
 
-  if (BaseD->hasAttr<AlwaysInlineAttr>())
-    return true;
-
   return TryEmitDefinitionAsAlias(GlobalDecl(D, Dtor_Base),
                                   GlobalDecl(BaseD, Dtor_Base),
                                   false);
@@ -151,8 +148,8 @@ bool CodeGenModule::TryEmitDefinitionAsAlias(GlobalDecl AliasDecl,
     return false;
 
   // Derive the type for the alias.
-  llvm::PointerType *AliasType
-    = getTypes().GetFunctionType(AliasDecl)->getPointerTo();
+  llvm::Type *AliasValueType = getTypes().GetFunctionType(AliasDecl);
+  llvm::PointerType *AliasType = AliasValueType->getPointerTo();
 
   // Find the referent.  Some aliases might require a bitcast, in
   // which case the caller is responsible for ensuring the soundness
@@ -164,7 +161,14 @@ bool CodeGenModule::TryEmitDefinitionAsAlias(GlobalDecl AliasDecl,
 
   // Instead of creating as alias to a linkonce_odr, replace all of the uses
   // of the aliasee.
-  if (llvm::GlobalValue::isDiscardableIfUnused(Linkage)) {
+  if (llvm::GlobalValue::isDiscardableIfUnused(Linkage) &&
+     (TargetLinkage != llvm::GlobalValue::AvailableExternallyLinkage ||
+      !TargetDecl.getDecl()->hasAttr<AlwaysInlineAttr>())) {
+    // FIXME: An extern template instantiation will create functions with
+    // linkage "AvailableExternally". In libc++, some classes also define
+    // members with attribute "AlwaysInline" and expect no reference to
+    // be generated. It is desirable to reenable this optimisation after
+    // corresponding LLVM changes.
     Replacements[MangledName] = Aliasee;
     return false;
   }
@@ -185,8 +189,8 @@ bool CodeGenModule::TryEmitDefinitionAsAlias(GlobalDecl AliasDecl,
     return true;
 
   // Create the alias with no name.
-  auto *Alias =
-      llvm::GlobalAlias::create(AliasType, Linkage, "", Aliasee, &getModule());
+  auto *Alias = llvm::GlobalAlias::create(AliasValueType, 0, Linkage, "",
+                                          Aliasee, &getModule());
 
   // Switch any previous uses to the alias.
   if (Entry) {

@@ -3322,6 +3322,11 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
       CmdArgs.push_back("-analyzer-checker=security.insecureAPI.mktemp");
       CmdArgs.push_back("-analyzer-checker=security.insecureAPI.mkstemp");
       CmdArgs.push_back("-analyzer-checker=security.insecureAPI.vfork");
+
+      // Default nullability checks.
+      CmdArgs.push_back("-analyzer-checker=nullability.NullPassedToNonnull");
+      CmdArgs.push_back(
+          "-analyzer-checker=nullability.NullReturnedFromNonnull");
     }
 
     // Set the output format. The default is plist, for (lame) historical
@@ -3769,14 +3774,12 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
           Triple.getOS() == llvm::Triple::Solaris)
         CmdArgs.push_back("-gdwarf-2");
       SplitDwarfArg = nullptr;
-    } else if (A->getOption().matches(options::OPT_gdwarf_2))
-      CmdArgs.push_back("-gdwarf-2");
-    else if (A->getOption().matches(options::OPT_gdwarf_3))
-      CmdArgs.push_back("-gdwarf-3");
-    else if (A->getOption().matches(options::OPT_gdwarf_4))
-      CmdArgs.push_back("-gdwarf-4");
-    else if (!A->getOption().matches(options::OPT_g0) &&
-             !A->getOption().matches(options::OPT_ggdb0)) {
+    } else if (A->getOption().matches(options::OPT_gdwarf_2) ||
+               A->getOption().matches(options::OPT_gdwarf_3) ||
+               A->getOption().matches(options::OPT_gdwarf_4)) {
+      A->render(Args, CmdArgs);
+    } else if (!A->getOption().matches(options::OPT_g0) &&
+               !A->getOption().matches(options::OPT_ggdb0)) {
       // Default is dwarf-2 for Darwin, OpenBSD, FreeBSD and Solaris.
       const llvm::Triple &Triple = getToolChain().getTriple();
       if (Triple.isOSDarwin() || Triple.getOS() == llvm::Triple::OpenBSD ||
@@ -4569,8 +4572,9 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   if (!Args.hasFlag(options::OPT_fuse_cxa_atexit,
                     options::OPT_fno_use_cxa_atexit,
                     !IsWindowsCygnus && !IsWindowsGNU &&
-                        getToolChain().getArch() != llvm::Triple::hexagon &&
-                        getToolChain().getArch() != llvm::Triple::xcore) ||
+                    getToolChain().getTriple().getOS() != llvm::Triple::Solaris &&
+                    getToolChain().getArch() != llvm::Triple::hexagon &&
+                    getToolChain().getArch() != llvm::Triple::xcore) ||
       KernelOrKext)
     CmdArgs.push_back("-fno-use-cxa-atexit");
 
@@ -5550,12 +5554,9 @@ void ClangAs::ConstructJob(Compilation &C, const JobAction &JA,
       if (!A->getOption().matches(options::OPT_g0))
         CmdArgs.push_back("-g");
 
-    if (Args.hasArg(options::OPT_gdwarf_2))
-      CmdArgs.push_back("-gdwarf-2");
-    if (Args.hasArg(options::OPT_gdwarf_3))
-      CmdArgs.push_back("-gdwarf-3");
-    if (Args.hasArg(options::OPT_gdwarf_4))
-      CmdArgs.push_back("-gdwarf-4");
+    if (Arg *A = Args.getLastArg(options::OPT_gdwarf_2, options::OPT_gdwarf_3,
+                                 options::OPT_gdwarf_4))
+      A->render(Args, CmdArgs);
 
     // Add the -fdebug-compilation-dir flag if needed.
     addDebugCompDirArg(Args, CmdArgs);
@@ -6942,10 +6943,6 @@ void solaris::Linker::ConstructJob(Compilation &C, const JobAction &JA,
         Args.MakeArgString(getToolChain().GetFilePath("values-Xa.o")));
     CmdArgs.push_back(
         Args.MakeArgString(getToolChain().GetFilePath("crtbegin.o")));
-
-    if (getToolChain().getDriver().CCCIsCXX())
-      CmdArgs.push_back(
-          Args.MakeArgString(getToolChain().GetFilePath("cxa_finalize.o")));
   }
 
   const ToolChain::path_list &Paths = getToolChain().getFilePaths();
@@ -6962,9 +6959,9 @@ void solaris::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     if (getToolChain().getDriver().CCCIsCXX())
       getToolChain().AddCXXStdlibLibArgs(Args, CmdArgs);
     CmdArgs.push_back("-lgcc_s");
+    CmdArgs.push_back("-lc");
     if (!Args.hasArg(options::OPT_shared)) {
       CmdArgs.push_back("-lgcc");
-      CmdArgs.push_back("-lc");
       CmdArgs.push_back("-lm");
     }
   }
