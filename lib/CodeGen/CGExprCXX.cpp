@@ -258,7 +258,7 @@ RValue CodeGenFunction::EmitCXXMemberOrOperatorMemberCallExpr(
   } else {
     if (SanOpts.has(SanitizerKind::CFINVCall) &&
         MD->getParent()->isDynamicClass()) {
-      llvm::Value *VTable = GetVTablePtr(This, Int8PtrTy);
+      llvm::Value *VTable = GetVTablePtr(This, Int8PtrTy, MD->getParent());
       EmitVTablePtrCheckForCall(MD, VTable, CFITCK_NVCall, CE->getLocStart());
     }
 
@@ -1380,6 +1380,14 @@ llvm::Value *CodeGenFunction::EmitCXXNewExpr(const CXXNewExpr *E) {
 
   llvm::Type *elementTy = ConvertTypeForMem(allocType);
   Address result = Builder.CreateElementBitCast(allocation, elementTy);
+
+  // Passing pointer through invariant.group.barrier to avoid propagation of
+  // vptrs information which may be included in previous type.
+  if (CGM.getCodeGenOpts().StrictVTablePointers &&
+      CGM.getCodeGenOpts().OptimizationLevel > 0 &&
+      allocator->isReservedGlobalPlacementOperator())
+    result = Address(Builder.CreateInvariantGroupBarrier(result.getPointer()),
+                     result.getAlignment());
 
   EmitNewInitializer(*this, E, allocType, elementTy, result, numElements,
                      allocSizeWithoutCookie);
