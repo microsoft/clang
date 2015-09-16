@@ -398,6 +398,22 @@ void CodeGenModule::Release() {
     // Indicate that we want CodeView in the metadata.
     getModule().addModuleFlag(llvm::Module::Warning, "CodeView", 1);
   }
+  if (CodeGenOpts.OptimizationLevel > 0 && CodeGenOpts.StrictVTablePointers) {
+    // We don't support LTO with 2 with different StrictVTablePointers
+    // FIXME: we could support it by stripping all the information introduced
+    // by StrictVTablePointers.
+
+    getModule().addModuleFlag(llvm::Module::Error, "StrictVTablePointers",1);
+
+    llvm::Metadata *Ops[2] = {
+              llvm::MDString::get(VMContext, "StrictVTablePointers"),
+              llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                  llvm::Type::getInt32Ty(VMContext), 1))};
+
+    getModule().addModuleFlag(llvm::Module::Require,
+                              "StrictVTablePointersRequirement",
+                              llvm::MDNode::get(VMContext, Ops));
+  }
   if (DebugInfo)
     // We support a single version in the linked module. The LLVM
     // parser will drop debug info with a different version number
@@ -491,14 +507,24 @@ llvm::MDNode *CodeGenModule::getTBAAStructTagInfo(QualType BaseTy,
 /// and struct-path aware TBAA, the tag has the same format:
 /// base type, access type and offset.
 /// When ConvertTypeToTag is true, we create a tag based on the scalar type.
-void CodeGenModule::DecorateInstruction(llvm::Instruction *Inst,
-                                        llvm::MDNode *TBAAInfo,
-                                        bool ConvertTypeToTag) {
+void CodeGenModule::DecorateInstructionWithTBAA(llvm::Instruction *Inst,
+                                                llvm::MDNode *TBAAInfo,
+                                                bool ConvertTypeToTag) {
   if (ConvertTypeToTag && TBAA)
     Inst->setMetadata(llvm::LLVMContext::MD_tbaa,
                       TBAA->getTBAAScalarTagInfo(TBAAInfo));
   else
     Inst->setMetadata(llvm::LLVMContext::MD_tbaa, TBAAInfo);
+}
+
+void CodeGenModule::DecorateInstructionWithInvariantGroup(
+    llvm::Instruction *I, const CXXRecordDecl *RD) {
+  llvm::Metadata *MD = CreateMetadataIdentifierForType(QualType(RD->getTypeForDecl(), 0));
+  auto *MetaDataNode = dyn_cast<llvm::MDNode>(MD);
+  // Check if we have to wrap MDString in MDNode.
+  if (!MetaDataNode)
+    MetaDataNode = llvm::MDNode::get(getLLVMContext(), MD);
+  I->setMetadata("invariant.group", MetaDataNode);
 }
 
 void CodeGenModule::Error(SourceLocation loc, StringRef message) {
