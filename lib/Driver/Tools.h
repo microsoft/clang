@@ -59,7 +59,8 @@ private:
 
   void AddAArch64TargetArgs(const llvm::opt::ArgList &Args,
                             llvm::opt::ArgStringList &CmdArgs) const;
-  void AddARMTargetArgs(const llvm::opt::ArgList &Args,
+  void AddARMTargetArgs(const llvm::Triple &Triple,
+                        const llvm::opt::ArgList &Args,
                         llvm::opt::ArgStringList &CmdArgs,
                         bool KernelOrKext) const;
   void AddARM64TargetArgs(const llvm::opt::ArgList &Args,
@@ -723,8 +724,7 @@ enum class FloatABI {
   Hard,
 };
 
-FloatABI getARMFloatABI(const Driver &D, const llvm::opt::ArgList &Args,
-                        const llvm::Triple &Triple);
+FloatABI getARMFloatABI(const ToolChain &TC, const llvm::opt::ArgList &Args);
 }
 namespace XCore {
 // For XCore, we do not need to instantiate tools for PreProcess, PreCompile and
