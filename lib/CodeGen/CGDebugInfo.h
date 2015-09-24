@@ -32,12 +32,13 @@ class MDNode;
 
 namespace clang {
 class CXXMethodDecl;
-class VarDecl;
-class ObjCInterfaceDecl;
-class ObjCIvarDecl;
 class ClassTemplateSpecializationDecl;
 class GlobalDecl;
+class ModuleMap;
+class ObjCInterfaceDecl;
+class ObjCIvarDecl;
 class UsingDecl;
+class VarDecl;
 
 namespace CodeGen {
 class CodeGenModule;
@@ -55,6 +56,7 @@ class CGDebugInfo {
   bool DebugTypeExtRefs;
   llvm::DIBuilder DBuilder;
   llvm::DICompileUnit *TheCU = nullptr;
+  ModuleMap *ClangModuleMap = nullptr;
   SourceLocation CurLoc;
   llvm::DIType *VTablePtrType = nullptr;
   llvm::DIType *ClassTy = nullptr;
@@ -93,8 +95,8 @@ class CGDebugInfo {
   /// Cache of previously constructed interfaces which may change.
   llvm::SmallVector<ObjCInterfaceCacheEntry, 32> ObjCInterfaceCache;
 
-  /// Cache of references to AST files such as PCHs or modules.
-  llvm::DenseMap<uint64_t, llvm::TrackingMDRef> ModuleRefCache;
+  /// Cache of references to clang modules and precompiled headers.
+  llvm::StringMap<llvm::TrackingMDRef> ModuleRefCache;
 
   /// List of interfaces we want to keep even if orphaned.
   std::vector<void *> RetainedTypes;
@@ -274,6 +276,14 @@ public:
 
   void finalize();
 
+  /// Set the main CU's DwoId field to \p Signature.
+  void setDwoId(uint64_t Signature);
+
+  /// When generating debug information for a clang module or
+  /// precompiled header, this module map will be used to determine
+  /// the module of origin of each Decl.
+  void setModuleMap(ModuleMap &MMap) { ClangModuleMap = &MMap; }
+
   /// Update the current source location. If \arg loc is invalid it is
   /// ignored.
   void setLocation(SourceLocation Loc);
@@ -403,9 +413,11 @@ private:
   /// Get the type from the cache or create a new type if necessary.
   llvm::DIType *getOrCreateType(QualType Ty, llvm::DIFile *Fg);
 
-  /// Get a reference to a clang module.
+  /// Get a reference to a clang module.  If \p CreateSkeletonCU is true,
+  /// this also creates a split dwarf skeleton compile unit.
   llvm::DIModule *
-  getOrCreateModuleRef(ExternalASTSource::ASTSourceDescriptor Mod);
+  getOrCreateModuleRef(ExternalASTSource::ASTSourceDescriptor Mod,
+                       bool CreateSkeletonCU);
 
   /// DebugTypeExtRefs: If \p D originated in a clang module, return it.
   llvm::DIModule *getParentModuleOrNull(const Decl *D);

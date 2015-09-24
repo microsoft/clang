@@ -278,6 +278,16 @@ static llvm::Value *EmitOverflowIntrinsic(CodeGenFunction &CGF,
   return CGF.Builder.CreateExtractValue(Tmp, 0);
 }
 
+Value *CodeGenFunction::EmitVAStartEnd(Value *ArgValue, bool IsStart) {
+  llvm::Type *DestType = Int8PtrTy;
+  if (ArgValue->getType() != DestType)
+    ArgValue =
+        Builder.CreateBitCast(ArgValue, DestType, ArgValue->getName().data());
+
+  Intrinsic::ID inst = IsStart ? Intrinsic::vastart : Intrinsic::vaend;
+  return Builder.CreateCall(CGM.getIntrinsic(inst), ArgValue);
+}
+
 RValue CodeGenFunction::EmitBuiltinExpr(const FunctionDecl *FD,
                                         unsigned BuiltinID, const CallExpr *E,
                                         ReturnValueSlot ReturnValue) {
@@ -301,19 +311,12 @@ RValue CodeGenFunction::EmitBuiltinExpr(const FunctionDecl *FD,
   case Builtin::BI__builtin_stdarg_start:
   case Builtin::BI__builtin_va_start:
   case Builtin::BI__va_start:
-  case Builtin::BI__builtin_va_end: {
-    Value *ArgValue = (BuiltinID == Builtin::BI__va_start)
-                          ? EmitScalarExpr(E->getArg(0))
-                          : EmitVAListRef(E->getArg(0)).getPointer();
-    llvm::Type *DestType = Int8PtrTy;
-    if (ArgValue->getType() != DestType)
-      ArgValue = Builder.CreateBitCast(ArgValue, DestType,
-                                       ArgValue->getName().data());
-
-    Intrinsic::ID inst = (BuiltinID == Builtin::BI__builtin_va_end) ?
-      Intrinsic::vaend : Intrinsic::vastart;
-    return RValue::get(Builder.CreateCall(CGM.getIntrinsic(inst), ArgValue));
-  }
+  case Builtin::BI__builtin_va_end:
+    return RValue::get(
+        EmitVAStartEnd(BuiltinID == Builtin::BI__va_start
+                           ? EmitScalarExpr(E->getArg(0))
+                           : EmitVAListRef(E->getArg(0)).getPointer(),
+                       BuiltinID != Builtin::BI__builtin_va_end));
   case Builtin::BI__builtin_va_copy: {
     Value *DstPtr = EmitVAListRef(E->getArg(0)).getPointer();
     Value *SrcPtr = EmitVAListRef(E->getArg(1)).getPointer();
@@ -1865,38 +1868,52 @@ RValue CodeGenFunction::EmitBuiltinExpr(const FunctionDecl *FD,
   return GetUndefRValue(E->getType());
 }
 
-Value *CodeGenFunction::EmitTargetBuiltinExpr(unsigned BuiltinID,
-                                              const CallExpr *E) {
-  switch (getTarget().getTriple().getArch()) {
+static Value *EmitTargetArchBuiltinExpr(CodeGenFunction *CGF,
+                                        unsigned BuiltinID, const CallExpr *E,
+                                        llvm::Triple::ArchType Arch) {
+  switch (Arch) {
   case llvm::Triple::arm:
   case llvm::Triple::armeb:
   case llvm::Triple::thumb:
   case llvm::Triple::thumbeb:
-    return EmitARMBuiltinExpr(BuiltinID, E);
+    return CGF->EmitARMBuiltinExpr(BuiltinID, E);
   case llvm::Triple::aarch64:
   case llvm::Triple::aarch64_be:
-    return EmitAArch64BuiltinExpr(BuiltinID, E);
+    return CGF->EmitAArch64BuiltinExpr(BuiltinID, E);
   case llvm::Triple::x86:
   case llvm::Triple::x86_64:
-    return EmitX86BuiltinExpr(BuiltinID, E);
+    return CGF->EmitX86BuiltinExpr(BuiltinID, E);
   case llvm::Triple::ppc:
   case llvm::Triple::ppc64:
   case llvm::Triple::ppc64le:
-    return EmitPPCBuiltinExpr(BuiltinID, E);
+    return CGF->EmitPPCBuiltinExpr(BuiltinID, E);
   case llvm::Triple::r600:
   case llvm::Triple::amdgcn:
-    return EmitAMDGPUBuiltinExpr(BuiltinID, E);
+    return CGF->EmitAMDGPUBuiltinExpr(BuiltinID, E);
   case llvm::Triple::systemz:
-    return EmitSystemZBuiltinExpr(BuiltinID, E);
+    return CGF->EmitSystemZBuiltinExpr(BuiltinID, E);
   case llvm::Triple::nvptx:
   case llvm::Triple::nvptx64:
-    return EmitNVPTXBuiltinExpr(BuiltinID, E);
+    return CGF->EmitNVPTXBuiltinExpr(BuiltinID, E);
   case llvm::Triple::wasm32:
   case llvm::Triple::wasm64:
-    return EmitWebAssemblyBuiltinExpr(BuiltinID, E);
+    return CGF->EmitWebAssemblyBuiltinExpr(BuiltinID, E);
   default:
     return nullptr;
   }
+}
+
+Value *CodeGenFunction::EmitTargetBuiltinExpr(unsigned BuiltinID,
+                                              const CallExpr *E) {
+  if (getContext().BuiltinInfo.isAuxBuiltinID(BuiltinID)) {
+    assert(getContext().getAuxTargetInfo() && "Missing aux target info");
+    return EmitTargetArchBuiltinExpr(
+        this, getContext().BuiltinInfo.getAuxBuiltinID(BuiltinID), E,
+        getContext().getAuxTargetInfo()->getTriple().getArch());
+  }
+
+  return EmitTargetArchBuiltinExpr(this, BuiltinID, E,
+                                   getTarget().getTriple().getArch());
 }
 
 static llvm::VectorType *GetNeonType(CodeGenFunction *CGF,
@@ -5896,6 +5913,31 @@ BuildVector(ArrayRef<llvm::Value*> Ops) {
 
 Value *CodeGenFunction::EmitX86BuiltinExpr(unsigned BuiltinID,
                                            const CallExpr *E) {
+  if (BuiltinID == X86::BI__builtin_ms_va_start ||
+      BuiltinID == X86::BI__builtin_ms_va_end)
+    return EmitVAStartEnd(EmitMSVAListRef(E->getArg(0)).getPointer(),
+                          BuiltinID == X86::BI__builtin_ms_va_start);
+  if (BuiltinID == X86::BI__builtin_ms_va_copy) {
+    // Lower this manually. We can't reliably determine whether or not any
+    // given va_copy() is for a Win64 va_list from the calling convention
+    // alone, because it's legal to do this from a System V ABI function.
+    // With opaque pointer types, we won't have enough information in LLVM
+    // IR to determine this from the argument types, either. Best to do it
+    // now, while we have enough information.
+    Address DestAddr = EmitMSVAListRef(E->getArg(0));
+    Address SrcAddr = EmitMSVAListRef(E->getArg(1));
+
+    llvm::Type *BPP = Int8PtrPtrTy;
+
+    DestAddr = Address(Builder.CreateBitCast(DestAddr.getPointer(), BPP, "cp"),
+                       DestAddr.getAlignment());
+    SrcAddr = Address(Builder.CreateBitCast(SrcAddr.getPointer(), BPP, "ap"),
+                      SrcAddr.getAlignment());
+
+    Value *ArgPtr = Builder.CreateLoad(SrcAddr, "ap.val");
+    return Builder.CreateStore(ArgPtr, DestAddr);
+  }
+
   SmallVector<Value*, 4> Ops;
 
   // Find out if any arguments are required to be integer constant expressions.

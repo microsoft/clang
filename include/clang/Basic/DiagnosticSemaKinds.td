@@ -6418,6 +6418,8 @@ let CategoryName = "Inline Assembly Issue" in {
   def err_asm_non_addr_value_in_memory_constraint : Error <
     "reference to a %select{bit-field|vector element|global register variable}0"
     " in asm %select{input|output}1 with a memory constraint '%2'">;
+  def err_asm_input_duplicate_match : Error<
+    "more than one input constraint matches the same output '%0'">;
 
   def warn_asm_label_on_auto_decl : Warning<
     "ignored asm label '%0' on automatic variable">;
@@ -6432,6 +6434,8 @@ let CategoryName = "Inline Assembly Issue" in {
 
   def note_asm_missing_constraint_modifier : Note<
     "use constraint modifier \"%0\"">;
+  def note_asm_input_duplicate_first : Note<
+    "constraint '%0' is already present here">;
 }
 
 let CategoryName = "Semantic Issue" in {
@@ -7102,6 +7106,10 @@ def note_empty_body_on_separate_line : Note<
 
 def err_va_start_used_in_non_variadic_function : Error<
   "'va_start' used in function with fixed args">;
+def err_va_start_used_in_wrong_abi_function : Error<
+  "'va_start' used in %select{System V|Win64}0 ABI function">;
+def err_ms_va_start_used_in_sysv_function : Error<
+  "'__builtin_ms_va_start' used in System V ABI function">;
 def warn_second_parameter_of_va_start_not_last_named_argument : Warning<
   "second parameter of 'va_start' not last named argument">, InGroup<Varargs>;
 def warn_va_start_of_reference_type_is_undefined : Warning<
@@ -7216,6 +7224,8 @@ def err_64_bit_builtin_32_bit_tgt : Error<
   "this builtin is only available on 64-bit targets">;
 def err_ppc_builtin_only_on_pwr7 : Error<
   "this builtin is only valid on POWER7 or later CPUs">;
+def err_x86_builtin_32_bit_tgt : Error<
+  "this builtin is only available on x86-64 targets">;
 
 def err_builtin_longjmp_unsupported : Error<
   "__builtin_longjmp is not supported for the current target">;
@@ -7768,8 +7778,8 @@ def err_module_import_in_extern_c : Error<
   "specification">;
 def note_module_import_in_extern_c : Note<
   "extern \"C\" language linkage specification begins here">;
-def err_module_import_not_at_top_level : Error<
-  "import of module '%0' appears within %1">;
+def err_module_import_not_at_top_level_fatal : Error<
+  "import of module '%0' appears within %1">, DefaultFatal;
 def note_module_import_not_at_top_level : Note<"%0 begins here">;
 def err_module_self_import : Error<
   "import of module '%0' appears within same top-level module '%1'">;

@@ -18,6 +18,9 @@
 #include "clang/Basic/TargetInfo.h"
 #include "clang/CodeGen/BackendUtil.h"
 #include "clang/Frontend/CodeGenOptions.h"
+#include "clang/Frontend/CompilerInstance.h"
+#include "clang/Lex/Preprocessor.h"
+#include "clang/Lex/HeaderSearch.h"
 #include "clang/Serialization/ASTWriter.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Bitcode/BitstreamReader.h"
@@ -40,6 +43,7 @@ class PCHContainerGenerator : public ASTConsumer {
   DiagnosticsEngine &Diags;
   const std::string MainFileName;
   ASTContext *Ctx;
+  ModuleMap &MMap;
   const HeaderSearchOptions &HeaderSearchOpts;
   const PreprocessorOptions &PreprocessorOpts;
   CodeGenOptions CodeGenOpts;
@@ -61,6 +65,13 @@ class PCHContainerGenerator : public ASTConsumer {
     /// Determine whether this type can be represented in DWARF.
     static bool CanRepresent(const Type *Ty) {
       return !Ty->isDependentType() && !Ty->isUndeducedType();
+    }
+
+    bool VisitImportDecl(ImportDecl *D) {
+      auto *Import = cast<ImportDecl>(D);
+      if (!Import->getImportedOwningModule())
+        DI.EmitImportDecl(*Import);
+      return true;
     }
 
     bool VisitTypeDecl(TypeDecl *D) {
@@ -115,22 +126,22 @@ class PCHContainerGenerator : public ASTConsumer {
   };
 
 public:
-  PCHContainerGenerator(DiagnosticsEngine &diags,
-                        const HeaderSearchOptions &HSO,
-                        const PreprocessorOptions &PPO, const TargetOptions &TO,
-                        const LangOptions &LO, const std::string &MainFileName,
+  PCHContainerGenerator(CompilerInstance &CI, const std::string &MainFileName,
                         const std::string &OutputFileName,
                         raw_pwrite_stream *OS,
                         std::shared_ptr<PCHBuffer> Buffer)
-      : Diags(diags), Ctx(nullptr), HeaderSearchOpts(HSO), PreprocessorOpts(PPO),
-        TargetOpts(TO), LangOpts(LO), OS(OS), Buffer(Buffer) {
+      : Diags(CI.getDiagnostics()), Ctx(nullptr),
+        MMap(CI.getPreprocessor().getHeaderSearchInfo().getModuleMap()),
+        HeaderSearchOpts(CI.getHeaderSearchOpts()),
+        PreprocessorOpts(CI.getPreprocessorOpts()),
+        TargetOpts(CI.getTargetOpts()), LangOpts(CI.getLangOpts()), OS(OS),
+        Buffer(Buffer) {
     // The debug info output isn't affected by CodeModel and
     // ThreadModel, but the backend expects them to be nonempty.
     CodeGenOpts.CodeModel = "default";
     CodeGenOpts.ThreadModel = "single";
     CodeGenOpts.DebugTypeExtRefs = true;
     CodeGenOpts.setDebugInfo(CodeGenOptions::FullDebugInfo);
-    CodeGenOpts.SplitDwarfFile = OutputFileName;
   }
 
   ~PCHContainerGenerator() override = default;
@@ -144,6 +155,7 @@ public:
     M->setDataLayout(Ctx->getTargetInfo().getDataLayoutString());
     Builder.reset(new CodeGen::CodeGenModule(
         *Ctx, HeaderSearchOpts, PreprocessorOpts, CodeGenOpts, *M, Diags));
+    Builder->getModuleDebugInfo()->setModuleMap(MMap);
   }
 
   bool HandleTopLevelDecl(DeclGroupRef D) override {
@@ -171,9 +183,8 @@ public:
     if (Diags.hasErrorOccurred())
       return;
 
-    if (CodeGen::CGDebugInfo *DI = Builder->getModuleDebugInfo())
-      if (const RecordDecl *RD = dyn_cast<RecordDecl>(D))
-        DI->completeRequiredType(RD);
+    if (const RecordDecl *RD = dyn_cast<RecordDecl>(D))
+      Builder->getModuleDebugInfo()->completeRequiredType(RD);
   }
 
   /// Emit a container holding the serialized AST.
@@ -189,6 +200,7 @@ public:
 
     M->setTargetTriple(Ctx.getTargetInfo().getTriple().getTriple());
     M->setDataLayout(Ctx.getTargetInfo().getDataLayoutString());
+    Builder->getModuleDebugInfo()->setDwoId(Buffer->Signature);
 
     // Finalize the Builder.
     if (Builder)
@@ -252,13 +264,11 @@ public:
 
 std::unique_ptr<ASTConsumer>
 ObjectFilePCHContainerWriter::CreatePCHContainerGenerator(
-    DiagnosticsEngine &Diags, const HeaderSearchOptions &HSO,
-    const PreprocessorOptions &PPO, const TargetOptions &TO,
-    const LangOptions &LO, const std::string &MainFileName,
+    CompilerInstance &CI, const std::string &MainFileName,
     const std::string &OutputFileName, llvm::raw_pwrite_stream *OS,
     std::shared_ptr<PCHBuffer> Buffer) const {
-  return llvm::make_unique<PCHContainerGenerator>(
-      Diags, HSO, PPO, TO, LO, MainFileName, OutputFileName, OS, Buffer);
+  return llvm::make_unique<PCHContainerGenerator>(CI, MainFileName,
+                                                  OutputFileName, OS, Buffer);
 }
 
 void ObjectFilePCHContainerReader::ExtractPCH(

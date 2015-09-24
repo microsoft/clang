@@ -216,6 +216,9 @@ class ASTContext : public RefCountedBase<ASTContext> {
   /// __builtin_va_list type.
   mutable TypedefDecl *BuiltinVaListDecl;
 
+  /// The typedef for the predefined \c __builtin_ms_va_list type.
+  mutable TypedefDecl *BuiltinMSVaListDecl;
+
   /// \brief The typedef for the predefined \c id type.
   mutable TypedefDecl *ObjCIdDecl;
   
@@ -434,6 +437,7 @@ private:
   friend class CXXRecordDecl;
 
   const TargetInfo *Target;
+  const TargetInfo *AuxTarget;
   clang::PrintingPolicy PrintingPolicy;
   
 public:
@@ -520,7 +524,8 @@ public:
   }
 
   const TargetInfo &getTargetInfo() const { return *Target; }
-  
+  const TargetInfo *getAuxTargetInfo() const { return AuxTarget; }
+
   /// getIntTypeForBitwidth -
   /// sets integer QualTy according to specified details:
   /// bitwidth, signed/unsigned.
@@ -1579,6 +1584,15 @@ public:
   /// for some targets.
   Decl *getVaListTagDecl() const;
 
+  /// Retrieve the C type declaration corresponding to the predefined
+  /// \c __builtin_ms_va_list type.
+  TypedefDecl *getBuiltinMSVaListDecl() const;
+
+  /// Retrieve the type of the \c __builtin_ms_va_list type.
+  QualType getBuiltinMSVaListType() const {
+    return getTypeDeclType(getBuiltinMSVaListDecl());
+  }
+
   /// \brief Return a type with additional \c const, \c volatile, or
   /// \c restrict qualifiers.
   QualType getCVRQualifiedType(QualType T, unsigned CVR) const {
@@ -2403,9 +2417,10 @@ public:
   /// This routine may only be invoked once for a given ASTContext object.
   /// It is normally invoked after ASTContext construction.
   ///
-  /// \param Target The target 
-  void InitBuiltinTypes(const TargetInfo &Target);
-  
+  /// \param Target The target
+  void InitBuiltinTypes(const TargetInfo &Target,
+                        const TargetInfo *AuxTarget = nullptr);
+
 private:
   void InitBuiltinType(CanQualType &R, BuiltinType::Kind K);
 

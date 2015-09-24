@@ -733,8 +733,9 @@ ASTContext::ASTContext(LangOptions &LOpts, SourceManager &SM,
       SubstTemplateTemplateParmPacks(this_()),
       GlobalNestedNameSpecifier(nullptr), Int128Decl(nullptr),
       UInt128Decl(nullptr), Float128StubDecl(nullptr),
-      BuiltinVaListDecl(nullptr), ObjCIdDecl(nullptr), ObjCSelDecl(nullptr),
-      ObjCClassDecl(nullptr), ObjCProtocolClassDecl(nullptr), BOOLDecl(nullptr),
+      BuiltinVaListDecl(nullptr), BuiltinMSVaListDecl(nullptr),
+      ObjCIdDecl(nullptr), ObjCSelDecl(nullptr), ObjCClassDecl(nullptr),
+      ObjCProtocolClassDecl(nullptr), BOOLDecl(nullptr),
       CFConstantStringTypeDecl(nullptr), ObjCInstanceTypeDecl(nullptr),
       FILEDecl(nullptr), jmp_bufDecl(nullptr), sigjmp_bufDecl(nullptr),
       ucontext_tDecl(nullptr), BlockDescriptorType(nullptr),
@@ -742,10 +743,10 @@ ASTContext::ASTContext(LangOptions &LOpts, SourceManager &SM,
       FirstLocalImport(), LastLocalImport(), ExternCContext(nullptr),
       SourceMgr(SM), LangOpts(LOpts),
       SanitizerBL(new SanitizerBlacklist(LangOpts.SanitizerBlacklistFiles, SM)),
-      AddrSpaceMap(nullptr), Target(nullptr), PrintingPolicy(LOpts),
-      Idents(idents), Selectors(sels), BuiltinInfo(builtins),
-      DeclarationNames(*this), ExternalSource(nullptr), Listener(nullptr),
-      Comments(SM), CommentsLoaded(false),
+      AddrSpaceMap(nullptr), Target(nullptr), AuxTarget(nullptr),
+      PrintingPolicy(LOpts), Idents(idents), Selectors(sels),
+      BuiltinInfo(builtins), DeclarationNames(*this), ExternalSource(nullptr),
+      Listener(nullptr), Comments(SM), CommentsLoaded(false),
       CommentCommandTraits(BumpAlloc, LOpts.CommentOpts), LastSDM(nullptr, 0) {
   TUDecl = TranslationUnitDecl::Create(*this);
 }
@@ -955,13 +956,15 @@ void ASTContext::InitBuiltinType(CanQualType &R, BuiltinType::Kind K) {
   Types.push_back(Ty);
 }
 
-void ASTContext::InitBuiltinTypes(const TargetInfo &Target) {
+void ASTContext::InitBuiltinTypes(const TargetInfo &Target,
+                                  const TargetInfo *AuxTarget) {
   assert((!this->Target || this->Target == &Target) &&
          "Incorrect target reinitialization");
   assert(VoidTy.isNull() && "Context reinitialized?");
 
   this->Target = &Target;
-  
+  this->AuxTarget = AuxTarget;
+
   ABI.reset(createCXXABI(Target));
   AddrSpaceMap = getAddressSpaceMap(Target, LangOpts);
   AddrSpaceMapMangling = isAddrSpaceMapManglingEnabled(Target, LangOpts);
@@ -6039,10 +6042,19 @@ ObjCInterfaceDecl *ASTContext::getObjCProtocolDecl() const {
 // __builtin_va_list Construction Functions
 //===----------------------------------------------------------------------===//
 
-static TypedefDecl *CreateCharPtrBuiltinVaListDecl(const ASTContext *Context) {
-  // typedef char* __builtin_va_list;
+static TypedefDecl *CreateCharPtrNamedVaListDecl(const ASTContext *Context,
+                                                 StringRef Name) {
+  // typedef char* __builtin[_ms]_va_list;
   QualType T = Context->getPointerType(Context->CharTy);
-  return Context->buildImplicitTypedef(T, "__builtin_va_list");
+  return Context->buildImplicitTypedef(T, Name);
+}
+
+static TypedefDecl *CreateMSVaListDecl(const ASTContext *Context) {
+  return CreateCharPtrNamedVaListDecl(Context, "__builtin_ms_va_list");
+}
+
+static TypedefDecl *CreateCharPtrBuiltinVaListDecl(const ASTContext *Context) {
+  return CreateCharPtrNamedVaListDecl(Context, "__builtin_va_list");
 }
 
 static TypedefDecl *CreateVoidPtrBuiltinVaListDecl(const ASTContext *Context) {
@@ -6376,6 +6388,13 @@ Decl *ASTContext::getVaListTagDecl() const {
     (void)getBuiltinVaListDecl();
 
   return VaListTagDecl;
+}
+
+TypedefDecl *ASTContext::getBuiltinMSVaListDecl() const {
+  if (!BuiltinMSVaListDecl)
+    BuiltinMSVaListDecl = CreateMSVaListDecl(this);
+
+  return BuiltinMSVaListDecl;
 }
 
 void ASTContext::setObjCConstantStringInterface(ObjCInterfaceDecl *Decl) {

@@ -830,6 +830,7 @@ void ASTStmtReader::VisitVAArgExpr(VAArgExpr *E) {
   E->setWrittenTypeInfo(GetTypeSourceInfo(Record, Idx));
   E->setBuiltinLoc(ReadSourceLocation(Record, Idx));
   E->setRParenLoc(ReadSourceLocation(Record, Idx));
+  E->setIsMicrosoftABI(Record[Idx++]);
 }
 
 void ASTStmtReader::VisitAddrLabelExpr(AddrLabelExpr *E) {
@@ -2316,6 +2317,8 @@ void ASTStmtReader::VisitOMPCancellationPointDirective(
 
 void ASTStmtReader::VisitOMPCancelDirective(OMPCancelDirective *D) {
   VisitStmt(D);
+  // The NumClauses field was read in ReadStmtFromStream.
+  ++Idx;
   VisitOMPExecutableDirective(D);
   D->setCancelRegion(static_cast<OpenMPDirectiveKind>(Record[Idx++]));
 }
@@ -2937,7 +2940,8 @@ Stmt *ASTReader::ReadStmtFromStream(ModuleFile &F) {
       break;
 
     case STMT_OMP_CANCEL_DIRECTIVE:
-      S = OMPCancelDirective::CreateEmpty(Context, Empty);
+      S = OMPCancelDirective::CreateEmpty(
+          Context, Record[ASTStmtReader::NumStmtFields], Empty);
       break;
 
     case EXPR_CXX_OPERATOR_CALL:

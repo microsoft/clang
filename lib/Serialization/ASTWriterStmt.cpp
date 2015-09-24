@@ -771,6 +771,7 @@ void ASTStmtWriter::VisitVAArgExpr(VAArgExpr *E) {
   Writer.AddTypeSourceInfo(E->getWrittenTypeInfo(), Record);
   Writer.AddSourceLocation(E->getBuiltinLoc(), Record);
   Writer.AddSourceLocation(E->getRParenLoc(), Record);
+  Record.push_back(E->isMicrosoftABI());
   Code = serialization::EXPR_VA_ARG;
 }
 
@@ -2168,6 +2169,7 @@ void ASTStmtWriter::VisitOMPCancellationPointDirective(
 
 void ASTStmtWriter::VisitOMPCancelDirective(OMPCancelDirective *D) {
   VisitStmt(D);
+  Record.push_back(D->getNumClauses());
   VisitOMPExecutableDirective(D);
   Record.push_back(D->getCancelRegion());
   Code = serialization::STMT_OMP_CANCEL_DIRECTIVE;

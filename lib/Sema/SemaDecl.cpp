@@ -5515,6 +5515,12 @@ static bool isIncompleteDeclExternC(Sema &S, const T *D) {
     // In C++, the overloadable attribute negates the effects of extern "C".
     if (!D->isInExternCContext() || D->template hasAttr<OverloadableAttr>())
       return false;
+
+    // So do CUDA's host/device attributes if overloading is enabled.
+    if (S.getLangOpts().CUDA && S.getLangOpts().CUDATargetOverloads &&
+        (D->template hasAttr<CUDADeviceAttr>() ||
+         D->template hasAttr<CUDAHostAttr>()))
+      return false;
   }
   return D->isExternC();
 }
@@ -11284,6 +11290,18 @@ void Sema::AddKnownFunctionAttributes(FunctionDecl *FD) {
       FD->addAttr(NoThrowAttr::CreateImplicit(Context, FD->getLocation()));
     if (Context.BuiltinInfo.isConst(BuiltinID) && !FD->hasAttr<ConstAttr>())
       FD->addAttr(ConstAttr::CreateImplicit(Context, FD->getLocation()));
+    if (getLangOpts().CUDA && getLangOpts().CUDATargetOverloads &&
+        Context.BuiltinInfo.isTSBuiltin(BuiltinID) &&
+        !FD->hasAttr<CUDADeviceAttr>() && !FD->hasAttr<CUDAHostAttr>()) {
+      // Assign appropriate attribute depending on CUDA compilation
+      // mode and the target builtin belongs to. E.g. during host
+      // compilation, aux builtins are __device__, the rest are __host__.
+      if (getLangOpts().CUDAIsDevice !=
+          Context.BuiltinInfo.isAuxBuiltinID(BuiltinID))
+        FD->addAttr(CUDADeviceAttr::CreateImplicit(Context, FD->getLocation()));
+      else
+        FD->addAttr(CUDAHostAttr::CreateImplicit(Context, FD->getLocation()));
+    }
   }
 
   IdentifierInfo *Name = FD->getIdentifier();
@@ -14368,12 +14386,15 @@ static void checkModuleImportContext(Sema &S, Module *M,
   while (isa<LinkageSpecDecl>(DC))
     DC = DC->getParent();
   if (!isa<TranslationUnitDecl>(DC)) {
-    S.Diag(ImportLoc, diag::err_module_import_not_at_top_level)
-      << M->getFullModuleName() << DC;
+    S.Diag(ImportLoc, diag::err_module_import_not_at_top_level_fatal)
+        << M->getFullModuleName() << DC;
     S.Diag(cast<Decl>(DC)->getLocStart(),
-           diag::note_module_import_not_at_top_level)
-      << DC;
+           diag::note_module_import_not_at_top_level) << DC;
   }
+}
+
+void Sema::diagnoseMisplacedModuleImport(Module *M, SourceLocation ImportLoc) {
+  return checkModuleImportContext(*this, M, ImportLoc, CurContext);
 }
 
 DeclResult Sema::ActOnModuleImport(SourceLocation AtLoc, 
@@ -14530,7 +14551,7 @@ void Sema::ActOnPragmaWeakAlias(IdentifierInfo* Name,
                                     LookupOrdinaryName);
   WeakInfo W = WeakInfo(Name, NameLoc);
 
-  if (PrevDecl) {
+  if (PrevDecl && (isa<FunctionDecl>(PrevDecl) || isa<VarDecl>(PrevDecl))) {
     if (!PrevDecl->hasAttr<AliasAttr>())
       if (NamedDecl *ND = dyn_cast<NamedDecl>(PrevDecl))
         DeclApplyPragmaWeak(TUScope, ND, W);

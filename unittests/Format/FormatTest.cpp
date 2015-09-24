@@ -756,6 +756,9 @@ TEST_F(FormatTest, ShortCaseLabels) {
                "case 7:\n"
                "  // comment\n"
                "  return;\n"
+               "case 8:\n"
+               "  x = 8; // comment\n"
+               "  break;\n"
                "default: y = 1; break;\n"
                "}",
                Style);
@@ -8536,6 +8539,10 @@ TEST_F(FormatTest, AlignConsecutiveAssignments) {
                "method();\n"
                "int oneTwoThree = 123;\n"
                "int oneTwo      = 12;",
+               Alignment);
+  verifyFormat("int oneTwoThree = 123;\n"
+               "int oneTwo      = 12;\n"
+               "method();\n",
                Alignment);
   verifyFormat("int oneTwoThree = 123; // comment\n"
                "int oneTwo      = 12;  // comment",

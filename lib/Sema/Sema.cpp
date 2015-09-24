@@ -249,6 +249,12 @@ void Sema::Initialize() {
     }
   }
 
+  if (PP.getTargetInfo().hasBuiltinMSVaList()) {
+    DeclarationName MSVaList = &Context.Idents.get("__builtin_ms_va_list");
+    if (IdResolver.begin(MSVaList) == IdResolver.end())
+      PushOnScopeChains(Context.getBuiltinMSVaListDecl(), TUScope);
+  }
+
   DeclarationName BuiltinVaList = &Context.Idents.get("__builtin_va_list");
   if (IdResolver.begin(BuiltinVaList) == IdResolver.end())
     PushOnScopeChains(Context.getBuiltinVaListDecl(), TUScope);
@@ -721,8 +727,15 @@ void Sema::ActOnEndOfTranslationUnit() {
     if (WeakID.second.getUsed())
       continue;
 
-    Diag(WeakID.second.getLocation(), diag::warn_weak_identifier_undeclared)
-        << WeakID.first;
+    Decl *PrevDecl = LookupSingleName(TUScope, WeakID.first, SourceLocation(),
+                                      LookupOrdinaryName);
+    if (PrevDecl != nullptr &&
+        !(isa<FunctionDecl>(PrevDecl) || isa<VarDecl>(PrevDecl)))
+      Diag(WeakID.second.getLocation(), diag::warn_attribute_wrong_decl_type)
+          << "'weak'" << ExpectedVariableOrFunction;
+    else
+      Diag(WeakID.second.getLocation(), diag::warn_weak_identifier_undeclared)
+          << WeakID.first;
   }
 
   if (LangOpts.CPlusPlus11 &&
