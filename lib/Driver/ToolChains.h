@@ -157,6 +157,38 @@ public:
 protected:
   GCCInstallationDetector GCCInstallation;
 
+  // \brief A class to find a viable CUDA installation
+
+  class CudaInstallationDetector {
+    bool IsValid;
+    std::string CudaInstallPath;
+    std::string CudaLibPath;
+    std::string CudaLibDevicePath;
+    std::string CudaIncludePath;
+
+  public:
+    CudaInstallationDetector() : IsValid(false) {}
+    void init(const Driver &D, const llvm::Triple &TargetTriple,
+              const llvm::opt::ArgList &Args);
+
+    /// \brief Check whether we detected a valid Cuda install.
+    bool isValid() const { return IsValid; }
+    /// \brief Print information about the detected CUDA installation.
+    void print(raw_ostream &OS) const;
+
+    /// \brief Get the detected Cuda installation path.
+    StringRef getInstallPath() const { return CudaInstallPath; }
+    /// \brief Get the detected Cuda Include path.
+    StringRef getIncludePath() const { return CudaIncludePath; }
+    /// \brief Get the detected Cuda library path.
+    StringRef getLibPath() const { return CudaLibPath; }
+    /// \brief Get the detected Cuda device library path.
+    StringRef getLibDevicePath() const { return CudaLibDevicePath; }
+    /// \brief Get libdevice file for given architecture
+  };
+
+  CudaInstallationDetector CudaInstallation;
+
 public:
   Generic_GCC(const Driver &D, const llvm::Triple &Triple,
               const llvm::opt::ArgList &Args);
@@ -839,7 +871,9 @@ public:
       const llvm::opt::ArgList &DriverArgs,
       llvm::opt::ArgStringList &CC1Args) const override;
 
-  bool getWindowsSDKDir(std::string &path, int &major, int &minor) const;
+  bool getWindowsSDKDir(std::string &path, int &major,
+                        std::string &windowsSDKIncludeVersion,
+                        std::string &windowsSDKLibVersion) const;
   bool getWindowsSDKLibraryPath(std::string &path) const;
   /// \brief Check if Universal CRT should be used if available
   bool useUniversalCRT(std::string &visualStudioDir) const;
@@ -857,7 +891,9 @@ protected:
   void AddSystemIncludeWithSubfolder(const llvm::opt::ArgList &DriverArgs,
                                      llvm::opt::ArgStringList &CC1Args,
                                      const std::string &folder,
-                                     const char *subfolder) const;
+                                     const Twine &subfolder1,
+                                     const Twine &subfolder2 = "",
+                                     const Twine &subfolder3 = "") const;
 
   Tool *buildLinker() const override;
   Tool *buildAssembler() const override;
@@ -964,6 +1000,27 @@ private:
   bool SupportsProfiling() const override;
   void addClangTargetOptions(const llvm::opt::ArgList &DriverArgs,
                              llvm::opt::ArgStringList &CC1Args) const override;
+};
+
+class LLVM_LIBRARY_VISIBILITY PS4CPU : public Generic_ELF {
+public:
+  PS4CPU(const Driver &D, const llvm::Triple &Triple,
+         const llvm::opt::ArgList &Args);
+
+  bool IsMathErrnoDefault() const override { return false; }
+  bool IsObjCNonFragileABIDefault() const override { return true; }
+  bool HasNativeLLVMSupport() const override;
+  bool isPICDefault() const override;
+
+  unsigned GetDefaultStackProtectorLevel(bool KernelOrKext) const override {
+    return 2; // SSPStrong
+  }
+
+  SanitizerMask getSupportedSanitizers() const override;
+
+protected:
+  Tool *buildAssembler() const override;
+  Tool *buildLinker() const override;
 };
 
 } // end namespace toolchains

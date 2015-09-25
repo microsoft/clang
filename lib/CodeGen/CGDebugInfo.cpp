@@ -1676,7 +1676,11 @@ llvm::DIType *CGDebugInfo::CreateType(const ObjCInterfaceType *Ty,
 llvm::DIModule *
 CGDebugInfo::getOrCreateModuleRef(ExternalASTSource::ASTSourceDescriptor Mod,
                                   bool CreateSkeletonCU) {
-  auto &ModRef = ModuleRefCache[Mod.FullModuleName];
+  // Use the Module pointer as the key into the cache. This is a
+  // nullptr if the "Module" is a PCH, which is safe because we don't
+  // support chained PCH debug info, so there can only be a single PCH.
+  const Module *M = Mod.getModuleOrNull();
+  auto &ModRef = ModuleCache[M];
   if (ModRef)
     return cast<llvm::DIModule>(ModRef);
 
@@ -1703,19 +1707,25 @@ CGDebugInfo::getOrCreateModuleRef(ExternalASTSource::ASTSourceDescriptor Mod,
     }
   }
 
-  if (CreateSkeletonCU) {
+  bool IsRootModule = M ? !M->Parent : true;
+  if (CreateSkeletonCU && IsRootModule) {
     llvm::DIBuilder DIB(CGM.getModule());
-    DIB.createCompileUnit(TheCU->getSourceLanguage(), Mod.FullModuleName,
-                          Mod.Path, TheCU->getProducer(), true, StringRef(), 0,
-                          Mod.ASTFile, llvm::DIBuilder::FullDebug,
-                          Mod.Signature);
+    DIB.createCompileUnit(TheCU->getSourceLanguage(), Mod.getModuleName(),
+                          Mod.getPath(), TheCU->getProducer(), true,
+                          StringRef(), 0, Mod.getASTFile(),
+                          llvm::DIBuilder::FullDebug, Mod.getSignature());
     DIB.finalize();
   }
-  llvm::DIModule *M =
-      DBuilder.createModule(TheCU, Mod.FullModuleName, ConfigMacros, Mod.Path,
-                            CGM.getHeaderSearchOpts().Sysroot);
-  ModRef.reset(M);
-  return M;
+  llvm::DIModule *Parent =
+      IsRootModule ? nullptr
+                   : getOrCreateModuleRef(
+                         ExternalASTSource::ASTSourceDescriptor(*M->Parent),
+                         CreateSkeletonCU);
+  llvm::DIModule *DIMod =
+      DBuilder.createModule(Parent, Mod.getModuleName(), ConfigMacros,
+                            Mod.getPath(), CGM.getHeaderSearchOpts().Sysroot);
+  ModRef.reset(DIMod);
+  return DIMod;
 }
 
 llvm::DIType *CGDebugInfo::CreateTypeDefinition(const ObjCInterfaceType *Ty,

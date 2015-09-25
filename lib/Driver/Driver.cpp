@@ -215,7 +215,7 @@ DerivedArgList *Driver::TranslateInputArgs(const InputArgList &Args) const {
       DAL->AddFlagArg(A, Opts->getOption(options::OPT_Z_Xlinker__no_demangle));
 
       // Add the remaining values as Xlinker arguments.
-      for (const StringRef Val : A->getValues())
+      for (StringRef Val : A->getValues())
         if (Val != "--no-demangle")
           DAL->AddSeparateArg(A, Opts->getOption(options::OPT_Xlinker), Val);
 
@@ -259,7 +259,7 @@ DerivedArgList *Driver::TranslateInputArgs(const InputArgList &Args) const {
     // Pick up inputs via the -- option.
     if (A->getOption().matches(options::OPT__DASH_DASH)) {
       A->claim();
-      for (const StringRef Val : A->getValues())
+      for (StringRef Val : A->getValues())
         DAL->append(MakeInputArg(*DAL, Opts, Val));
       continue;
     }
@@ -2253,6 +2253,9 @@ const ToolChain &Driver::getToolChain(const ArgList &Args,
       break;
     case llvm::Triple::CUDA:
       TC = new toolchains::CudaToolChain(*this, Target, Args);
+      break;
+    case llvm::Triple::PS4:
+      TC = new toolchains::PS4CPU(*this, Target, Args);
       break;
     default:
       // Of these targets, Hexagon is the only one that might have
