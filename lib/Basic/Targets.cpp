@@ -83,8 +83,28 @@ public:
   }
 
 };
-} // end anonymous namespace
 
+// CloudABI Target
+template <typename Target>
+class CloudABITargetInfo : public OSTargetInfo<Target> {
+protected:
+  void getOSDefines(const LangOptions &Opts, const llvm::Triple &Triple,
+                    MacroBuilder &Builder) const override {
+    Builder.defineMacro("__CloudABI__");
+    Builder.defineMacro("__ELF__");
+
+    // CloudABI uses ISO/IEC 10646:2012 for wchar_t, char16_t and char32_t.
+    Builder.defineMacro("__STDC_ISO_10646__", "201206L");
+    Builder.defineMacro("__STDC_UTF_16__");
+    Builder.defineMacro("__STDC_UTF_32__");
+  }
+
+public:
+  CloudABITargetInfo(const llvm::Triple &Triple)
+      : OSTargetInfo<Target>(Triple) {
+    this->UserLabelPrefix = "";
+  }
+};
 
 static void getDarwinDefines(MacroBuilder &Builder, const LangOptions &Opts,
                              const llvm::Triple &Triple,
@@ -150,8 +170,7 @@ static void getDarwinDefines(MacroBuilder &Builder, const LangOptions &Opts,
     Str[3] = '0' + (Rev / 10);
     Str[4] = '0' + (Rev % 10);
     Str[5] = '\0';
-    Builder.defineMacro("__ENVIRONMENT_IPHONE_OS_VERSION_MIN_REQUIRED__",
-                        Str);
+    Builder.defineMacro("__ENVIRONMENT_IPHONE_OS_VERSION_MIN_REQUIRED__", Str);
   } else if (Triple.isMacOSX()) {
     // Note that the Driver allows versions which aren't representable in the
     // define (because we only get a single digit for the minor and micro
@@ -184,29 +203,6 @@ static void getDarwinDefines(MacroBuilder &Builder, const LangOptions &Opts,
 
   PlatformMinVersion = VersionTuple(Maj, Min, Rev);
 }
-
-namespace {
-// CloudABI Target
-template <typename Target>
-class CloudABITargetInfo : public OSTargetInfo<Target> {
-protected:
-  void getOSDefines(const LangOptions &Opts, const llvm::Triple &Triple,
-                    MacroBuilder &Builder) const override {
-    Builder.defineMacro("__CloudABI__");
-    Builder.defineMacro("__ELF__");
-
-    // CloudABI uses ISO/IEC 10646:2012 for wchar_t, char16_t and char32_t.
-    Builder.defineMacro("__STDC_ISO_10646__", "201206L");
-    Builder.defineMacro("__STDC_UTF_16__");
-    Builder.defineMacro("__STDC_UTF_32__");
-  }
-
-public:
-  CloudABITargetInfo(const llvm::Triple &Triple)
-      : OSTargetInfo<Target>(Triple) {
-    this->UserLabelPrefix = "";
-  }
-};
 
 template<typename Target>
 class DarwinTargetInfo : public OSTargetInfo<Target> {
@@ -735,7 +731,6 @@ public:
   }
 };
 
-namespace {
 // WebAssembly target
 template <typename Target>
 class WebAssemblyOSTargetInfo : public OSTargetInfo<Target> {
@@ -762,7 +757,6 @@ public:
     this->TheCXXABI.set(TargetCXXABI::WebAssembly);
   }
 };
-} // end anonymous namespace
 
 //===----------------------------------------------------------------------===//
 // Specific target implementations.
@@ -3719,7 +3713,6 @@ public:
     Builder.defineMacro("_M_IX86", "600");
   }
 };
-} // end anonymous namespace
 
 static void addCygMingDefines(const LangOptions &Opts, MacroBuilder &Builder) {
   // Mingw and cygwin define __declspec(a) to __attribute__((a)).  Clang supports
@@ -3751,7 +3744,6 @@ static void addMinGWDefines(const LangOptions &Opts, MacroBuilder &Builder) {
   addCygMingDefines(Opts, Builder);
 }
 
-namespace {
 // x86-32 MinGW target
 class MinGWX86_32TargetInfo : public WindowsX86_32TargetInfo {
 public:
@@ -4121,6 +4113,7 @@ class ARMTargetInfo : public TargetInfo {
 
   unsigned CRC : 1;
   unsigned Crypto : 1;
+  unsigned DSP : 1;
   unsigned Unaligned : 1;
 
   enum {
@@ -4472,6 +4465,7 @@ public:
     FPU = 0;
     CRC = 0;
     Crypto = 0;
+    DSP = 0;
     Unaligned = 1;
     SoftFloat = SoftFloatABI = false;
     HWDiv = 0;
@@ -4507,6 +4501,8 @@ public:
         CRC = 1;
       } else if (Feature == "+crypto") {
         Crypto = 1;
+      } else if (Feature == "+t2dsp") {
+        DSP = 1;
       } else if (Feature == "+fp-only-sp") {
         HW_FP_remove |= HW_FP_DP | HW_FP_HP;
       } else if (Feature == "+strict-align") {
@@ -4742,25 +4738,19 @@ public:
     }
 
     // ACLE 6.4.7 DSP instructions
-    bool hasDSP = false;
-    bool is5EOrAbove = (ArchVersion >= 6 ||
-                       (ArchVersion == 5 && CPUAttr.count('E')));
-    // FIXME: We are not getting all 32-bit ARM architectures
-    bool is32Bit = (!isThumb() || supportsThumb2());
-    if (is5EOrAbove && is32Bit && (CPUProfile != "M" || CPUAttr  == "7EM")) {
+    if (DSP) {
       Builder.defineMacro("__ARM_FEATURE_DSP", "1");
-      hasDSP = true;
     }
 
     // ACLE 6.4.8 Saturation instructions
-    bool hasSAT = false;
+    bool SAT = false;
     if ((ArchVersion == 6 && CPUProfile != "M") || ArchVersion > 6 ) {
       Builder.defineMacro("__ARM_FEATURE_SAT", "1");
-      hasSAT = true;
+      SAT = true;
     }
 
     // ACLE 6.4.6 Q (saturation) flag
-    if (hasDSP || hasSAT)
+    if (DSP || SAT)
       Builder.defineMacro("__ARM_FEATURE_QBIT", "1");
   }
 
@@ -7127,15 +7117,12 @@ protected:
   }
 };
 
-} // end anonymous namespace.
-
 const Builtin::Info Le64TargetInfo::BuiltinInfo[] = {
 #define BUILTIN(ID, TYPE, ATTRS)                                               \
   { #ID, TYPE, ATTRS, nullptr, ALL_LANGUAGES, nullptr },
 #include "clang/Basic/BuiltinsLe64.def"
 };
 
-namespace {
 static const unsigned SPIRAddrSpaceMap[] = {
     1, // opencl_global
     3, // opencl_local
@@ -7288,9 +7275,7 @@ const Builtin::Info XCoreTargetInfo::BuiltinInfo[] = {
   { #ID, TYPE, ATTRS, HEADER, ALL_LANGUAGES, nullptr },
 #include "clang/Basic/BuiltinsXCore.def"
 };
-} // end anonymous namespace.
 
-namespace {
 // x86_32 Android target
 class AndroidX86_32TargetInfo : public LinuxTargetInfo<X86_32TargetInfo> {
 public:
@@ -7301,9 +7286,7 @@ public:
     LongDoubleFormat = &llvm::APFloat::IEEEdouble;
   }
 };
-} // end anonymous namespace
 
-namespace {
 // x86_64 Android target
 class AndroidX86_64TargetInfo : public LinuxTargetInfo<X86_64TargetInfo> {
 public:
@@ -7317,7 +7300,6 @@ public:
   }
 };
 } // end anonymous namespace
-
 
 //===----------------------------------------------------------------------===//
 // Driver code
