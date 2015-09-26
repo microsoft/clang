@@ -2066,6 +2066,8 @@ void OMPClauseEnqueue::VisitOMPCaptureClause(const OMPCaptureClause *) {}
 
 void OMPClauseEnqueue::VisitOMPSeqCstClause(const OMPSeqCstClause *) {}
 
+void OMPClauseEnqueue::VisitOMPThreadsClause(const OMPThreadsClause *) {}
+
 void OMPClauseEnqueue::VisitOMPDeviceClause(const OMPDeviceClause *C) {
   Visitor->AddStmt(C->getDevice());
 }
@@ -6410,7 +6412,7 @@ extern "C" {
 
 static CXAvailabilityKind getCursorAvailabilityForDecl(const Decl *D) {
   if (isa<FunctionDecl>(D) && cast<FunctionDecl>(D)->isDeleted())
-    return CXAvailability_Available;
+    return CXAvailability_NotAvailable;
   
   switch (D->getAvailability()) {
   case AR_Available:
