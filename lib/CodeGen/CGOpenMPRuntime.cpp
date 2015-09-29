@@ -1548,21 +1548,21 @@ void CGOpenMPRuntime::emitSingleRegion(CodeGenFunction &CGF,
 
 void CGOpenMPRuntime::emitOrderedRegion(CodeGenFunction &CGF,
                                         const RegionCodeGenTy &OrderedOpGen,
-                                        SourceLocation Loc) {
+                                        SourceLocation Loc, bool IsThreads) {
   // __kmpc_ordered(ident_t *, gtid);
   // OrderedOpGen();
   // __kmpc_end_ordered(ident_t *, gtid);
   // Prepare arguments and build a call to __kmpc_ordered
-  {
-    CodeGenFunction::RunCleanupsScope Scope(CGF);
+  CodeGenFunction::RunCleanupsScope Scope(CGF);
+  if (IsThreads) {
     llvm::Value *Args[] = {emitUpdateLocation(CGF, Loc), getThreadID(CGF, Loc)};
     CGF.EmitRuntimeCall(createRuntimeFunction(OMPRTL__kmpc_ordered), Args);
     // Build a call to __kmpc_end_ordered
     CGF.EHStack.pushCleanup<CallEndCleanup<std::extent<decltype(Args)>::value>>(
         NormalAndEHCleanup, createRuntimeFunction(OMPRTL__kmpc_end_ordered),
         llvm::makeArrayRef(Args));
-    emitInlinedDirective(CGF, OMPD_ordered, OrderedOpGen);
   }
+  emitInlinedDirective(CGF, OMPD_ordered, OrderedOpGen);
 }
 
 void CGOpenMPRuntime::emitBarrierCall(CodeGenFunction &CGF, SourceLocation Loc,
@@ -1894,8 +1894,7 @@ typedef std::pair<CharUnits /*Align*/, PrivateHelpersTy> PrivateDataTy;
 } // anonymous namespace
 
 static RecordDecl *
-createPrivatesRecordDecl(CodeGenModule &CGM,
-                         const ArrayRef<PrivateDataTy> Privates) {
+createPrivatesRecordDecl(CodeGenModule &CGM, ArrayRef<PrivateDataTy> Privates) {
   if (!Privates.empty()) {
     auto &C = CGM.getContext();
     // Build struct .kmp_privates_t. {
@@ -1943,7 +1942,7 @@ createKmpTaskTRecordDecl(CodeGenModule &CGM, QualType KmpInt32Ty,
 
 static RecordDecl *
 createKmpTaskTWithPrivatesRecordDecl(CodeGenModule &CGM, QualType KmpTaskTQTy,
-                                     const ArrayRef<PrivateDataTy> Privates) {
+                                     ArrayRef<PrivateDataTy> Privates) {
   auto &C = CGM.getContext();
   // Build struct kmp_task_t_with_privates {
   //         kmp_task_t task_data;
@@ -2092,10 +2091,10 @@ static llvm::Value *emitDestructorsFunction(CodeGenModule &CGM,
 /// \endcode
 static llvm::Value *
 emitTaskPrivateMappingFunction(CodeGenModule &CGM, SourceLocation Loc,
-                               const ArrayRef<const Expr *> PrivateVars,
-                               const ArrayRef<const Expr *> FirstprivateVars,
+                               ArrayRef<const Expr *> PrivateVars,
+                               ArrayRef<const Expr *> FirstprivateVars,
                                QualType PrivatesQTy,
-                               const ArrayRef<PrivateDataTy> Privates) {
+                               ArrayRef<PrivateDataTy> Privates) {
   auto &C = CGM.getContext();
   FunctionArgList Args;
   ImplicitParamDecl TaskPrivatesArg(
