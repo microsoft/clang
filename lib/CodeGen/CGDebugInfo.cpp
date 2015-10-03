@@ -1663,9 +1663,10 @@ llvm::DIType *CGDebugInfo::CreateType(const ObjCInterfaceType *Ty,
   // debug type since we won't be able to lay out the entire type.
   ObjCInterfaceDecl *Def = ID->getDefinition();
   if (!Def || !Def->getImplementation()) {
+    llvm::DIScope *Mod = getParentModuleOrNull(ID);
     llvm::DIType *FwdDecl = DBuilder.createReplaceableCompositeType(
-        llvm::dwarf::DW_TAG_structure_type, ID->getName(), TheCU, DefUnit, Line,
-        RuntimeLang);
+        llvm::dwarf::DW_TAG_structure_type, ID->getName(), Mod ? Mod : TheCU,
+        DefUnit, Line, RuntimeLang);
     ObjCInterfaceCache.push_back(ObjCInterfaceCacheEntry(Ty, FwdDecl, Unit));
     return FwdDecl;
   }
@@ -2171,7 +2172,9 @@ ObjCInterfaceDecl *CGDebugInfo::getObjCInterfaceDecl(QualType Ty) {
 }
 
 llvm::DIModule *CGDebugInfo::getParentModuleOrNull(const Decl *D) {
-  ExternalASTSource::ASTSourceDescriptor Info;
+  // A forward declaration inside a module header does not belong to the module.
+  if (isa<RecordDecl>(D) && !cast<RecordDecl>(D)->getDefinition())
+    return nullptr;
   if (DebugTypeExtRefs && D->isFromASTFile()) {
     // Record a reference to an imported clang module or precompiled header.
     auto *Reader = CGM.getContext().getExternalSource();
