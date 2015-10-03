@@ -1663,9 +1663,10 @@ llvm::DIType *CGDebugInfo::CreateType(const ObjCInterfaceType *Ty,
   // debug type since we won't be able to lay out the entire type.
   ObjCInterfaceDecl *Def = ID->getDefinition();
   if (!Def || !Def->getImplementation()) {
+    llvm::DIScope *Mod = getParentModuleOrNull(ID);
     llvm::DIType *FwdDecl = DBuilder.createReplaceableCompositeType(
-        llvm::dwarf::DW_TAG_structure_type, ID->getName(), TheCU, DefUnit, Line,
-        RuntimeLang);
+        llvm::dwarf::DW_TAG_structure_type, ID->getName(), Mod ? Mod : TheCU,
+        DefUnit, Line, RuntimeLang);
     ObjCInterfaceCache.push_back(ObjCInterfaceCacheEntry(Ty, FwdDecl, Unit));
     return FwdDecl;
   }
@@ -1680,9 +1681,9 @@ CGDebugInfo::getOrCreateModuleRef(ExternalASTSource::ASTSourceDescriptor Mod,
   // nullptr if the "Module" is a PCH, which is safe because we don't
   // support chained PCH debug info, so there can only be a single PCH.
   const Module *M = Mod.getModuleOrNull();
-  auto &ModRef = ModuleCache[M];
-  if (ModRef)
-    return cast<llvm::DIModule>(ModRef);
+  auto ModRef = ModuleCache.find(M);
+  if (ModRef != ModuleCache.end())
+    return cast<llvm::DIModule>(ModRef->second);
 
   // Macro definitions that were defined with "-D" on the command line.
   SmallString<128> ConfigMacros;
@@ -1724,7 +1725,7 @@ CGDebugInfo::getOrCreateModuleRef(ExternalASTSource::ASTSourceDescriptor Mod,
   llvm::DIModule *DIMod =
       DBuilder.createModule(Parent, Mod.getModuleName(), ConfigMacros,
                             Mod.getPath(), CGM.getHeaderSearchOpts().Sysroot);
-  ModRef.reset(DIMod);
+  ModuleCache[M].reset(DIMod);
   return DIMod;
 }
 
@@ -1743,9 +1744,10 @@ llvm::DIType *CGDebugInfo::CreateTypeDefinition(const ObjCInterfaceType *Ty,
   if (ID->getImplementation())
     Flags |= llvm::DINode::FlagObjcClassComplete;
 
+  llvm::DIScope *Mod = getParentModuleOrNull(ID);
   llvm::DICompositeType *RealDecl = DBuilder.createStructType(
-      Unit, ID->getName(), DefUnit, Line, Size, Align, Flags, nullptr,
-      llvm::DINodeArray(), RuntimeLang);
+      Mod ? Mod : Unit, ID->getName(), DefUnit, Line, Size, Align, Flags,
+      nullptr, llvm::DINodeArray(), RuntimeLang);
 
   QualType QTy(Ty, 0);
   TypeCache[QTy.getAsOpaquePtr()].reset(RealDecl);
@@ -2170,7 +2172,9 @@ ObjCInterfaceDecl *CGDebugInfo::getObjCInterfaceDecl(QualType Ty) {
 }
 
 llvm::DIModule *CGDebugInfo::getParentModuleOrNull(const Decl *D) {
-  ExternalASTSource::ASTSourceDescriptor Info;
+  // A forward declaration inside a module header does not belong to the module.
+  if (isa<RecordDecl>(D) && !cast<RecordDecl>(D)->getDefinition())
+    return nullptr;
   if (DebugTypeExtRefs && D->isFromASTFile()) {
     // Record a reference to an imported clang module or precompiled header.
     auto *Reader = CGM.getContext().getExternalSource();

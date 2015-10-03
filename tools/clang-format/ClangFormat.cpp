@@ -19,6 +19,7 @@
 #include "clang/Basic/SourceManager.h"
 #include "clang/Basic/Version.h"
 #include "clang/Format/Format.h"
+#include "clang/Rewrite/Core/Rewriter.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
@@ -73,11 +74,11 @@ FallbackStyle("fallback-style",
               cl::init("LLVM"), cl::cat(ClangFormatCategory));
 
 static cl::opt<std::string>
-AssumeFilename("assume-filename",
+AssumeFileName("assume-filename",
                cl::desc("When reading from stdin, clang-format assumes this\n"
                         "filename to look for a style config file (with\n"
                         "-style=file) and to determine the language."),
-               cl::cat(ClangFormatCategory));
+               cl::init("<stdin>"), cl::cat(ClangFormatCategory));
 
 static cl::opt<bool> Inplace("i",
                              cl::desc("Inplace edit <file>s, if specified."),
@@ -109,8 +110,7 @@ namespace format {
 
 static FileID createInMemoryFile(StringRef FileName, MemoryBuffer *Source,
                                  SourceManager &Sources, FileManager &Files) {
-  const FileEntry *Entry = Files.getVirtualFile(FileName == "-" ? "<stdin>" :
-                                                    FileName,
+  const FileEntry *Entry = Files.getVirtualFile(FileName,
                                                 Source->getBufferSize(), 0);
   Sources.overrideFileContents(Entry, Source, true);
   return Sources.createFileID(Entry, SourceLocation(), SrcMgr::C_User);
@@ -132,7 +132,7 @@ static bool fillRanges(MemoryBuffer *Code,
       IntrusiveRefCntPtr<DiagnosticIDs>(new DiagnosticIDs),
       new DiagnosticOptions);
   SourceManager Sources(Diagnostics, Files);
-  FileID ID = createInMemoryFile("-", Code, Sources, Files);
+  FileID ID = createInMemoryFile("<irrelevant>", Code, Sources, Files);
   if (!LineRanges.empty()) {
     if (!Offsets.empty() || !Lengths.empty()) {
       llvm::errs() << "error: cannot use -lines with -offset/-length\n";
@@ -239,13 +239,13 @@ static bool format(StringRef FileName) {
   std::vector<tooling::Range> Ranges;
   if (fillRanges(Code.get(), Ranges))
     return true;
-  FormatStyle FormatStyle = getStyle(
-      Style, (FileName == "-") ? AssumeFilename : FileName, FallbackStyle);
+  StringRef AssumedFileName = (FileName == "-") ? AssumeFileName : FileName;
+  FormatStyle FormatStyle = getStyle(Style, AssumedFileName, FallbackStyle);
   Replacements Replaces;
   std::string ChangedCode;
   if (SortIncludes) {
     Replaces =
-        sortIncludes(FormatStyle, Code->getBuffer(), Ranges, FileName);
+        sortIncludes(FormatStyle, Code->getBuffer(), Ranges, AssumedFileName);
     ChangedCode = tooling::applyAllReplacements(Code->getBuffer(), Replaces);
     for (const auto &R : Replaces)
       Ranges.push_back({R.getOffset(), R.getLength()});
@@ -255,8 +255,8 @@ static bool format(StringRef FileName) {
 
   bool IncompleteFormat = false;
   Replaces = tooling::mergeReplacements(
-      Replaces,
-      reformat(FormatStyle, ChangedCode, Ranges, FileName, &IncompleteFormat));
+      Replaces, reformat(FormatStyle, ChangedCode, Ranges, AssumedFileName,
+                         &IncompleteFormat));
   if (OutputXML) {
     llvm::outs() << "<?xml version='1.0'?>\n<replacements "
                     "xml:space='preserve' incomplete_format='"
@@ -269,27 +269,26 @@ static bool format(StringRef FileName) {
     outputReplacementsXML(Replaces); 
     llvm::outs() << "</replacements>\n";
   } else {
-    std::string FormattedCode =
-        applyAllReplacements(Code->getBuffer(), Replaces);
+    FileManager Files((FileSystemOptions()));
+    DiagnosticsEngine Diagnostics(
+        IntrusiveRefCntPtr<DiagnosticIDs>(new DiagnosticIDs),
+        new DiagnosticOptions);
+    SourceManager Sources(Diagnostics, Files);
+    FileID ID = createInMemoryFile(AssumedFileName, Code.get(), Sources, Files);
+    Rewriter Rewrite(Sources, LangOptions());
+    tooling::applyAllReplacements(Replaces, Rewrite);
     if (Inplace) {
       if (FileName == "-")
         llvm::errs() << "error: cannot use -i when reading from stdin.\n";
-      else {
-        std::error_code EC;
-        raw_fd_ostream FileOut(FileName, EC, llvm::sys::fs::F_Text);
-        if (EC) {
-          llvm::errs() << EC.message() << "\n";
-          return true;
-        }
-        FileOut << FormattedCode;
-      }
+      else if (Rewrite.overwriteChangedFiles())
+        return true;
     } else {
       if (Cursor.getNumOccurrences() != 0)
         outs() << "{ \"Cursor\": "
                << tooling::shiftedCodePosition(Replaces, Cursor)
                << ", \"IncompleteFormat\": "
                << (IncompleteFormat ? "true" : "false") << " }\n";
-      outs() << FormattedCode;
+      Rewrite.getEditBuffer(ID).write(outs());
     }
   }
   return false;
@@ -324,7 +323,7 @@ int main(int argc, const char **argv) {
   if (DumpConfig) {
     std::string Config =
         clang::format::configurationAsText(clang::format::getStyle(
-            Style, FileNames.empty() ? AssumeFilename : FileNames[0],
+            Style, FileNames.empty() ? AssumeFileName : FileNames[0],
             FallbackStyle));
     llvm::outs() << Config << "\n";
     return 0;
@@ -350,3 +349,4 @@ int main(int argc, const char **argv) {
   }
   return Error ? 1 : 0;
 }
+

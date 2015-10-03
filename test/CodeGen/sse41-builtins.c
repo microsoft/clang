@@ -1,6 +1,8 @@
 // REQUIRES: x86-registered-target
 // RUN: %clang_cc1 %s -O0 -triple=x86_64-apple-darwin -target-feature +sse4.1 -emit-llvm -o - -Werror | FileCheck %s
+// RUN: %clang_cc1 %s -O0 -triple=x86_64-apple-darwin -target-feature +sse4.1 -fno-signed-char -emit-llvm -o - -Werror | FileCheck %s
 // RUN: %clang_cc1 %s -O0 -triple=x86_64-apple-darwin -target-feature +sse4.1 -S -o - -Werror | FileCheck %s --check-prefix=CHECK-ASM
+// RUN: %clang_cc1 %s -O0 -triple=x86_64-apple-darwin -target-feature +sse4.1 -fno-signed-char -S -o - -Werror | FileCheck %s --check-prefix=CHECK-ASM
 
 // Don't include mm_malloc.h, it's system specific.
 #define __MM_MALLOC_H
@@ -383,7 +385,7 @@ __m128 test_mm_round_ss(__m128 x, __m128 y) {
   return _mm_round_ss(x, y, 2);
 }
 
-__m128i test_mm_stream_load_si128(__m128i *a) {
+__m128i test_mm_stream_load_si128(__m128i const *a) {
   // CHECK-LABEL: test_mm_stream_load_si128
   // CHECK: call <2 x i64> @llvm.x86.sse41.movntdqa
   // CHECK-ASM: movntdqa

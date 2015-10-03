@@ -208,7 +208,9 @@ _mm256_cmpeq_epi64(__m256i __a, __m256i __b)
 static __inline__ __m256i __DEFAULT_FN_ATTRS
 _mm256_cmpgt_epi8(__m256i __a, __m256i __b)
 {
-  return (__m256i)((__v32qi)__a > (__v32qi)__b);
+  /* This function always performs a signed comparison, but __v32qi is a char
+     which may be signed or unsigned, so use __v32qs. */
+  return (__m256i)((__v32qs)__a > (__v32qs)__b);
 }
 
 static __inline__ __m256i __DEFAULT_FN_ATTRS
@@ -752,9 +754,9 @@ _mm256_xor_si256(__m256i __a, __m256i __b)
 }
 
 static __inline__ __m256i __DEFAULT_FN_ATTRS
-_mm256_stream_load_si256(__m256i *__V)
+_mm256_stream_load_si256(__m256i const *__V)
 {
-  return (__m256i)__builtin_ia32_movntdqa256((__v4di *)__V);
+  return (__m256i)__builtin_ia32_movntdqa256((const __v4di *)__V);
 }
 
 static __inline__ __m128 __DEFAULT_FN_ATTRS

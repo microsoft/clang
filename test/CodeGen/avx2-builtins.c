@@ -1,5 +1,7 @@
 // RUN: %clang_cc1 %s -O0 -triple=x86_64-apple-darwin -target-feature +avx2 -emit-llvm -o - -Werror | FileCheck %s
+// RUN: %clang_cc1 %s -O0 -triple=x86_64-apple-darwin -target-feature +avx2 -fno-signed-char -emit-llvm -o - -Werror | FileCheck %s
 // RUN: %clang_cc1 %s -O0 -triple=x86_64-apple-darwin -target-feature +avx2 -S -o - -Werror | FileCheck %s --check-prefix=CHECK-ASM
+// RUN: %clang_cc1 %s -O0 -triple=x86_64-apple-darwin -target-feature +avx2 -fno-signed-char -S -o - -Werror | FileCheck %s --check-prefix=CHECK-ASM
 
 // REQUIRES: x86-registered-target
 
@@ -572,7 +574,7 @@ __m256i test_mm256_bslli_epi128(__m256i a) {
 
 __m256i test_mm256_slli_epi16(__m256i a) {
   // CHECK: @llvm.x86.avx2.pslli.w
-  // CHECK-ASM: vpsllw $3, %ymm{{.*}}, %ymm{{.*}}
+  // CHECK-ASM: vpsllw {{\$3|%xmm[0-9]+}}, %ymm{{.*}}, %ymm{{.*}}
   return _mm256_slli_epi16(a, 3);
 }
 
@@ -584,7 +586,7 @@ __m256i test_mm256_sll_epi16(__m256i a, __m128i b) {
 
 __m256i test_mm256_slli_epi32(__m256i a) {
   // CHECK: @llvm.x86.avx2.pslli.d
-  // CHECK-ASM: vpslld $3, %ymm{{.*}}, %ymm{{.*}}
+  // CHECK-ASM: vpslld {{\$3|%xmm[0-9]+}}, %ymm{{.*}}, %ymm{{.*}}
   return _mm256_slli_epi32(a, 3);
 }
 
@@ -608,7 +610,7 @@ __m256i test_mm256_sll_epi64(__m256i a, __m128i b) {
 
 __m256i test_mm256_srai_epi16(__m256i a) {
   // CHECK: @llvm.x86.avx2.psrai.w
-  // CHECK-ASM: vpsraw $3, %ymm{{.*}}, %ymm{{.*}}
+  // CHECK-ASM: vpsraw {{\$3|%xmm[0-9]+}}, %ymm{{.*}}, %ymm{{.*}}
   return _mm256_srai_epi16(a, 3);
 }
 
@@ -620,7 +622,7 @@ __m256i test_mm256_sra_epi16(__m256i a, __m128i b) {
 
 __m256i test_mm256_srai_epi32(__m256i a) {
   // CHECK: @llvm.x86.avx2.psrai.d
-  // CHECK-ASM: vpsrad $3, %ymm{{.*}}, %ymm{{.*}}
+  // CHECK-ASM: vpsrad {{\$3|%xmm[0-9]+}}, %ymm{{.*}}, %ymm{{.*}}
   return _mm256_srai_epi32(a, 3);
 }
 
@@ -644,7 +646,7 @@ __m256i test_mm256_bsrli_epi128(__m256i a) {
 
 __m256i test_mm256_srli_epi16(__m256i a) {
   // CHECK: @llvm.x86.avx2.psrli.w
-  // CHECK-ASM: vpsrlw $3, %ymm{{.*}}, %ymm{{.*}}
+  // CHECK-ASM: vpsrlw {{\$3|%xmm[0-9]+}}, %ymm{{.*}}, %ymm{{.*}}
   return _mm256_srli_epi16(a, 3);
 }
 
@@ -656,7 +658,7 @@ __m256i test_mm256_srl_epi16(__m256i a, __m128i b) {
 
 __m256i test_mm256_srli_epi32(__m256i a) {
   // CHECK: @llvm.x86.avx2.psrli.d
-  // CHECK-ASM: vpsrld $3, %ymm{{.*}}, %ymm{{.*}}
+  // CHECK-ASM: vpsrld {{\$3|%xmm[0-9]+}}, %ymm{{.*}}, %ymm{{.*}}
   return _mm256_srli_epi32(a, 3);
 }
 
@@ -726,7 +728,7 @@ __m256i test_mm256_unpacklo_epi64(__m256i a, __m256i b) {
   return _mm256_unpacklo_epi64(a, b);
 }
 
-__m256i test_mm256_stream_load_si256(__m256i *a) {
+__m256i test_mm256_stream_load_si256(__m256i const *a) {
   // CHECK: @llvm.x86.avx2.movntdqa
   // CHECK-ASM: vmovntdqa (%rdi), %ymm{{.*}}
   return _mm256_stream_load_si256(a);

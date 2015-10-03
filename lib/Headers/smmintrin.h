@@ -151,9 +151,9 @@ _mm_mul_epi32 (__m128i __V1, __m128i __V2)
 
 /* SSE4 Streaming Load Hint Instruction.  */
 static __inline__  __m128i __DEFAULT_FN_ATTRS
-_mm_stream_load_si128 (__m128i *__V)
+_mm_stream_load_si128 (__m128i const *__V)
 {
-  return (__m128i) __builtin_ia32_movntdqa ((__v2di *) __V);
+  return (__m128i) __builtin_ia32_movntdqa ((const __v2di *) __V);
 }
 
 /* SSE4 Packed Integer Min/Max Instructions.  */
@@ -286,19 +286,26 @@ _mm_cmpeq_epi64(__m128i __V1, __m128i __V2)
 static __inline__ __m128i __DEFAULT_FN_ATTRS
 _mm_cvtepi8_epi16(__m128i __V)
 {
-  return (__m128i)__builtin_convertvector(__builtin_shufflevector((__v16qi)__V, (__v16qi)__V, 0, 1, 2, 3, 4, 5, 6, 7), __v8hi);
+  /* This function always performs a signed extension, but __v16qi is a char
+     which may be signed or unsigned, so use __v16qs. */
+  return (__m128i)__builtin_convertvector(__builtin_shufflevector((__v16qs)__V, (__v16qs)__V, 0, 1, 2, 3, 4, 5, 6, 7), __v8hi);
 }
 
 static __inline__ __m128i __DEFAULT_FN_ATTRS
 _mm_cvtepi8_epi32(__m128i __V)
 {
-  return (__m128i)__builtin_convertvector(__builtin_shufflevector((__v16qi)__V, (__v16qi)__V, 0, 1, 2, 3), __v4si);
+  /* This function always performs a signed extension, but __v16qi is a char
+     which may be signed or unsigned, so use __v16qs. */
+  return (__m128i)__builtin_convertvector(__builtin_shufflevector((__v16qs)__V, (__v16qs)__V, 0, 1, 2, 3), __v4si);
 }
 
 static __inline__ __m128i __DEFAULT_FN_ATTRS
 _mm_cvtepi8_epi64(__m128i __V)
 {
-  return (__m128i)__builtin_convertvector(__builtin_shufflevector((__v16qi)__V, (__v16qi)__V, 0, 1), __v2di);
+  /* This function always performs a signed extension, but __v16qi is a char
+     which may be signed or unsigned, so use __v16qs. */
+  typedef signed char __v16qs __attribute__((__vector_size__(16)));
+  return (__m128i)__builtin_convertvector(__builtin_shufflevector((__v16qs)__V, (__v16qs)__V, 0, 1), __v2di);
 }
 
 static __inline__ __m128i __DEFAULT_FN_ATTRS

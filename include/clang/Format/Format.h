@@ -64,6 +64,17 @@ struct FormatStyle {
   /// \endcode
   bool AlignConsecutiveAssignments;
 
+  /// \brief If \c true, aligns consecutive declarations.
+  ///
+  /// This will align the declaration names of consecutive lines. This
+  /// will result in formattings like
+  /// \code
+  /// int         aaaa = 12;
+  /// float       b = 23;
+  /// std::string ccc = 23;
+  /// \endcode
+  bool AlignConsecutiveDeclarations;
+
   /// \brief If \c true, aligns escaped newlines as far left as possible.
   /// Otherwise puts them into the right-most column.
   bool AlignEscapedNewlinesLeft;
@@ -178,11 +189,45 @@ struct FormatStyle {
     /// or other definitions.
     BS_GNU,
     /// Like ``Attach``, but break before functions.
-    BS_WebKit
+    BS_WebKit,
+    /// Configure each individual brace in \c BraceWrapping.
+    BS_Custom
   };
 
   /// \brief The brace breaking style to use.
   BraceBreakingStyle BreakBeforeBraces;
+
+  /// \brief Precise control over the wrapping of braces.
+  struct BraceWrappingFlags {
+    /// \brief Wrap class definitions.
+    bool AfterClass;
+    /// \brief Wrap control statements (if/for/while/switch/..).
+    bool AfterControlStatement;
+    /// \brief Wrap enum definitions.
+    bool AfterEnum;
+    /// \brief Wrap function definitions.
+    bool AfterFunction;
+    /// \brief Wrap namespace definitions.
+    bool AfterNamespace;
+    /// \brief Wrap ObjC definitions (@autoreleasepool, interfaces, ..).
+    bool AfterObjCDeclaration;
+    /// \brief Wrap struct definitions.
+    bool AfterStruct;
+    /// \brief Wrap union definitions.
+    bool AfterUnion;
+    /// \brief Wrap before \c catch.
+    bool BeforeCatch;
+    /// \brief Wrap before \c else.
+    bool BeforeElse;
+    /// \brief Indent the wrapped braces themselves.
+    bool IndentBraces;
+  };
+
+  /// \brief Control of individual brace wrapping cases.
+  ///
+  /// If \c BreakBeforeBraces is set to \c custom, use this to specify how each
+  /// individual brace case should be handled. Otherwise, this is ignored.
+  BraceWrappingFlags BraceWrapping;
 
   /// \brief If \c true, ternary operators will be placed after line breaks.
   bool BreakBeforeTernaryOperators;
@@ -258,6 +303,21 @@ struct FormatStyle {
   ///
   /// For example: BOOST_FOREACH.
   std::vector<std::string> ForEachMacros;
+
+  /// \brief Regular expressions denoting the different #include categories used
+  /// for ordering #includes.
+  ///
+  /// These regular expressions are matched against the filename of an include
+  /// (including the <> or "") in order. The value belonging to the first
+  /// matching regular expression is assigned and #includes are sorted first
+  /// according to increasing category number and then alphabetically within
+  /// each category.
+  ///
+  /// If none of the regular expressions match, UINT_MAX is assigned as
+  /// category. The main header for a source file automatically gets category 0,
+  /// so that it is kept at the beginning of the #includes
+  /// (http://llvm.org/docs/CodingStandards.html#include-style).
+  std::vector<std::pair<std::string, unsigned>> IncludeCategories;
 
   /// \brief Indent case labels one level from the switch statement.
   ///
@@ -446,6 +506,7 @@ struct FormatStyle {
     return AccessModifierOffset == R.AccessModifierOffset &&
            AlignAfterOpenBracket == R.AlignAfterOpenBracket &&
            AlignConsecutiveAssignments == R.AlignConsecutiveAssignments &&
+           AlignConsecutiveDeclarations == R.AlignConsecutiveDeclarations &&
            AlignEscapedNewlinesLeft == R.AlignEscapedNewlinesLeft &&
            AlignOperands == R.AlignOperands &&
            AlignTrailingComments == R.AlignTrailingComments &&

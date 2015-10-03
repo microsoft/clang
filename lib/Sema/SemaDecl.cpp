@@ -2175,14 +2175,15 @@ static bool mergeAlignedAttrs(Sema &S, NamedDecl *New, Decl *Old) {
 }
 
 static bool mergeDeclAttribute(Sema &S, NamedDecl *D,
-                               const InheritableAttr *Attr, bool Override) {
+                               const InheritableAttr *Attr,
+                               Sema::AvailabilityMergeKind AMK) {
   InheritableAttr *NewAttr = nullptr;
   unsigned AttrSpellingListIndex = Attr->getSpellingListIndex();
   if (const auto *AA = dyn_cast<AvailabilityAttr>(Attr))
     NewAttr = S.mergeAvailabilityAttr(D, AA->getRange(), AA->getPlatform(),
                                       AA->getIntroduced(), AA->getDeprecated(),
                                       AA->getObsoleted(), AA->getUnavailable(),
-                                      AA->getMessage(), Override,
+                                      AA->getMessage(), AMK,
                                       AttrSpellingListIndex);
   else if (const auto *VA = dyn_cast<VisibilityAttr>(Attr))
     NewAttr = S.mergeVisibilityAttr(D, VA->getRange(), VA->getVisibility(),
@@ -2219,7 +2220,9 @@ static bool mergeDeclAttribute(Sema &S, NamedDecl *D,
     // AlignedAttrs are handled separately, because we need to handle all
     // such attributes on a declaration at the same time.
     NewAttr = nullptr;
-  else if (isa<DeprecatedAttr>(Attr) && Override)
+  else if ((isa<DeprecatedAttr>(Attr) || isa<UnavailableAttr>(Attr)) &&
+           (AMK == Sema::AMK_Override ||
+            AMK == Sema::AMK_ProtocolImplementation))
     NewAttr = nullptr;
   else if (Attr->duplicatesAllowed() || !DeclHasAttr(D, Attr))
     NewAttr = cast<InheritableAttr>(Attr->clone(S.Context));
@@ -2366,8 +2369,8 @@ void Sema::mergeDeclAttributes(NamedDecl *New, Decl *Old,
   if (!foundAny) New->setAttrs(AttrVec());
 
   for (auto *I : Old->specific_attrs<InheritableAttr>()) {
-    bool Override = false;
     // Ignore deprecated/unavailable/availability attributes if requested.
+    AvailabilityMergeKind LocalAMK = AMK_None;
     if (isa<DeprecatedAttr>(I) ||
         isa<UnavailableAttr>(I) ||
         isa<AvailabilityAttr>(I)) {
@@ -2376,10 +2379,9 @@ void Sema::mergeDeclAttributes(NamedDecl *New, Decl *Old,
         continue;
 
       case AMK_Redeclaration:
-        break;
-
       case AMK_Override:
-        Override = true;
+      case AMK_ProtocolImplementation:
+        LocalAMK = AMK;
         break;
       }
     }
@@ -2388,7 +2390,7 @@ void Sema::mergeDeclAttributes(NamedDecl *New, Decl *Old,
     if (isa<UsedAttr>(I))
       continue;
 
-    if (mergeDeclAttribute(*this, New, I, Override))
+    if (mergeDeclAttribute(*this, New, I, LocalAMK))
       foundAny = true;
   }
 
@@ -3156,8 +3158,11 @@ void Sema::mergeObjCMethodDecls(ObjCMethodDecl *newMethod,
 
   // Merge the attributes, including deprecated/unavailable
   AvailabilityMergeKind MergeKind =
-    isa<ObjCImplDecl>(newMethod->getDeclContext()) ? AMK_Redeclaration
-                                                   : AMK_Override;
+    isa<ObjCProtocolDecl>(oldMethod->getDeclContext())
+      ? AMK_ProtocolImplementation
+      : isa<ObjCImplDecl>(newMethod->getDeclContext()) ? AMK_Redeclaration
+                                                       : AMK_Override;
+
   mergeDeclAttributes(newMethod, oldMethod, MergeKind);
 
   // Merge attributes from the parameters.
@@ -5687,12 +5692,6 @@ Sema::ActOnVariableDeclarator(Scope *S, Declarator &D, DeclContext *DC,
   }
 
   if (getLangOpts().OpenCL) {
-    // Set up the special work-group-local storage class for variables in the
-    // OpenCL __local address space.
-    if (R.getAddressSpace() == LangAS::opencl_local) {
-      SC = SC_OpenCLWorkGroupLocal;
-    }
-
     // OpenCL v1.2 s6.9.b p4:
     // The sampler type cannot be used with the __local and __global address
     // space qualifiers.
@@ -5759,8 +5758,6 @@ Sema::ActOnVariableDeclarator(Scope *S, Declarator &D, DeclContext *DC,
         break;
       case SC_PrivateExtern:
         llvm_unreachable("C storage class in c++!");
-      case SC_OpenCLWorkGroupLocal:
-        llvm_unreachable("OpenCL storage class in c++!");
       }
     }    
 
@@ -6034,7 +6031,6 @@ Sema::ActOnVariableDeclarator(Scope *S, Declarator &D, DeclContext *DC,
       case SC_Static:
       case SC_Extern:
       case SC_PrivateExtern:
-      case SC_OpenCLWorkGroupLocal:
         break;
       }
     } else if (SC == SC_Register) {
@@ -6428,29 +6424,77 @@ void Sema::CheckVariableDeclarationType(VarDecl *NewVD) {
   // This includes arrays of objects with address space qualifiers, but not
   // automatic variables that point to other address spaces.
   // ISO/IEC TR 18037 S5.1.2
-  if (NewVD->hasLocalStorage() && T.getAddressSpace() != 0) {
+  if (!getLangOpts().OpenCL
+      && NewVD->hasLocalStorage() && T.getAddressSpace() != 0) {
     Diag(NewVD->getLocation(), diag::err_as_qualified_auto_decl);
+    NewVD->setInvalidDecl();
+    return;
+  }
+
+  // OpenCL v1.2 s6.8 -- The static qualifier is valid only in program
+  // scope.
+  if (getLangOpts().OpenCLVersion == 120 &&
+      !getOpenCLOptions().cl_clang_storage_class_specifiers &&
+      NewVD->isStaticLocal()) {
+    Diag(NewVD->getLocation(), diag::err_static_function_scope);
     NewVD->setInvalidDecl();
     return;
   }
 
   // OpenCL v1.2 s6.5 - All program scope variables must be declared in the
   // __constant address space.
-  if (getLangOpts().OpenCL && NewVD->isFileVarDecl()
-      && T.getAddressSpace() != LangAS::opencl_constant
-      && !T->isSamplerT()){
-    Diag(NewVD->getLocation(), diag::err_opencl_global_invalid_addr_space);
-    NewVD->setInvalidDecl();
-    return;
-  }
-  
-  // OpenCL v1.2 s6.8 -- The static qualifier is valid only in program
-  // scope.
-  if ((getLangOpts().OpenCLVersion >= 120)
-      && NewVD->isStaticLocal()) {
-    Diag(NewVD->getLocation(), diag::err_static_function_scope);
-    NewVD->setInvalidDecl();
-    return;
+  // OpenCL v2.0 s6.5.1 - Variables defined at program scope and static
+  // variables inside a function can also be declared in the global
+  // address space.
+  if (getLangOpts().OpenCL) {
+    if (NewVD->isFileVarDecl()) {
+      if (!T->isSamplerT() &&
+          !(T.getAddressSpace() == LangAS::opencl_constant ||
+            (T.getAddressSpace() == LangAS::opencl_global &&
+             getLangOpts().OpenCLVersion == 200))) {
+        if (getLangOpts().OpenCLVersion == 200)
+          Diag(NewVD->getLocation(), diag::err_opencl_global_invalid_addr_space)
+              << "global or constant";
+        else
+          Diag(NewVD->getLocation(), diag::err_opencl_global_invalid_addr_space)
+              << "constant";
+        NewVD->setInvalidDecl();
+        return;
+      }
+    } else {
+      // OpenCL v2.0 s6.5.1 - Variables defined at program scope and static
+      // variables inside a function can also be declared in the global
+      // address space.
+      if (NewVD->isStaticLocal() &&
+          !(T.getAddressSpace() == LangAS::opencl_constant ||
+            (T.getAddressSpace() == LangAS::opencl_global &&
+             getLangOpts().OpenCLVersion == 200))) {
+        if (getLangOpts().OpenCLVersion == 200)
+          Diag(NewVD->getLocation(), diag::err_opencl_global_invalid_addr_space)
+              << "global or constant";
+        else
+          Diag(NewVD->getLocation(), diag::err_opencl_global_invalid_addr_space)
+              << "constant";
+        NewVD->setInvalidDecl();
+        return;
+      }
+      // OpenCL v1.1 s6.5.2 and s6.5.3 no local or constant variables
+      // in functions.
+      if (T.getAddressSpace() == LangAS::opencl_constant ||
+          T.getAddressSpace() == LangAS::opencl_local) {
+        FunctionDecl *FD = getCurFunctionDecl();
+        if (FD && !FD->hasAttr<OpenCLKernelAttr>()) {
+          if (T.getAddressSpace() == LangAS::opencl_constant)
+            Diag(NewVD->getLocation(), diag::err_opencl_non_kernel_variable)
+                << "constant";
+          else
+            Diag(NewVD->getLocation(), diag::err_opencl_non_kernel_variable)
+                << "local";
+          NewVD->setInvalidDecl();
+          return;
+        }
+      }
+    }
   }
 
   if (NewVD->hasLocalStorage() && T.isObjCGCWeak()
@@ -9158,7 +9202,7 @@ void Sema::AddInitializerToDecl(Decl *RealDecl, Expr *Init,
 
   // OpenCL 1.1 6.5.2: "Variables allocated in the __local address space inside
   // a kernel function cannot be initialized."
-  if (VDecl->getStorageClass() == SC_OpenCLWorkGroupLocal) {
+  if (VDecl->getType().getAddressSpace() == LangAS::opencl_local) {
     Diag(VDecl->getLocation(), diag::err_local_cant_init);
     VDecl->setInvalidDecl();
     return;
@@ -9729,8 +9773,6 @@ void Sema::ActOnCXXForRangeDecl(Decl *D) {
   case SC_Register:
     Error = 4;
     break;
-  case SC_OpenCLWorkGroupLocal:
-    llvm_unreachable("Unexpected storage class");
   }
   if (Error != -1) {
     Diag(VD->getOuterLocStart(), diag::err_for_range_storage_class)

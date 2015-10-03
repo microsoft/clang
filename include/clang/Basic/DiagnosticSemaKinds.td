@@ -1153,7 +1153,10 @@ def err_incompatible_exception_specs : Error<
   "target exception specification is not superset of source">;
 def err_deep_exception_specs_differ : Error<
   "exception specifications of %select{return|argument}0 types differ">;
-def warn_missing_exception_specification : Warning<
+def ext_missing_exception_specification : ExtWarn<
+  "%0 is missing exception specification '%1'">,
+  InGroup<DiagGroup<"missing-exception-spec">>;
+def err_missing_exception_specification : Error<
   "%0 is missing exception specification '%1'">;
 def err_noexcept_needs_constant_expression : Error<
   "argument to noexcept specifier must be a constant expression">;
@@ -2407,15 +2410,19 @@ def warn_availability_version_ordering : Warning<
 def warn_mismatched_availability: Warning<
   "availability does not match previous declaration">, InGroup<Availability>;
 def warn_mismatched_availability_override : Warning<
-  "overriding method %select{introduced after|"
-  "deprecated before|obsoleted before}0 overridden method on %1 (%2 vs. %3)">, 
-  InGroup<Availability>;
+  "%select{|overriding }4method %select{introduced after|"
+  "deprecated before|obsoleted before}0 "
+  "%select{the protocol method it implements|overridden method}4 "
+  "on %1 (%2 vs. %3)">, InGroup<Availability>;
 def warn_mismatched_availability_override_unavail : Warning<
-  "overriding method cannot be unavailable on %0 when its overridden method is "
+  "%select{|overriding }1method cannot be unavailable on %0 when "
+  "%select{the protocol method it implements|its overridden method}1 is "
   "available">,
   InGroup<Availability>;
 def note_overridden_method : Note<
   "overridden method is here">;
+def note_protocol_method : Note<
+  "protocol method is here">;
 
 // Thread Safety Attributes
 def warn_invalid_capability_name : Warning<
@@ -7442,6 +7449,8 @@ def err_opencl_ptrptr_kernel_param : Error<
   "kernel parameter cannot be declared as a pointer to a pointer">;
 def err_opencl_private_ptr_kernel_param : Error<
   "kernel parameter cannot be declared as a pointer to the __private address space">;
+def err_opencl_non_kernel_variable : Error<
+  "non-kernel function variable cannot be declared in %0 address space">;
 def err_static_function_scope : Error<
   "variables in function scope cannot be declared static">;
 def err_opencl_bitfields : Error<
@@ -7469,7 +7478,7 @@ def err_sampler_argument_required : Error<
 def err_wrong_sampler_addressspace: Error<
   "sampler type cannot be used with the __local and __global address space qualifiers">;
 def err_opencl_global_invalid_addr_space : Error<
-  "global variables must have a constant address space qualifier">;
+  "program scope variable must reside in %0 address space">;
 def err_opencl_no_main : Error<"%select{function|kernel}0 cannot be called 'main'">;
 def err_opencl_kernel_attr :
   Error<"attribute %0 can only be applied to a kernel function">;
@@ -7477,6 +7486,9 @@ def err_opencl_return_value_with_address_space : Error<
   "return value cannot be qualified with address space">;
 def err_opencl_constant_no_init : Error<
   "variable in constant address space must be initialized">;
+def err_atomic_init_constant : Error<
+  "atomic variable can only be assigned to a compile time constant"
+  " in the declaration statement in the program scope">;
 def err_opencl_implicit_vector_conversion : Error<
   "implicit conversions between vector types (%0 and %1) are not permitted">;
 } // end of sema category
@@ -7505,7 +7517,7 @@ def err_omp_firstprivate_incomplete_type : Error<
 def err_omp_lastprivate_incomplete_type : Error<
   "a lastprivate variable with incomplete type %0">;
 def err_omp_reduction_incomplete_type : Error<
-  "a reduction variable with incomplete type %0">;
+  "a reduction list item with incomplete type %0">;
 def err_omp_unexpected_clause_value : Error<
   "expected %0 in OpenMP clause '%1'">;
 def err_omp_expected_var_name : Error<
@@ -7562,6 +7574,8 @@ def err_omp_required_access : Error<
   "%0 variable must be %1">;
 def err_omp_const_variable : Error<
   "const-qualified variable cannot be %0">;
+def err_omp_const_reduction_list_item : Error<
+  "const-qualified list item cannot be reduction">;
 def err_omp_linear_incomplete_type : Error<
   "a linear variable with incomplete type %0">;
 def err_omp_linear_expected_int_or_ptr : Error<
@@ -7613,7 +7627,7 @@ def warn_omp_loop_64_bit_var : Warning<
 def err_omp_unknown_reduction_identifier : Error<
   "incorrect reduction identifier, expected one of '+', '-', '*', '&', '|', '^', '&&', '||', 'min' or 'max'">;
 def err_omp_reduction_type_array : Error<
-  "a reduction variable with array type %0">;
+  "a reduction list item with array type %0">;
 def err_omp_reduction_ref_type_arg : Error<
   "argument of OpenMP clause 'reduction' must reference the same object in all threads">;
 def err_omp_clause_not_arithmetic_type_arg : Error<
@@ -7627,7 +7641,7 @@ def note_omp_referenced : Note<
 def err_omp_reduction_in_task : Error<
   "reduction variables may not be accessed in an explicit task">;
 def err_omp_reduction_id_not_compatible : Error<
-  "variable of type %0 is not valid for specified reduction operation: unable to provide default initialization value">;
+  "list item of type %0 is not valid for specified reduction operation: unable to provide default initialization value">;
 def err_omp_prohibited_region : Error<
   "region cannot be%select{| closely}0 nested inside '%1' region"
   "%select{|; perhaps you forget to enclose 'omp %3' directive into a parallel region?|"
@@ -7735,6 +7749,8 @@ def err_omp_ordered_directive_with_param : Error<
   "'ordered' directive %select{without any clauses|with 'threads' clause}0 cannot be closely nested inside ordered region with specified parameter">;
 def note_omp_ordered_param : Note<
   "'ordered' clause with specified parameter">;
+def err_omp_expected_array_sect_reduction_lb_not_zero : Error<
+  "lower bound expected to be evaluated to zero">;
 } // end of OpenMP category
 
 let CategoryName = "Related Result Type Issue" in {

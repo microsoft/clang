@@ -402,7 +402,7 @@ void Clang::AddPreprocessingOptions(Compilation &C, const JobAction &JA,
                   {options::OPT_D, options::OPT_U, options::OPT_I_Group,
                    options::OPT_F, options::OPT_index_header_map});
 
-  // Add -Wp, and -Xassembler if using the preprocessor.
+  // Add -Wp, and -Xpreprocessor if using the preprocessor.
 
   // FIXME: There is a very unfortunate problem here, some troubled
   // souls abuse -Wp, to pass preprocessor options in gcc syntax. To
@@ -2402,60 +2402,11 @@ static void CollectArgsForIntegratedAssembler(Compilation &C,
   }
 }
 
-// Until ARM libraries are build separately, we have them all in one library
-static StringRef getArchNameForCompilerRTLib(const ToolChain &TC,
-                                             const ArgList &Args) {
-  const llvm::Triple &Triple = TC.getTriple();
-  bool IsWindows = Triple.isOSWindows();
-
-  if (Triple.isWindowsMSVCEnvironment() && TC.getArch() == llvm::Triple::x86)
-    return "i386";
-
-  if (TC.getArch() == llvm::Triple::arm || TC.getArch() == llvm::Triple::armeb)
-    return (arm::getARMFloatABI(TC, Args) == arm::FloatABI::Hard && !IsWindows)
-               ? "armhf"
-               : "arm";
-
-  return TC.getArchName();
-}
-
-static SmallString<128> getCompilerRTLibDir(const ToolChain &TC) {
-  // The runtimes are located in the OS-specific resource directory.
-  SmallString<128> Res(TC.getDriver().ResourceDir);
-  const llvm::Triple &Triple = TC.getTriple();
-  // TC.getOS() yield "freebsd10.0" whereas "freebsd" is expected.
-  StringRef OSLibName =
-      (Triple.getOS() == llvm::Triple::FreeBSD) ? "freebsd" : TC.getOS();
-  llvm::sys::path::append(Res, "lib", OSLibName);
-  return Res;
-}
-
-SmallString<128> tools::getCompilerRT(const ToolChain &TC, const ArgList &Args,
-                                      StringRef Component, bool Shared) {
-  const char *Env = TC.getTriple().getEnvironment() == llvm::Triple::Android
-                        ? "-android"
-                        : "";
-
-  bool IsOSWindows = TC.getTriple().isOSWindows();
-  bool IsITANMSVCWindows = TC.getTriple().isWindowsMSVCEnvironment() ||
-                           TC.getTriple().isWindowsItaniumEnvironment();
-  StringRef Arch = getArchNameForCompilerRTLib(TC, Args);
-  const char *Prefix = IsITANMSVCWindows ? "" : "lib";
-  const char *Suffix =
-      Shared ? (IsOSWindows ? ".dll" : ".so") : (IsITANMSVCWindows ? ".lib" : ".a");
-
-  SmallString<128> Path = getCompilerRTLibDir(TC);
-  llvm::sys::path::append(Path, Prefix + Twine("clang_rt.") + Component + "-" +
-                                    Arch + Env + Suffix);
-
-  return Path;
-}
-
 static const char *getCompilerRTArgString(const ToolChain &TC,
                                           const llvm::opt::ArgList &Args,
                                           StringRef Component,
                                           bool Shared = false) {
-  return Args.MakeArgString(getCompilerRT(TC, Args, Component, Shared));
+  return Args.MakeArgString(TC.getCompilerRT(Args, Component, Shared));
 }
 
 // This adds the static libclang_rt.builtins-arch.a directly to the command line
@@ -2569,7 +2520,7 @@ static void addSanitizerRuntime(const ToolChain &TC, const ArgList &Args,
 static bool addSanitizerDynamicList(const ToolChain &TC, const ArgList &Args,
                                     ArgStringList &CmdArgs,
                                     StringRef Sanitizer) {
-  SmallString<128> SanRT = getCompilerRT(TC, Args, Sanitizer);
+  SmallString<128> SanRT(TC.getCompilerRT(Args, Sanitizer));
   if (llvm::sys::fs::exists(SanRT + ".syms")) {
     CmdArgs.push_back(Args.MakeArgString("--dynamic-list=" + SanRT + ".syms"));
     return true;
@@ -2704,6 +2655,10 @@ static bool shouldUseFramePointerForTarget(const ArgList &Args,
     switch (Triple.getArch()) {
     case llvm::Triple::x86:
       return !areOptimizationsEnabled(Args);
+    case llvm::Triple::arm:
+    case llvm::Triple::thumb:
+      // Windows on ARM builds with FPO disabled to aid fast stack walking
+      return true;
     default:
       // All other supported Windows ISAs use xdata unwind information, so frame
       // pointers are not generally useful.
@@ -3802,8 +3757,7 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   Args.ClaimAllArgs(options::OPT_g_Group);
   Arg *SplitDwarfArg = Args.getLastArg(options::OPT_gsplit_dwarf);
   if (Arg *A = Args.getLastArg(options::OPT_g_Group)) {
-    if ((A->getOption().matches(options::OPT_gline_tables_only) ||
-         A->getOption().matches(options::OPT_g1)) &&
+    if (A->getOption().matches(options::OPT_gline_tables_only) &&
         (!SplitDwarfArg || A->getIndex() > SplitDwarfArg->getIndex())) {
       // FIXME: we should support specifying dwarf version with
       // -gline-tables-only.
@@ -3819,8 +3773,7 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
                A->getOption().matches(options::OPT_gdwarf_3) ||
                A->getOption().matches(options::OPT_gdwarf_4)) {
       A->render(Args, CmdArgs);
-    } else if (!A->getOption().matches(options::OPT_g0) &&
-               !A->getOption().matches(options::OPT_ggdb0)) {
+    } else if (!A->getOption().matches(options::OPT_g0)) {
       // Default is dwarf-2 for Darwin, OpenBSD, FreeBSD and Solaris.
       const llvm::Triple &Triple = getToolChain().getTriple();
       if (Triple.isOSDarwin() || Triple.getOS() == llvm::Triple::OpenBSD ||
@@ -6553,15 +6506,34 @@ void darwin::Linker::AddLinkArgs(Compilation &C, const ArgList &Args,
                    options::OPT_fno_application_extension, false))
     CmdArgs.push_back("-application_extension");
 
-  // If we are using LTO, then automatically create a temporary file path for
-  // the linker to use, so that it's lifetime will extend past a possible
-  // dsymutil step.
-  if (Version[0] >= 116 && D.IsUsingLTO(Args) && NeedsTempPath(Inputs)) {
-    const char *TmpPath = C.getArgs().MakeArgString(
-        D.GetTemporaryPath("cc", types::getTypeTempSuffix(types::TY_Object)));
-    C.addTempFile(TmpPath);
-    CmdArgs.push_back("-object_path_lto");
-    CmdArgs.push_back(TmpPath);
+  if (D.IsUsingLTO(Args)) {
+    // If we are using LTO, then automatically create a temporary file path for
+    // the linker to use, so that it's lifetime will extend past a possible
+    // dsymutil step.
+    if (Version[0] >= 116 && NeedsTempPath(Inputs)) {
+      const char *TmpPath = C.getArgs().MakeArgString(
+          D.GetTemporaryPath("cc", types::getTypeTempSuffix(types::TY_Object)));
+      C.addTempFile(TmpPath);
+      CmdArgs.push_back("-object_path_lto");
+      CmdArgs.push_back(TmpPath);
+    }
+
+    // Use -lto_library option to specify the libLTO.dylib path. Try to find
+    // it in clang installed libraries. If not found, the option is not used
+    // and 'ld' will use its default mechanism to search for libLTO.dylib.
+    if (Version[0] >= 133) {
+      // Search for libLTO in <InstalledDir>/../lib/libLTO.dylib
+      StringRef P = llvm::sys::path::parent_path(D.getInstalledDir());
+      SmallString<128> LibLTOPath(P);
+      llvm::sys::path::append(LibLTOPath, "lib");
+      llvm::sys::path::append(LibLTOPath, "libLTO.dylib");
+      if (llvm::sys::fs::exists(LibLTOPath)) {
+        CmdArgs.push_back("-lto_library");
+        CmdArgs.push_back(C.getArgs().MakeArgString(LibLTOPath));
+      } else {
+        D.Diag(diag::warn_drv_lto_libpath);
+      }
+    }
   }
 
   // Derived from the "link" spec.
@@ -9792,6 +9764,8 @@ void tools::Myriad::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   const llvm::Triple &T = TC.getTriple();
   ArgStringList CmdArgs;
   bool UseStartfiles = !Args.hasArg(options::OPT_nostartfiles);
+  bool UseDefaultLibs = !Args.hasArg(options::OPT_nostdlib) &&
+                        !Args.hasArg(options::OPT_nodefaultlibs);
 
   std::string StartFilesDir, BuiltinLibDir;
   TC.getCompilerSupportDir(StartFilesDir);
@@ -9828,27 +9802,31 @@ void tools::Myriad::Linker::ConstructJob(Compilation &C, const JobAction &JA,
                             options::OPT_e, options::OPT_s, options::OPT_t,
                             options::OPT_Z_Flag, options::OPT_r});
 
-  // The linker doesn't use these builtin paths unless directed to,
-  // because it was not compiled for support with sysroots, nor does
-  // it have a default of little-endian with FPU.
-  CmdArgs.push_back(Args.MakeArgString("-L" + BuiltinLibDir));
-  CmdArgs.push_back(Args.MakeArgString("-L" + StartFilesDir));
+  if (UseDefaultLibs) {
+    // The linker doesn't use these builtin paths unless directed to,
+    // because it was not compiled for support with sysroots, nor does
+    // it have a default of little-endian with FPU.
+    CmdArgs.push_back(Args.MakeArgString("-L" + BuiltinLibDir));
+    CmdArgs.push_back(Args.MakeArgString("-L" + StartFilesDir));
+  }
 
   AddLinkerInputs(getToolChain(), Inputs, Args, CmdArgs);
 
-  if (T.getOS() == llvm::Triple::RTEMS) {
-    CmdArgs.push_back("--start-group");
-    CmdArgs.push_back("-lc");
-    // You must provide your own "-L" option to enable finding these.
-    CmdArgs.push_back("-lrtemscpu");
-    CmdArgs.push_back("-lrtemsbsp");
-    CmdArgs.push_back("--end-group");
-  } else {
-    CmdArgs.push_back("-lc");
+  if (UseDefaultLibs) {
+    if (T.getOS() == llvm::Triple::RTEMS) {
+      CmdArgs.push_back("--start-group");
+      CmdArgs.push_back("-lc");
+      // You must provide your own "-L" option to enable finding these.
+      CmdArgs.push_back("-lrtemscpu");
+      CmdArgs.push_back("-lrtemsbsp");
+      CmdArgs.push_back("--end-group");
+    } else {
+      CmdArgs.push_back("-lc");
+    }
+    if (C.getDriver().CCCIsCXX())
+      CmdArgs.push_back("-lstdc++");
+    CmdArgs.push_back("-lgcc");
   }
-  if (C.getDriver().CCCIsCXX())
-    CmdArgs.push_back("-lstdc++");
-  CmdArgs.push_back("-lgcc");
   if (UseStartfiles) {
     CmdArgs.push_back(Args.MakeArgString(StartFilesDir + "/crtend.o"));
     CmdArgs.push_back(Args.MakeArgString(StartFilesDir + "/crtn.o"));

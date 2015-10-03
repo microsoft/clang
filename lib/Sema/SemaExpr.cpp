@@ -1824,7 +1824,6 @@ Sema::DiagnoseEmptyLookup(Scope *S, CXXScopeSpec &SS, LookupResult &R,
         bool isInstance = CurMethod &&
                           CurMethod->isInstance() &&
                           DC == CurMethod->getParent() && !isDefaultArgument;
-                          
 
         // Give a code modification hint to insert 'this->'.
         // TODO: fixit for inserting 'Base<T>::' in the other cases.
@@ -1838,15 +1837,23 @@ Sema::DiagnoseEmptyLookup(Scope *S, CXXScopeSpec &SS, LookupResult &R,
               CallsUndergoingInstantiation.back()->getCallee());
 
           CXXMethodDecl *DepMethod;
-          if (CurMethod->isDependentContext())
+          if (CurMethod->isDependentContext()) {
             DepMethod = CurMethod;
-          else if (CurMethod->getTemplatedKind() ==
-              FunctionDecl::TK_FunctionTemplateSpecialization)
-            DepMethod = cast<CXXMethodDecl>(CurMethod->getPrimaryTemplate()->
-                getInstantiatedFromMemberTemplate()->getTemplatedDecl());
-          else
+          } else if (FunctionTemplateDecl *FTD =
+                         CurMethod->getPrimaryTemplate()) {
+            // We have a member function template. It may be contained in a
+            // class template. If so, get the original pattern for the member
+            // function template. Otherwise, 'this' isn't dependent and we can
+            // use CurMethod as is.
+            if (FunctionTemplateDecl *MemberFTD =
+                    FTD->getInstantiatedFromMemberTemplate())
+              DepMethod = cast<CXXMethodDecl>(MemberFTD->getTemplatedDecl());
+            else
+              DepMethod = CurMethod;
+          } else {
             DepMethod = cast<CXXMethodDecl>(
                 CurMethod->getInstantiatedFromMemberFunction());
+          }
           assert(DepMethod && "No template pattern found");
 
           QualType DepThisType = DepMethod->getThisType(Context);
@@ -1856,7 +1863,7 @@ Sema::DiagnoseEmptyLookup(Scope *S, CXXScopeSpec &SS, LookupResult &R,
           TemplateArgumentListInfo TList;
           if (ULE->hasExplicitTemplateArgs())
             ULE->copyTemplateArgumentsInto(TList);
-          
+
           CXXScopeSpec SS;
           SS.Adopt(ULE->getQualifierLoc());
           CXXDependentScopeMemberExpr *DepExpr =
@@ -3987,28 +3994,6 @@ Sema::ActOnArraySubscriptExpr(Scope *S, Expr *base, SourceLocation lbLoc,
   return CreateBuiltinArraySubscriptExpr(base, lbLoc, idx, rbLoc);
 }
 
-static QualType getNonOMPArraySectionType(Expr *Base) {
-  unsigned ArraySectionCount = 0;
-  while (auto *OASE = dyn_cast<OMPArraySectionExpr>(Base->IgnoreParens())) {
-    Base = OASE->getBase();
-    ++ArraySectionCount;
-  }
-  auto OriginalTy = Base->getType();
-  if (auto *DRE = dyn_cast<DeclRefExpr>(Base))
-    if (auto *PVD = dyn_cast<ParmVarDecl>(DRE->getDecl()))
-      OriginalTy = PVD->getOriginalType().getNonReferenceType();
-
-  for (unsigned Cnt = 0; Cnt < ArraySectionCount; ++Cnt) {
-    if (OriginalTy->isAnyPointerType())
-      OriginalTy = OriginalTy->getPointeeType();
-    else {
-      assert (OriginalTy->isArrayType());
-      OriginalTy = OriginalTy->castAsArrayTypeUnsafe()->getElementType();
-    }
-  }
-  return OriginalTy;
-}
-
 ExprResult Sema::ActOnOMPArraySectionExpr(Expr *Base, SourceLocation LBLoc,
                                           Expr *LowerBound,
                                           SourceLocation ColonLoc, Expr *Length,
@@ -4045,7 +4030,7 @@ ExprResult Sema::ActOnOMPArraySectionExpr(Expr *Base, SourceLocation LBLoc,
   }
 
   // Perform default conversions.
-  QualType OriginalTy = getNonOMPArraySectionType(Base);
+  QualType OriginalTy = OMPArraySectionExpr::getBaseOriginalType(Base);
   QualType ResultTy;
   if (OriginalTy->isAnyPointerType()) {
     ResultTy = OriginalTy->getPointeeType();
@@ -7776,7 +7761,7 @@ static bool checkArithmeticBinOpPointerOperands(Sema &S, SourceLocation Loc,
   if (isRHSPointer) RHSPointeeTy = RHSExpr->getType()->getPointeeType();
 
   // if both are pointers check if operation is valid wrt address spaces
-  if (isLHSPointer && isRHSPointer) {
+  if (S.getLangOpts().OpenCL && isLHSPointer && isRHSPointer) {
     const PointerType *lhsPtr = LHSExpr->getType()->getAs<PointerType>();
     const PointerType *rhsPtr = RHSExpr->getType()->getAs<PointerType>();
     if (!lhsPtr->isAddressSpaceOverlapping(*rhsPtr)) {
@@ -8805,12 +8790,14 @@ QualType Sema::CheckCompareOperands(ExprResult &LHS, ExprResult &RHS,
       diagnoseDistinctPointerComparison(*this, Loc, LHS, RHS, /*isError*/false);
     }
     if (LCanPointeeTy != RCanPointeeTy) {
-      const PointerType *lhsPtr = LHSType->getAs<PointerType>();
-      if (!lhsPtr->isAddressSpaceOverlapping(*RHSType->getAs<PointerType>())) {
-        Diag(Loc,
-             diag::err_typecheck_op_on_nonoverlapping_address_space_pointers)
-            << LHSType << RHSType << 0 /* comparison */
-            << LHS.get()->getSourceRange() << RHS.get()->getSourceRange();
+      if (getLangOpts().OpenCL) {
+        const PointerType *LHSPtr = LHSType->getAs<PointerType>();
+        if (!LHSPtr->isAddressSpaceOverlapping(*RHSType->getAs<PointerType>())) {
+          Diag(Loc,
+               diag::err_typecheck_op_on_nonoverlapping_address_space_pointers)
+              << LHSType << RHSType << 0 /* comparison */
+              << LHS.get()->getSourceRange() << RHS.get()->getSourceRange();
+        }
       }
       unsigned AddrSpaceL = LCanPointeeTy.getAddressSpace();
       unsigned AddrSpaceR = RCanPointeeTy.getAddressSpace();
@@ -10298,6 +10285,20 @@ ExprResult Sema::CreateBuiltinBinOp(SourceLocation OpLoc,
       return ExprError();
   }
 
+  if (getLangOpts().OpenCL) {
+    // OpenCLC v2.0 s6.13.11.1 allows atomic variables to be initialized by
+    // the ATOMIC_VAR_INIT macro.
+    if (LHSExpr->getType()->isAtomicType() ||
+        RHSExpr->getType()->isAtomicType()) {
+      SourceRange SR(LHSExpr->getLocStart(), RHSExpr->getLocEnd());
+      if (BO_Assign == Opc)
+        Diag(OpLoc, diag::err_atomic_init_constant) << SR;
+      else
+        ResultTy = InvalidOperands(OpLoc, LHS, RHS);
+      return ExprError();
+    }
+  }
+
   switch (Opc) {
   case BO_Assign:
     ResultTy = CheckAssignmentOperands(LHS.get(), RHS, OpLoc, QualType());
@@ -10770,6 +10771,14 @@ ExprResult Sema::CreateBuiltinUnaryOp(SourceLocation OpLoc,
   ExprValueKind VK = VK_RValue;
   ExprObjectKind OK = OK_Ordinary;
   QualType resultType;
+  if (getLangOpts().OpenCL) {
+    // The only legal unary operation for atomics is '&'.
+    if (Opc != UO_AddrOf && InputExpr->getType()->isAtomicType()) {
+      return ExprError(Diag(OpLoc, diag::err_typecheck_unary_expr)
+                       << InputExpr->getType()
+                       << Input.get()->getSourceRange());
+    }
+  }
   switch (Opc) {
   case UO_PreInc:
   case UO_PreDec:
@@ -13174,10 +13183,18 @@ bool Sema::tryCaptureVariable(
     if (getLangOpts().OpenMP) {
       if (auto *RSI = dyn_cast<CapturedRegionScopeInfo>(CSI)) {
         // OpenMP private variables should not be captured in outer scope, so
-        // just break here.
+        // just break here. Similarly, global variables that are captured in a
+        // target region should not be captured outside the scope of the region.
         if (RSI->CapRegionKind == CR_OpenMP) {
-          if (isOpenMPPrivateVar(Var, OpenMPLevel)) {
-            Nested = true;
+          auto isTargetCap = isOpenMPTargetCapturedVar(Var, OpenMPLevel);
+          // When we detect target captures we are looking from inside the
+          // target region, therefore we need to propagate the capture from the
+          // enclosing region. Therefore, the capture is not initially nested.
+          if (isTargetCap)
+            FunctionScopesIndex--;
+
+          if (isTargetCap || isOpenMPPrivateVar(Var, OpenMPLevel)) {
+            Nested = !isTargetCap;
             DeclRefType = DeclRefType.getUnqualifiedType();
             CaptureType = Context.getLValueReferenceType(DeclRefType);
             break;

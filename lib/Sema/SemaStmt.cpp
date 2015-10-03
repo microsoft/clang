@@ -2987,14 +2987,9 @@ bool Sema::DeduceFunctionTypeFromReturnExpr(FunctionDecl *FD,
     //   statement with a non-type-dependent operand.
     assert(AT->isDeduced() && "should have deduced to dependent type");
     return false;
-  } else if (RetExpr) {
-    //  If the deduction is for a return statement and the initializer is
-    //  a braced-init-list, the program is ill-formed.
-    if (isa<InitListExpr>(RetExpr)) {
-      Diag(RetExpr->getExprLoc(), diag::err_auto_fn_return_init_list);
-      return true;
-    }
+  } 
 
+  if (RetExpr) {
     //  Otherwise, [...] deduce a value for U using the rules of template
     //  argument deduction.
     DeduceAutoResult DAR = DeduceAutoType(OrigResultType, RetExpr, Deduced);
@@ -3033,8 +3028,11 @@ bool Sema::DeduceFunctionTypeFromReturnExpr(FunctionDecl *FD,
   //  the program is ill-formed.
   if (AT->isDeduced() && !FD->isInvalidDecl()) {
     AutoType *NewAT = Deduced->getContainedAutoType();
-    if (!FD->isDependentContext() &&
-        !Context.hasSameType(AT->getDeducedType(), NewAT->getDeducedType())) {
+    CanQualType OldDeducedType = Context.getCanonicalFunctionResultType(
+                                   AT->getDeducedType());
+    CanQualType NewDeducedType = Context.getCanonicalFunctionResultType(
+                                   NewAT->getDeducedType());
+    if (!FD->isDependentContext() && OldDeducedType != NewDeducedType) {
       const LambdaScopeInfo *LambdaSI = getCurLambda();
       if (LambdaSI && LambdaSI->HasImplicitReturnType) {
         Diag(ReturnLoc, diag::err_typecheck_missing_return_type_incompatible)
