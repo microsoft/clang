@@ -147,7 +147,7 @@ CXSourceRange cxloc::translateSourceRange(const SourceManager &SM,
   SourceLocation EndLoc = R.getEnd();
   if (EndLoc.isValid() && EndLoc.isMacroID() && !SM.isMacroArgExpansion(EndLoc))
     EndLoc = SM.getExpansionRange(EndLoc).second;
-  if (R.isTokenRange() && !EndLoc.isInvalid()) {
+  if (R.isTokenRange() && EndLoc.isValid()) {
     unsigned Length = Lexer::MeasureTokenLength(SM.getSpellingLoc(EndLoc),
                                                 SM, LangOpts);
     EndLoc = EndLoc.getLocWithOffset(Length);
@@ -2830,7 +2830,7 @@ namespace {
 typedef SmallVector<SourceRange, 4> RefNamePieces;
 RefNamePieces
 buildPieces(unsigned NameFlags, bool IsMemberRefExpr,
-            const DeclarationNameInfo &NI, const SourceRange &QLoc,
+            const DeclarationNameInfo &NI, SourceRange QLoc,
             const ASTTemplateArgumentListInfo *TemplateArgs = nullptr) {
   const bool WantQualifier = NameFlags & CXNameRange_WantQualifier;
   const bool WantTemplateArgs = NameFlags & CXNameRange_WantTemplateArgs;
