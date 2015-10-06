@@ -4452,10 +4452,6 @@ public:
       if (Feature[0] == '+')
         Features[Feature+1] = true; 
 
-    if (ArchVersion < 6  || 
-       (ArchVersion == 6 && ArchProfile == llvm::ARM::PK_M))
-      Features["strict-align"] = true;
-
     return TargetInfo::initFeatureMap(Features, Diags, CPU, FeaturesVec);
   }
 
@@ -6312,6 +6308,7 @@ public:
         .Case("mips64r5", true)
         .Case("mips64r6", true)
         .Case("octeon", true)
+        .Case("p5600", true)
         .Default(false);
   }
   const std::string& getCPU() const { return CPU; }

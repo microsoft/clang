@@ -412,6 +412,18 @@ const internal::VariadicAllOfMatcher<CXXCtorInitializer> cxxCtorInitializer;
 ///   matches 'int' in C<int>.
 const internal::VariadicAllOfMatcher<TemplateArgument> templateArgument;
 
+/// \brief Matches non-type template parameter declarations.
+///
+/// Given
+/// \code
+///   template <typename T, int N> struct C {};
+/// \endcode
+/// templateArgument()
+///   matches 'N', but not 'T'.
+const internal::VariadicDynCastAllOfMatcher<
+  Decl,
+  NonTypeTemplateParmDecl> nonTypeTemplateParmDecl;
+
 /// \brief Matches public C++ declarations.
 ///
 /// Given
@@ -3253,6 +3265,20 @@ AST_POLYMORPHIC_MATCHER(isDefinition,
                         AST_POLYMORPHIC_SUPPORTED_TYPES(TagDecl, VarDecl,
                                                         FunctionDecl)) {
   return Node.isThisDeclarationADefinition();
+}
+
+/// \brief Matches if a function declaration is variadic.
+///
+/// Example matches f, but not g or h. The function i will not match, even when
+/// compiled in C mode.
+/// \code
+///   void f(...);
+///   void g(int);
+///   template <typename... Ts> void h(Ts...);
+///   void i();
+/// \endcode
+AST_MATCHER(FunctionDecl, isVariadic) {
+  return Node.isVariadic();
 }
 
 /// \brief Matches the class declaration that the given method declaration

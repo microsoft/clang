@@ -52,6 +52,7 @@ class CodeGenABITypes
 public:
   CodeGenABITypes(ASTContext &C, llvm::Module &M,
                   CoverageSourceInfo *CoverageInfo = nullptr);
+  ~CodeGenABITypes();
 
   /// These methods all forward to methods in the private implementation class
   /// CodeGenTypes.

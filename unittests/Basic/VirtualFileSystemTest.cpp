@@ -43,6 +43,12 @@ public:
   openFileForRead(const Twine &Path) override {
     llvm_unreachable("unimplemented");
   }
+  llvm::ErrorOr<std::string> getCurrentWorkingDirectory() const override {
+    return std::string();
+  }
+  std::error_code setCurrentWorkingDirectory(const Twine &Path) override {
+    return std::error_code();
+  }
 
   struct DirIterImpl : public clang::vfs::detail::DirIterImpl {
     std::map<std::string, vfs::Status> &FilesAndDirs;
@@ -92,20 +98,20 @@ public:
   }
 
   void addRegularFile(StringRef Path, sys::fs::perms Perms = sys::fs::all_all) {
-    vfs::Status S(Path, Path, UniqueID(FSID, FileID++), sys::TimeValue::now(),
-                  0, 0, 1024, sys::fs::file_type::regular_file, Perms);
+    vfs::Status S(Path, UniqueID(FSID, FileID++), sys::TimeValue::now(), 0, 0,
+                  1024, sys::fs::file_type::regular_file, Perms);
     addEntry(Path, S);
   }
 
   void addDirectory(StringRef Path, sys::fs::perms Perms = sys::fs::all_all) {
-    vfs::Status S(Path, Path, UniqueID(FSID, FileID++), sys::TimeValue::now(),
-                  0, 0, 0, sys::fs::file_type::directory_file, Perms);
+    vfs::Status S(Path, UniqueID(FSID, FileID++), sys::TimeValue::now(), 0, 0,
+                  0, sys::fs::file_type::directory_file, Perms);
     addEntry(Path, S);
   }
 
   void addSymlink(StringRef Path) {
-    vfs::Status S(Path, Path, UniqueID(FSID, FileID++), sys::TimeValue::now(),
-                  0, 0, 0, sys::fs::file_type::symlink_file, sys::fs::all_all);
+    vfs::Status S(Path, UniqueID(FSID, FileID++), sys::TimeValue::now(), 0, 0,
+                  0, sys::fs::file_type::symlink_file, sys::fs::all_all);
     addEntry(Path, S);
   }
 };
@@ -513,6 +519,73 @@ TEST(VirtualFileSystemTest, HiddenInIteration) {
     ASSERT_NE(E, I);
     EXPECT_EQ(sys::fs::owner_write, I->getPermissions());
   }
+}
+
+class InMemoryFileSystemTest : public ::testing::Test {
+protected:
+  clang::vfs::InMemoryFileSystem FS;
+};
+
+TEST_F(InMemoryFileSystemTest, IsEmpty) {
+  auto Stat = FS.status("/a");
+  ASSERT_EQ(Stat.getError(),errc::no_such_file_or_directory) << FS.toString();
+  Stat = FS.status("/");
+  ASSERT_EQ(Stat.getError(), errc::no_such_file_or_directory) << FS.toString();
+}
+
+TEST_F(InMemoryFileSystemTest, WindowsPath) {
+  FS.addFile("c:/windows/system128/foo.cpp", 0, MemoryBuffer::getMemBuffer(""));
+  auto Stat = FS.status("c:");
+  ASSERT_FALSE(Stat.getError()) << Stat.getError() << FS.toString();
+  Stat = FS.status("c:/windows/system128/foo.cpp");
+  ASSERT_FALSE(Stat.getError()) << Stat.getError() << FS.toString();
+  FS.addFile("d:/windows/foo.cpp", 0, MemoryBuffer::getMemBuffer(""));
+  Stat = FS.status("d:/windows/foo.cpp");
+  ASSERT_FALSE(Stat.getError()) << Stat.getError() << FS.toString();
+}
+
+TEST_F(InMemoryFileSystemTest, OverlayFile) {
+  FS.addFile("/a", 0, MemoryBuffer::getMemBuffer("a"));
+  auto Stat = FS.status("/");
+  ASSERT_FALSE(Stat.getError()) << Stat.getError() << FS.toString();
+  Stat = FS.status("/a");
+  ASSERT_FALSE(Stat.getError()) << Stat.getError() << "\n" << FS.toString();
+  ASSERT_EQ("/a", Stat->getName());
+}
+
+TEST_F(InMemoryFileSystemTest, OpenFileForRead) {
+  FS.addFile("/a", 0, MemoryBuffer::getMemBuffer("a"));
+  auto File = FS.openFileForRead("/a");
+  ASSERT_EQ("a", (*(*File)->getBuffer("ignored"))->getBuffer());
+  File = FS.openFileForRead("/a"); // Open again.
+  ASSERT_EQ("a", (*(*File)->getBuffer("ignored"))->getBuffer());
+  File = FS.openFileForRead("/");
+  ASSERT_EQ(File.getError(), errc::invalid_argument) << FS.toString();
+  File = FS.openFileForRead("/b");
+  ASSERT_EQ(File.getError(), errc::no_such_file_or_directory) << FS.toString();
+}
+
+TEST_F(InMemoryFileSystemTest, DirectoryIteration) {
+  FS.addFile("/a", 0, MemoryBuffer::getMemBuffer(""));
+  FS.addFile("/b/c", 0, MemoryBuffer::getMemBuffer(""));
+
+  std::error_code EC;
+  vfs::directory_iterator I = FS.dir_begin("/", EC);
+  ASSERT_FALSE(EC);
+  ASSERT_EQ("/a", I->getName());
+  I.increment(EC);
+  ASSERT_FALSE(EC);
+  ASSERT_EQ("/b", I->getName());
+  I.increment(EC);
+  ASSERT_FALSE(EC);
+  ASSERT_EQ(vfs::directory_iterator(), I);
+
+  I = FS.dir_begin("/b", EC);
+  ASSERT_FALSE(EC);
+  ASSERT_EQ("/b/c", I->getName());
+  I.increment(EC);
+  ASSERT_FALSE(EC);
+  ASSERT_EQ(vfs::directory_iterator(), I);
 }
 
 // NOTE: in the tests below, we use '//root/' as our root directory, since it is
