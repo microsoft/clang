@@ -17,6 +17,7 @@
 #include "clang/Driver/Compilation.h"
 #include "clang/Driver/Driver.h"
 #include "clang/Driver/Tool.h"
+#include "clang/Driver/ToolChain.h"
 #include "clang/Frontend/ASTUnit.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/FrontendDiagnostic.h"
@@ -160,6 +161,31 @@ std::string getAbsolutePath(StringRef File) {
   (void)EC;
   llvm::sys::path::native(AbsolutePath);
   return AbsolutePath.str();
+}
+
+void addTargetAndModeForProgramName(std::vector<std::string> &CommandLine,
+                                    StringRef InvokedAs) {
+  if (!CommandLine.empty() && !InvokedAs.empty()) {
+    bool AlreadyHasTarget = false;
+    bool AlreadyHasMode = false;
+    // Skip CommandLine[0].
+    for (auto Token = ++CommandLine.begin(); Token != CommandLine.end();
+         ++Token) {
+      StringRef TokenRef(*Token);
+      AlreadyHasTarget |=
+          (TokenRef == "-target" || TokenRef.startswith("-target="));
+      AlreadyHasMode |= (TokenRef == "--driver-mode" ||
+                         TokenRef.startswith("--driver-mode="));
+    }
+    auto TargetMode =
+        clang::driver::ToolChain::getTargetAndModeFromProgramName(InvokedAs);
+    if (!AlreadyHasMode && !TargetMode.second.empty()) {
+      CommandLine.insert(++CommandLine.begin(), TargetMode.second);
+    }
+    if (!AlreadyHasTarget && !TargetMode.first.empty()) {
+      CommandLine.insert(++CommandLine.begin(), {"-target", TargetMode.first});
+    }
+  }
 }
 
 namespace {
@@ -392,12 +418,12 @@ public:
   bool runInvocation(CompilerInvocation *Invocation, FileManager *Files,
                      std::shared_ptr<PCHContainerOperations> PCHContainerOps,
                      DiagnosticConsumer *DiagConsumer) override {
-    // FIXME: This should use the provided FileManager.
     std::unique_ptr<ASTUnit> AST = ASTUnit::LoadFromCompilerInvocation(
         Invocation, PCHContainerOps,
         CompilerInstance::createDiagnostics(&Invocation->getDiagnosticOpts(),
                                             DiagConsumer,
-                                            /*ShouldOwnClient=*/false));
+                                            /*ShouldOwnClient=*/false),
+        Files);
     if (!AST)
       return false;
 
@@ -429,8 +455,10 @@ std::unique_ptr<ASTUnit> buildASTFromCodeWithArgs(
 
   std::vector<std::unique_ptr<ASTUnit>> ASTs;
   ASTBuilderAction Action(ASTs);
+  llvm::IntrusiveRefCntPtr<FileManager> Files(
+      new FileManager(FileSystemOptions()));
   ToolInvocation Invocation(getSyntaxOnlyToolArgs(Args, FileNameRef), &Action,
-                            nullptr, PCHContainerOps);
+                            Files.get(), PCHContainerOps);
 
   SmallString<1024> CodeStorage;
   Invocation.mapVirtualFile(FileNameRef,
