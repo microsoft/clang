@@ -37,6 +37,7 @@
 using clang::format::FormatStyle;
 
 LLVM_YAML_IS_FLOW_SEQUENCE_VECTOR(std::string)
+LLVM_YAML_IS_SEQUENCE_VECTOR(clang::format::FormatStyle::IncludeCategory)
 
 namespace llvm {
 namespace yaml {
@@ -247,6 +248,7 @@ template <> struct MappingTraits<FormatStyle> {
     IO.mapOptional("ExperimentalAutoDetectBinPacking",
                    Style.ExperimentalAutoDetectBinPacking);
     IO.mapOptional("ForEachMacros", Style.ForEachMacros);
+    IO.mapOptional("IncludeCategories", Style.IncludeCategories);
     IO.mapOptional("IndentCaseLabels", Style.IndentCaseLabels);
     IO.mapOptional("IndentWidth", Style.IndentWidth);
     IO.mapOptional("IndentWrappedFunctionNames",
@@ -307,6 +309,13 @@ template <> struct MappingTraits<FormatStyle::BraceWrappingFlags> {
   }
 };
 
+template <> struct MappingTraits<FormatStyle::IncludeCategory> {
+  static void mapping(IO &IO, FormatStyle::IncludeCategory &Category) {
+    IO.mapOptional("Regex", Category.Regex);
+    IO.mapOptional("Priority", Category.Priority);
+  }
+};
+
 // Allows to read vector<FormatStyle> while keeping default values.
 // IO.getContext() should contain a pointer to the FormatStyle structure, that
 // will be used to get default values for missing keys.
@@ -363,6 +372,8 @@ std::string ParseErrorCategory::message(int EV) const {
 }
 
 static FormatStyle expandPresets(const FormatStyle &Style) {
+  if (Style.BreakBeforeBraces == FormatStyle::BS_Custom)
+    return Style;
   FormatStyle Expanded = Style;
   Expanded.BraceWrapping = {false, false, false, false, false, false,
                             false, false, false, false, false};
@@ -433,6 +444,8 @@ FormatStyle getLLVMStyle() {
   LLVMStyle.BreakBeforeBinaryOperators = FormatStyle::BOS_None;
   LLVMStyle.BreakBeforeTernaryOperators = true;
   LLVMStyle.BreakBeforeBraces = FormatStyle::BS_Attach;
+  LLVMStyle.BraceWrapping = {false, false, false, false, false, false,
+                             false, false, false, false, false};
   LLVMStyle.BreakConstructorInitializersBeforeComma = false;
   LLVMStyle.ColumnLimit = 80;
   LLVMStyle.CommentPragmas = "^ IWYU pragma:";
@@ -1737,8 +1750,8 @@ tooling::Replacements sortIncludes(const FormatStyle &Style, StringRef Code,
 
   // Create pre-compiled regular expressions for the #include categories.
   SmallVector<llvm::Regex, 4> CategoryRegexs;
-  for (const auto &IncludeBlock : Style.IncludeCategories)
-    CategoryRegexs.emplace_back(IncludeBlock.first);
+  for (const auto &Category : Style.IncludeCategories)
+    CategoryRegexs.emplace_back(Category.Regex);
 
   for (;;) {
     auto Pos = Code.find('\n', SearchFrom);
@@ -1753,7 +1766,7 @@ tooling::Replacements sortIncludes(const FormatStyle &Style, StringRef Code,
           Category = UINT_MAX;
           for (unsigned i = 0, e = CategoryRegexs.size(); i != e; ++i) {
             if (CategoryRegexs[i].match(Matches[1])) {
-              Category = Style.IncludeCategories[i].second;
+              Category = Style.IncludeCategories[i].Priority;
               break;
             }
           }
@@ -1792,18 +1805,17 @@ tooling::Replacements reformat(const FormatStyle &Style, StringRef Code,
   if (Style.DisableFormat)
     return tooling::Replacements();
 
-  FileManager Files((FileSystemOptions()));
+  IntrusiveRefCntPtr<vfs::InMemoryFileSystem> InMemoryFileSystem(
+      new vfs::InMemoryFileSystem);
+  FileManager Files(FileSystemOptions(), InMemoryFileSystem);
   DiagnosticsEngine Diagnostics(
       IntrusiveRefCntPtr<DiagnosticIDs>(new DiagnosticIDs),
       new DiagnosticOptions);
   SourceManager SourceMgr(Diagnostics, Files);
-  std::unique_ptr<llvm::MemoryBuffer> Buf =
-      llvm::MemoryBuffer::getMemBuffer(Code, FileName);
-  const clang::FileEntry *Entry =
-      Files.getVirtualFile(FileName, Buf->getBufferSize(), 0);
-  SourceMgr.overrideFileContents(Entry, std::move(Buf));
-  FileID ID =
-      SourceMgr.createFileID(Entry, SourceLocation(), clang::SrcMgr::C_User);
+  InMemoryFileSystem->addFile(FileName, 0,
+                              llvm::MemoryBuffer::getMemBuffer(Code, FileName));
+  FileID ID = SourceMgr.createFileID(Files.getFile(FileName), SourceLocation(),
+                                     clang::SrcMgr::C_User);
   SourceLocation StartOfFile = SourceMgr.getLocForStartOfFile(ID);
   std::vector<CharSourceRange> CharRanges;
   for (const tooling::Range &Range : Ranges) {

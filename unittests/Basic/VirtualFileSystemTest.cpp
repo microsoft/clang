@@ -14,6 +14,7 @@
 #include "llvm/Support/SourceMgr.h"
 #include "gtest/gtest.h"
 #include <map>
+
 using namespace clang;
 using namespace llvm;
 using llvm::sys::fs::UniqueID;
@@ -285,7 +286,7 @@ struct ScopedDir {
   }
   operator StringRef() { return Path.str(); }
 };
-}
+} // end anonymous namespace
 
 TEST(VirtualFileSystemTest, BasicRealFSIteration) {
   ScopedDir TestDirectory("virtual-file-system-test", /*Unique*/true);
@@ -536,7 +537,9 @@ TEST_F(InMemoryFileSystemTest, IsEmpty) {
 TEST_F(InMemoryFileSystemTest, WindowsPath) {
   FS.addFile("c:/windows/system128/foo.cpp", 0, MemoryBuffer::getMemBuffer(""));
   auto Stat = FS.status("c:");
+#if !defined(_WIN32)
   ASSERT_FALSE(Stat.getError()) << Stat.getError() << FS.toString();
+#endif
   Stat = FS.status("c:/windows/system128/foo.cpp");
   ASSERT_FALSE(Stat.getError()) << Stat.getError() << FS.toString();
   FS.addFile("d:/windows/foo.cpp", 0, MemoryBuffer::getMemBuffer(""));
@@ -548,21 +551,36 @@ TEST_F(InMemoryFileSystemTest, OverlayFile) {
   FS.addFile("/a", 0, MemoryBuffer::getMemBuffer("a"));
   auto Stat = FS.status("/");
   ASSERT_FALSE(Stat.getError()) << Stat.getError() << FS.toString();
+  Stat = FS.status("/.");
+  ASSERT_FALSE(Stat.getError()) << Stat.getError() << FS.toString();
   Stat = FS.status("/a");
+  ASSERT_FALSE(Stat.getError()) << Stat.getError() << "\n" << FS.toString();
+  ASSERT_EQ("/a", Stat->getName());
+}
+
+TEST_F(InMemoryFileSystemTest, OverlayFileNoOwn) {
+  auto Buf = MemoryBuffer::getMemBuffer("a");
+  FS.addFileNoOwn("/a", 0, Buf.get());
+  auto Stat = FS.status("/a");
   ASSERT_FALSE(Stat.getError()) << Stat.getError() << "\n" << FS.toString();
   ASSERT_EQ("/a", Stat->getName());
 }
 
 TEST_F(InMemoryFileSystemTest, OpenFileForRead) {
   FS.addFile("/a", 0, MemoryBuffer::getMemBuffer("a"));
+  FS.addFile("././c", 0, MemoryBuffer::getMemBuffer("c"));
   auto File = FS.openFileForRead("/a");
   ASSERT_EQ("a", (*(*File)->getBuffer("ignored"))->getBuffer());
   File = FS.openFileForRead("/a"); // Open again.
+  ASSERT_EQ("a", (*(*File)->getBuffer("ignored"))->getBuffer());
+  File = FS.openFileForRead("/././a"); // Open again.
   ASSERT_EQ("a", (*(*File)->getBuffer("ignored"))->getBuffer());
   File = FS.openFileForRead("/");
   ASSERT_EQ(File.getError(), errc::invalid_argument) << FS.toString();
   File = FS.openFileForRead("/b");
   ASSERT_EQ(File.getError(), errc::no_such_file_or_directory) << FS.toString();
+  File = FS.openFileForRead("./c");
+  ASSERT_EQ("c", (*(*File)->getBuffer("ignored"))->getBuffer());
 }
 
 TEST_F(InMemoryFileSystemTest, DirectoryIteration) {
@@ -586,6 +604,19 @@ TEST_F(InMemoryFileSystemTest, DirectoryIteration) {
   I.increment(EC);
   ASSERT_FALSE(EC);
   ASSERT_EQ(vfs::directory_iterator(), I);
+}
+
+TEST_F(InMemoryFileSystemTest, WorkingDirectory) {
+  FS.setCurrentWorkingDirectory("/b");
+  FS.addFile("c", 0, MemoryBuffer::getMemBuffer(""));
+
+  auto Stat = FS.status("/b/c");
+  ASSERT_FALSE(Stat.getError()) << Stat.getError() << "\n" << FS.toString();
+  ASSERT_EQ("c", Stat->getName());
+  ASSERT_EQ("/b", *FS.getCurrentWorkingDirectory());
+
+  Stat = FS.status("c");
+  ASSERT_FALSE(Stat.getError()) << Stat.getError() << "\n" << FS.toString();
 }
 
 // NOTE: in the tests below, we use '//root/' as our root directory, since it is
@@ -979,7 +1010,7 @@ TEST_F(VFSFromYAMLTest, DirectoryIteration) {
                     "]\n"
                     "}",
                     Lower);
-  ASSERT_TRUE(FS.get() != NULL);
+  ASSERT_TRUE(FS.get() != nullptr);
 
   IntrusiveRefCntPtr<vfs::OverlayFileSystem> O(
       new vfs::OverlayFileSystem(Lower));

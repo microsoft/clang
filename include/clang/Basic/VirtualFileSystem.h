@@ -206,6 +206,9 @@ public:
   /// Get the working directory of this file system.
   virtual llvm::ErrorOr<std::string> getCurrentWorkingDirectory() const = 0;
 
+  /// Check whether a file exists. Provided for convenience.
+  bool exists(const Twine &Path);
+
   /// Make \a Path an absolute path.
   ///
   /// Makes \a Path absolute using the current directory if it is not already.
@@ -274,8 +277,12 @@ class InMemoryFileSystem : public FileSystem {
 public:
   InMemoryFileSystem();
   ~InMemoryFileSystem() override;
+  /// Add a buffer to the VFS with a path. The VFS owns the buffer.
   void addFile(const Twine &Path, time_t ModificationTime,
                std::unique_ptr<llvm::MemoryBuffer> Buffer);
+  /// Add a buffer to the VFS with a path. The VFS does not own the buffer.
+  void addFileNoOwn(const Twine &Path, time_t ModificationTime,
+                    llvm::MemoryBuffer *Buffer);
   StringRef toString() const;
 
   llvm::ErrorOr<Status> status(const Twine &Path) override;

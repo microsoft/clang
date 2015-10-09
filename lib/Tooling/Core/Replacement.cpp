@@ -113,15 +113,7 @@ void Replacement::setFromSourceLocation(const SourceManager &Sources,
   const std::pair<FileID, unsigned> DecomposedLocation =
       Sources.getDecomposedLoc(Start);
   const FileEntry *Entry = Sources.getFileEntryForID(DecomposedLocation.first);
-  if (Entry) {
-    // Make FilePath absolute so replacements can be applied correctly when
-    // relative paths for files are used.
-    llvm::SmallString<256> FilePath(Entry->getName());
-    std::error_code EC = llvm::sys::fs::make_absolute(FilePath);
-    this->FilePath = EC ? FilePath.c_str() : Entry->getName();
-  } else {
-    this->FilePath = InvalidLocation;
-  }
+  this->FilePath = Entry ? Entry->getName() : InvalidLocation;
   this->ReplacementRange = Range(DecomposedLocation.second, Length);
   this->ReplacementText = ReplacementText;
 }
@@ -265,19 +257,18 @@ bool applyAllReplacements(const std::vector<Replacement> &Replaces,
 }
 
 std::string applyAllReplacements(StringRef Code, const Replacements &Replaces) {
-  FileManager Files((FileSystemOptions()));
+  IntrusiveRefCntPtr<vfs::InMemoryFileSystem> InMemoryFileSystem(
+      new vfs::InMemoryFileSystem);
+  FileManager Files(FileSystemOptions(), InMemoryFileSystem);
   DiagnosticsEngine Diagnostics(
       IntrusiveRefCntPtr<DiagnosticIDs>(new DiagnosticIDs),
       new DiagnosticOptions);
   SourceManager SourceMgr(Diagnostics, Files);
   Rewriter Rewrite(SourceMgr, LangOptions());
-  std::unique_ptr<llvm::MemoryBuffer> Buf =
-      llvm::MemoryBuffer::getMemBuffer(Code, "<stdin>");
-  const clang::FileEntry *Entry =
-      Files.getVirtualFile("<stdin>", Buf->getBufferSize(), 0);
-  SourceMgr.overrideFileContents(Entry, std::move(Buf));
-  FileID ID =
-      SourceMgr.createFileID(Entry, SourceLocation(), clang::SrcMgr::C_User);
+  InMemoryFileSystem->addFile(
+      "<stdin>", 0, llvm::MemoryBuffer::getMemBuffer(Code, "<stdin>"));
+  FileID ID = SourceMgr.createFileID(Files.getFile("<stdin>"), SourceLocation(),
+                                     clang::SrcMgr::C_User);
   for (Replacements::const_iterator I = Replaces.begin(), E = Replaces.end();
        I != E; ++I) {
     Replacement Replace("<stdin>", I->getOffset(), I->getLength(),

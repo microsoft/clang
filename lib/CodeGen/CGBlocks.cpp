@@ -1,4 +1,4 @@
-//===--- CGBlocks.cpp - Emit LLVM Code for declarations -------------------===//
+//===--- CGBlocks.cpp - Emit LLVM Code for declarations ---------*- C++ -*-===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -78,7 +78,7 @@ static llvm::Constant *buildBlockDescriptor(CodeGenModule &CGM,
   ASTContext &C = CGM.getContext();
 
   llvm::Type *ulong = CGM.getTypes().ConvertType(C.UnsignedLongTy);
-  llvm::Type *i8p = NULL;
+  llvm::Type *i8p = nullptr;
   if (CGM.getLangOpts().OpenCL)
     i8p = 
       llvm::Type::getInt8PtrTy(
@@ -232,7 +232,7 @@ namespace {
 
     return getPrefOrder(left) < getPrefOrder(right);
   }
-}
+} // end anonymous namespace
 
 /// Determines if the given type is safe for constant capture in C++.
 static bool isSafeForCXXConstantCapture(QualType type) {
@@ -943,7 +943,6 @@ llvm::Type *CodeGenModule::getGenericBlockLiteralType() {
   return GenericBlockLiteralType;
 }
 
-
 RValue CodeGenFunction::EmitBlockCallExpr(const CallExpr *E, 
                                           ReturnValueSlot ReturnValue) {
   const BlockPointerType *BPT =
@@ -1305,7 +1304,6 @@ CodeGenFunction::GenerateBlockFunction(GlobalDecl GD,
     }
  */
 
-
 /// Generate the copy-helper function for a block closure object:
 ///   static void block_copy_helper(block_t *dst, block_t *src);
 /// The runtime will have previously initialized 'dst' by doing a
@@ -1347,6 +1345,9 @@ CodeGenFunction::GenerateCopyHelperFunction(const CGBlockInfo &blockInfo) {
                                           nullptr, SC_Static,
                                           false,
                                           false);
+
+  CGM.SetInternalFunctionAttributes(nullptr, Fn, FI);
+
   auto NL = ApplyDebugLocation::CreateEmpty(*this);
   StartFunction(FD, C.VoidTy, Fn, FI, args);
   // Create a scope with an artificial location for the body of this function.
@@ -1518,6 +1519,9 @@ CodeGenFunction::GenerateDestroyHelperFunction(const CGBlockInfo &blockInfo) {
                                           SourceLocation(), II, C.VoidTy,
                                           nullptr, SC_Static,
                                           false, false);
+
+  CGM.SetInternalFunctionAttributes(nullptr, Fn, FI);
+
   // Create a scope with an artificial location for the body of this function.
   auto NL = ApplyDebugLocation::CreateEmpty(*this);
   StartFunction(FD, C.VoidTy, Fn, FI, args);
@@ -1800,6 +1804,8 @@ generateByrefCopyHelper(CodeGenFunction &CGF, const BlockByrefInfo &byrefInfo,
                                           SC_Static,
                                           false, false);
 
+  CGF.CGM.SetInternalFunctionAttributes(nullptr, Fn, FI);
+
   CGF.StartFunction(FD, R, Fn, FI, args);
 
   if (generator.needsCopy()) {
@@ -1871,6 +1877,9 @@ generateByrefDisposeHelper(CodeGenFunction &CGF,
                                           SourceLocation(), II, R, nullptr,
                                           SC_Static,
                                           false, false);
+
+  CGF.CGM.SetInternalFunctionAttributes(nullptr, Fn, FI);
+
   CGF.StartFunction(FD, R, Fn, FI, args);
 
   if (generator.needsDispose()) {
@@ -2252,7 +2261,7 @@ namespace {
       CGF.BuildBlockRelease(Addr, BLOCK_FIELD_IS_BYREF);
     }
   };
-}
+} // end anonymous namespace
 
 /// Enter a cleanup to destroy a __block variable.  Note that this
 /// cleanup should be a no-op if the variable hasn't left the stack
