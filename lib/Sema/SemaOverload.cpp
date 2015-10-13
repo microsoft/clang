@@ -2508,7 +2508,8 @@ enum {
   ft_parameter_arity,
   ft_parameter_mismatch,
   ft_return_type,
-  ft_qualifer_mismatch
+  ft_qualifer_mismatch,
+  ft_addr_enable_if
 };
 
 /// HandleFunctionTypeMismatch - Gives diagnostic information for differeing
@@ -8683,20 +8684,37 @@ void MaybeEmitInheritedConstructorNote(Sema &S, Decl *Fn) {
 
 } // end anonymous namespace
 
+static bool isFunctionAlwaysEnabled(const ASTContext &Ctx,
+                                    const FunctionDecl *FD) {
+  for (auto *EnableIf : FD->specific_attrs<EnableIfAttr>()) {
+    bool AlwaysTrue;
+    if (!EnableIf->getCond()->EvaluateAsBooleanCondition(AlwaysTrue, Ctx))
+      return false;
+    if (!AlwaysTrue)
+      return false;
+  }
+  return true;
+}
+
 // Notes the location of an overload candidate.
-void Sema::NoteOverloadCandidate(FunctionDecl *Fn, QualType DestType) {
+void Sema::NoteOverloadCandidate(FunctionDecl *Fn, QualType DestType,
+                                 bool TakingAddress) {
   std::string FnDesc;
   OverloadCandidateKind K = ClassifyOverloadCandidate(*this, Fn, FnDesc);
   PartialDiagnostic PD = PDiag(diag::note_ovl_candidate)
                              << (unsigned) K << FnDesc;
-  HandleFunctionTypeMismatch(PD, Fn->getType(), DestType);
+  if (TakingAddress && !isFunctionAlwaysEnabled(Context, Fn))
+    PD << ft_addr_enable_if;
+  else
+    HandleFunctionTypeMismatch(PD, Fn->getType(), DestType);
   Diag(Fn->getLocation(), PD);
   MaybeEmitInheritedConstructorNote(*this, Fn);
 }
 
 // Notes the location of all overload candidates designated through
 // OverloadedExpr
-void Sema::NoteAllOverloadCandidates(Expr* OverloadedExpr, QualType DestType) {
+void Sema::NoteAllOverloadCandidates(Expr *OverloadedExpr, QualType DestType,
+                                     bool TakingAddress) {
   assert(OverloadedExpr->getType() == Context.OverloadTy);
 
   OverloadExpr::FindResult Ovl = OverloadExpr::find(OverloadedExpr);
@@ -8707,10 +8725,11 @@ void Sema::NoteAllOverloadCandidates(Expr* OverloadedExpr, QualType DestType) {
        I != IEnd; ++I) {
     if (FunctionTemplateDecl *FunTmpl = 
                 dyn_cast<FunctionTemplateDecl>((*I)->getUnderlyingDecl()) ) {
-      NoteOverloadCandidate(FunTmpl->getTemplatedDecl(), DestType);
+      NoteOverloadCandidate(FunTmpl->getTemplatedDecl(), DestType,
+                            TakingAddress);
     } else if (FunctionDecl *Fun 
                       = dyn_cast<FunctionDecl>((*I)->getUnderlyingDecl()) ) {
-      NoteOverloadCandidate(Fun, DestType);
+      NoteOverloadCandidate(Fun, DestType, TakingAddress);
     }
   }
 }
@@ -9911,6 +9930,7 @@ class AddressOfFunctionResolver {
   bool TargetTypeIsNonStaticMemberFunction;
   bool FoundNonTemplateFunction;
   bool StaticMemberFunctionFromBoundPointer;
+  bool HasComplained;
 
   OverloadExpr::FindResult OvlExprInfo; 
   OverloadExpr *OvlExpr;
@@ -9927,6 +9947,7 @@ public:
             !!TargetType->getAs<MemberPointerType>()),
         FoundNonTemplateFunction(false),
         StaticMemberFunctionFromBoundPointer(false),
+        HasComplained(false),
         OvlExprInfo(OverloadExpr::find(SourceExpr)),
         OvlExpr(OvlExprInfo.Expression),
         FailedCandidates(OvlExpr->getNameLoc()) {
@@ -9977,7 +9998,9 @@ public:
         Matches.size() > 1)
       EliminateSuboptimalCudaMatches();
   }
-  
+
+  bool hasComplained() const { return HasComplained; }
+
 private:
   bool isTargetTypeAFunction() const {
     return TargetFunctionType->isFunctionType();
@@ -10031,7 +10054,12 @@ private:
     Specialization = cast<FunctionDecl>(Specialization->getCanonicalDecl());
     assert(S.isSameOrCompatibleFunctionType(
               Context.getCanonicalType(Specialization->getType()),
-              Context.getCanonicalType(TargetFunctionType)));
+              Context.getCanonicalType(TargetFunctionType)) ||
+           (!S.getLangOpts().CPlusPlus && TargetType->isVoidPointerType()));
+
+    if (!isFunctionAlwaysEnabled(S.Context, Specialization))
+      return false;
+
     Matches.push_back(std::make_pair(CurAccessFunPair, Specialization));
     return true;
   }
@@ -10057,16 +10085,22 @@ private:
       // now.
       if (S.getLangOpts().CPlusPlus14 &&
           FunDecl->getReturnType()->isUndeducedType() &&
-          S.DeduceReturnType(FunDecl, SourceExpr->getLocStart(), Complain))
+          S.DeduceReturnType(FunDecl, SourceExpr->getLocStart(), Complain)) {
+        HasComplained |= Complain;
+        return false;
+      }
+
+      if (!isFunctionAlwaysEnabled(S.Context, FunDecl))
         return false;
 
       QualType ResultTy;
       if (Context.hasSameUnqualifiedType(TargetFunctionType, 
                                          FunDecl->getType()) ||
           S.IsNoReturnConversion(FunDecl->getType(), TargetFunctionType,
-                                 ResultTy)) {
-        Matches.push_back(std::make_pair(CurAccessFunPair,
-          cast<FunctionDecl>(FunDecl->getCanonicalDecl())));
+                                 ResultTy) ||
+          (!S.getLangOpts().CPlusPlus && TargetType->isVoidPointerType())) {
+        Matches.push_back(std::make_pair(
+            CurAccessFunPair, cast<FunctionDecl>(FunDecl->getCanonicalDecl())));
         FoundNonTemplateFunction = true;
         return true;
       }
@@ -10140,7 +10174,8 @@ private:
       Matches[0].first = Matches[Result - MatchesCopy.begin()].first;
       Matches[0].second = cast<FunctionDecl>(*Result);
       Matches.resize(1);
-    }
+    } else
+      HasComplained |= Complain;
   }
 
   void EliminateAllTemplateMatches() {
@@ -10167,7 +10202,8 @@ public:
         << OvlExpr->getName() << TargetFunctionType
         << OvlExpr->getSourceRange();
     if (FailedCandidates.empty())
-      S.NoteAllOverloadCandidates(OvlExpr, TargetFunctionType);
+      S.NoteAllOverloadCandidates(OvlExpr, TargetFunctionType,
+                                  /*TakingAddress=*/true);
     else {
       // We have some deduction failure messages. Use them to diagnose
       // the function templates, and diagnose the non-template candidates
@@ -10177,7 +10213,8 @@ public:
            I != IEnd; ++I)
         if (FunctionDecl *Fun =
                 dyn_cast<FunctionDecl>((*I)->getUnderlyingDecl()))
-          S.NoteOverloadCandidate(Fun, TargetFunctionType);
+          S.NoteOverloadCandidate(Fun, TargetFunctionType,
+                                  /*TakingAddress=*/true);
       FailedCandidates.NoteCandidates(S, OvlExpr->getLocStart());
     }
   }
@@ -10215,7 +10252,8 @@ public:
     S.Diag(OvlExpr->getLocStart(), diag::err_addr_ovl_ambiguous)
       << OvlExpr->getName()
       << OvlExpr->getSourceRange();
-    S.NoteAllOverloadCandidates(OvlExpr, TargetFunctionType);
+    S.NoteAllOverloadCandidates(OvlExpr, TargetFunctionType,
+                                /*TakingAddress=*/true);
   }
 
   bool hadMultipleCandidates() const { return (OvlExpr->getNumDecls() > 1); }
@@ -10261,13 +10299,14 @@ Sema::ResolveAddressOfOverloadedFunction(Expr *AddressOfExpr,
                                      Complain);
   int NumMatches = Resolver.getNumMatches();
   FunctionDecl *Fn = nullptr;
-  if (NumMatches == 0 && Complain) {
+  bool ShouldComplain = Complain && !Resolver.hasComplained();
+  if (NumMatches == 0 && ShouldComplain) {
     if (Resolver.IsInvalidFormOfPointerToMemberFunction())
       Resolver.ComplainIsInvalidFormOfPointerToMemberFunction();
     else
       Resolver.ComplainNoMatchesFound();
   }
-  else if (NumMatches > 1 && Complain)
+  else if (NumMatches > 1 && ShouldComplain)
     Resolver.ComplainMultipleMatchesFound();
   else if (NumMatches == 1) {
     Fn = Resolver.getMatchingFunctionDecl();
