@@ -140,7 +140,6 @@ class CGDebugInfo {
   /// @{
   /// Currently the checksum of an interface includes the number of
   /// ivars and property accessors.
-  unsigned Checksum(const ObjCInterfaceDecl *InterfaceDecl);
   llvm::DIType *CreateType(const BuiltinType *Ty);
   llvm::DIType *CreateType(const ComplexType *Ty);
   llvm::DIType *CreateQualifiedType(QualType Ty, llvm::DIFile *Fg);
@@ -199,11 +198,8 @@ class CGDebugInfo {
   llvm::DIType *getOrCreateVTablePtrType(llvm::DIFile *F);
   /// \return namespace descriptor for the given namespace decl.
   llvm::DINamespace *getOrCreateNameSpace(const NamespaceDecl *N);
-  llvm::DIType *getOrCreateTypeDeclaration(QualType PointeeTy, llvm::DIFile *F);
   llvm::DIType *CreatePointerLikeType(llvm::dwarf::Tag Tag, const Type *Ty,
                                       QualType PointeeTy, llvm::DIFile *F);
-
-  llvm::Value *getCachedInterfaceTypeOrNull(const QualType Ty);
   llvm::DIType *getOrCreateStructPtrType(StringRef Name, llvm::DIType *&Cache);
 
   /// A helper function to create a subprogram for a single member
@@ -435,10 +431,6 @@ private:
   /// Create type metadata for a source language type.
   llvm::DIType *CreateTypeNode(QualType Ty, llvm::DIFile *Fg);
 
-  /// Return the underlying ObjCInterfaceDecl if \arg Ty is an
-  /// ObjCInterface or a pointer to one.
-  ObjCInterfaceDecl *getObjCInterfaceDecl(QualType Ty);
-
   /// Create new member and increase Offset by FType's size.
   llvm::DIType *CreateMemberType(llvm::DIFile *Unit, QualType FType,
                                  StringRef Name, uint64_t *Offset);
@@ -587,12 +579,6 @@ public:
     return ApplyDebugLocation(CGF, true, SourceLocation());
   }
 
-  /// \brief Apply TemporaryLocation if it is valid. Otherwise set the IRBuilder
-  /// to not attach debug locations.
-  static ApplyDebugLocation
-  CreateDefaultEmpty(CodeGenFunction &CGF, SourceLocation TemporaryLocation) {
-    return ApplyDebugLocation(CGF, true, TemporaryLocation);
-  }
 };
 
 } // namespace CodeGen
