@@ -1648,7 +1648,7 @@ static std::string getCPUName(const ArgList &Args, const llvm::Triple &T,
 }
 
 static void AddGoldPlugin(const ToolChain &ToolChain, const ArgList &Args,
-                          ArgStringList &CmdArgs) {
+                          ArgStringList &CmdArgs, bool IsThinLTO) {
   // Tell the linker to load the plugin. This has to come before AddLinkerInputs
   // as gold requires -plugin to come before any -plugin-opt that -Wl might
   // forward.
@@ -1664,6 +1664,8 @@ static void AddGoldPlugin(const ToolChain &ToolChain, const ArgList &Args,
   std::string CPU = getCPUName(Args, ToolChain.getTriple());
   if (!CPU.empty())
     CmdArgs.push_back(Args.MakeArgString(Twine("-plugin-opt=mcpu=") + CPU));
+
+  if (IsThinLTO) CmdArgs.push_back("-plugin-opt=thinlto");
 }
 
 /// This is a helper function for validating the optional refinement step
@@ -2845,6 +2847,7 @@ static VersionTuple getMSCompatibilityVersion(unsigned Version) {
 static void claimNoWarnArgs(const ArgList &Args) {
   // Don't warn about unused -f(no-)?lto.  This can happen when we're
   // preprocessing, precompiling or assembling.
+  Args.ClaimAllArgs(options::OPT_flto_EQ);
   Args.ClaimAllArgs(options::OPT_flto);
   Args.ClaimAllArgs(options::OPT_fno_lto);
 }
@@ -3110,15 +3113,23 @@ ParsePICArgs(const ToolChain &ToolChain, const llvm::Triple &Triple,
             O.matches(options::OPT_fPIE) || O.matches(options::OPT_fPIC);
       } else {
         PIE = PIC = false;
+        if (Triple.isPS4CPU()) {
+          Arg *ModelArg = Args.getLastArg(options::OPT_mcmodel_EQ);
+          StringRef Model = ModelArg ? ModelArg->getValue() : "";
+          if (Model != "kernel") {
+            PIC = true;
+            ToolChain.getDriver().Diag(diag::warn_drv_ps4_force_pic)
+                << LastPICArg->getSpelling();
+          }
+        }
       }
     }
   }
 
-  // Introduce a Darwin-specific hack. If the default is PIC, but the
-  // PIC level would've been set to level 1, force it back to level 2
-  // PIC instead. This matches the behavior of Darwin GCC (based on
-  // chandlerc's informal testing in 2012).
-  if (PIC && ToolChain.getTriple().isOSDarwin())
+  // Introduce a Darwin and PS4-specific hack. If the default is PIC, but the
+  // PIC level would've been set to level 1, force it back to level 2 PIC
+  // instead.
+  if (PIC && (ToolChain.getTriple().isOSDarwin() || Triple.isPS4CPU()))
     IsPICLevelTwo |= ToolChain.isPICDefault();
 
   // This kernel flags are a trump-card: they will disable PIC/PIE
@@ -3190,6 +3201,7 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   bool IsWindowsCygnus =
       getToolChain().getTriple().isWindowsCygwinEnvironment();
   bool IsWindowsMSVC = getToolChain().getTriple().isWindowsMSVCEnvironment();
+  bool IsPS4CPU = getToolChain().getTriple().isPS4CPU();
 
   // Check number of inputs for sanity. We need at least one input.
   assert(Inputs.size() >= 1 && "Must have at least one input.");
@@ -3263,10 +3275,6 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   } else {
     assert((isa<CompileJobAction>(JA) || isa<BackendJobAction>(JA)) &&
            "Invalid action for clang tool.");
-
-    if (JA.getType() == types::TY_LTO_IR || JA.getType() == types::TY_LTO_BC) {
-      CmdArgs.push_back("-flto");
-    }
     if (JA.getType() == types::TY_Nothing) {
       CmdArgs.push_back("-fsyntax-only");
     } else if (JA.getType() == types::TY_LLVM_IR ||
@@ -3297,6 +3305,9 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
     // the use-list order, since serialization to bitcode is part of the flow.
     if (JA.getType() == types::TY_LLVM_BC)
       CmdArgs.push_back("-emit-llvm-uselists");
+
+    if (D.isUsingLTO())
+      Args.AddLastArg(CmdArgs, options::OPT_flto, options::OPT_flto_EQ);
   }
 
   // We normally speed up the clang process a bit by skipping destructors at
@@ -3843,8 +3854,10 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
 
   // We ignore flags -gstrict-dwarf and -grecord-gcc-switches for now.
   Args.ClaimAllArgs(options::OPT_g_flags_Group);
+
+  // PS4 defaults to no column info
   if (Args.hasFlag(options::OPT_gcolumn_info, options::OPT_gno_column_info,
-                   /*Default*/ true))
+                   /*Default=*/ !IsPS4CPU))
     CmdArgs.push_back("-dwarf-column-info");
 
   // FIXME: Move backend command line options to the module.
@@ -3883,7 +3896,8 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
 
   // -gdwarf-aranges turns on the emission of the aranges section in the
   // backend.
-  if (Args.hasArg(options::OPT_gdwarf_aranges)) {
+  // Always enabled on the PS4.
+  if (Args.hasArg(options::OPT_gdwarf_aranges) || IsPS4CPU) {
     CmdArgs.push_back("-backend-option");
     CmdArgs.push_back("-generate-arange-section");
   }
@@ -5631,11 +5645,11 @@ void ClangAs::ConstructJob(Compilation &C, const JobAction &JA,
     Args.ClaimAllArgs(options::OPT_g_Group);
     if (Arg *A = Args.getLastArg(options::OPT_g_Group)) {
       WantDebug = !A->getOption().matches(options::OPT_g0);
-      if (WantDebug) {
-        if ((DwarfVersion = DwarfVersionNum(A->getSpelling())) == 0)
-          DwarfVersion = getToolChain().GetDefaultDwarfVersion();
-      }
+      if (WantDebug)
+        DwarfVersion = DwarfVersionNum(A->getSpelling());
     }
+    if (DwarfVersion == 0)
+      DwarfVersion = getToolChain().GetDefaultDwarfVersion();
     RenderDebugEnablingArgs(Args, CmdArgs,
                             (WantDebug ? CodeGenOptions::LimitedDebugInfo
                                        : CodeGenOptions::NoDebugInfo),
@@ -6444,8 +6458,8 @@ void cloudabi::Linker::ConstructJob(Compilation &C, const JobAction &JA,
                   {options::OPT_T_Group, options::OPT_e, options::OPT_s,
                    options::OPT_t, options::OPT_Z_Flag, options::OPT_r});
 
-  if (D.IsUsingLTO(Args))
-    AddGoldPlugin(ToolChain, Args, CmdArgs);
+  if (D.isUsingLTO())
+    AddGoldPlugin(ToolChain, Args, CmdArgs, D.getLTOMode() == LTOK_Thin);
 
   AddLinkerInputs(ToolChain, Inputs, Args, CmdArgs);
 
@@ -6588,7 +6602,7 @@ void darwin::Linker::AddLinkArgs(Compilation &C, const ArgList &Args,
                    options::OPT_fno_application_extension, false))
     CmdArgs.push_back("-application_extension");
 
-  if (D.IsUsingLTO(Args)) {
+  if (D.isUsingLTO()) {
     // If we are using LTO, then automatically create a temporary file path for
     // the linker to use, so that it's lifetime will extend past a possible
     // dsymutil step.
@@ -7590,8 +7604,8 @@ void freebsd::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   Args.AddAllArgs(CmdArgs, options::OPT_Z_Flag);
   Args.AddAllArgs(CmdArgs, options::OPT_r);
 
-  if (D.IsUsingLTO(Args))
-    AddGoldPlugin(ToolChain, Args, CmdArgs);
+  if (D.isUsingLTO())
+    AddGoldPlugin(ToolChain, Args, CmdArgs, D.getLTOMode() == LTOK_Thin);
 
   bool NeedsSanitizerDeps = addSanitizerRuntimes(ToolChain, Args, CmdArgs);
   AddLinkerInputs(ToolChain, Inputs, Args, CmdArgs);
@@ -8465,8 +8479,8 @@ void gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   for (const auto &Path : Paths)
     CmdArgs.push_back(Args.MakeArgString(StringRef("-L") + Path));
 
-  if (D.IsUsingLTO(Args))
-    AddGoldPlugin(ToolChain, Args, CmdArgs);
+  if (D.isUsingLTO())
+    AddGoldPlugin(ToolChain, Args, CmdArgs, D.getLTOMode() == LTOK_Thin);
 
   if (Args.hasArg(options::OPT_Z_Xlinker__no_demangle))
     CmdArgs.push_back("--no-demangle");
@@ -9079,7 +9093,7 @@ void visualstudio::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     CmdArgs.push_back(Args.MakeArgString("-debug"));
     CmdArgs.push_back(Args.MakeArgString("-incremental:no"));
     if (Args.hasArg(options::OPT__SLASH_MD, options::OPT__SLASH_MDd)) {
-      static const char *CompilerRTComponents[] = {
+      static const char *const CompilerRTComponents[] = {
           "asan_dynamic", "asan_dynamic_runtime_thunk",
       };
       for (const auto &Component : CompilerRTComponents)
@@ -9090,7 +9104,7 @@ void visualstudio::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     } else if (DLL) {
       CmdArgs.push_back(getCompilerRTArgString(TC, Args, "asan_dll_thunk"));
     } else {
-      static const char *CompilerRTComponents[] = {
+      static const char *const CompilerRTComponents[] = {
           "asan", "asan_cxx",
       };
       for (const auto &Component : CompilerRTComponents)
@@ -9917,4 +9931,328 @@ void tools::Myriad::Linker::ConstructJob(Compilation &C, const JobAction &JA,
       Args.MakeArgString(TC.GetProgramPath("sparc-myriad-elf-ld"));
   C.addCommand(llvm::make_unique<Command>(JA, *this, Args.MakeArgString(Exec),
                                           CmdArgs, Inputs));
+}
+
+void PS4cpu::Assemble::ConstructJob(Compilation &C, const JobAction &JA,
+                                    const InputInfo &Output,
+                                    const InputInfoList &Inputs,
+                                    const ArgList &Args,
+                                    const char *LinkingOutput) const {
+  claimNoWarnArgs(Args);
+  ArgStringList CmdArgs;
+
+  Args.AddAllArgValues(CmdArgs, options::OPT_Wa_COMMA, options::OPT_Xassembler);
+
+  CmdArgs.push_back("-o");
+  CmdArgs.push_back(Output.getFilename());
+
+  assert(Inputs.size() == 1 && "Unexpected number of inputs.");
+  const InputInfo &Input = Inputs[0];
+  assert(Input.isFilename() && "Invalid input.");
+  CmdArgs.push_back(Input.getFilename());
+
+  const char *Exec =
+      Args.MakeArgString(getToolChain().GetProgramPath("ps4-as"));
+  C.addCommand(llvm::make_unique<Command>(JA, *this, Exec, CmdArgs, Inputs));
+}
+
+static void AddPS4ProfileRT(const ToolChain &TC, const ArgList &Args,
+                            ArgStringList &CmdArgs) {
+  if (!(Args.hasFlag(options::OPT_fprofile_arcs, options::OPT_fno_profile_arcs,
+                     false) ||
+        Args.hasArg(options::OPT_fprofile_generate) ||
+        Args.hasArg(options::OPT_fprofile_instr_generate) ||
+        Args.hasArg(options::OPT_fcreate_profile) ||
+        Args.hasArg(options::OPT_coverage)))
+    return;
+
+  assert(TC.getTriple().isPS4CPU() &&
+         "Profiling libraries are only implemented for the PS4 CPU");
+  CmdArgs.push_back("-lclang_rt.profile-x86_64");
+}
+
+static void AddPS4SanitizerArgs(const ToolChain &TC, ArgStringList &CmdArgs) {
+  const SanitizerArgs &SanArgs = TC.getSanitizerArgs();
+  if (SanArgs.needsUbsanRt()) {
+    CmdArgs.push_back("-lSceDbgUBSanitizer_stub_weak");
+  }
+  if (SanArgs.needsAsanRt()) {
+    CmdArgs.push_back("-lSceDbgAddressSanitizer_stub_weak");
+  }
+}
+
+static void ConstructPS4LinkJob(const Tool &T, Compilation &C,
+                                const JobAction &JA, const InputInfo &Output,
+                                const InputInfoList &Inputs,
+                                const ArgList &Args,
+                                const char *LinkingOutput) {
+  const toolchains::FreeBSD &ToolChain =
+      static_cast<const toolchains::FreeBSD &>(T.getToolChain());
+  const Driver &D = ToolChain.getDriver();
+  ArgStringList CmdArgs;
+
+  // Silence warning for "clang -g foo.o -o foo"
+  Args.ClaimAllArgs(options::OPT_g_Group);
+  // and "clang -emit-llvm foo.o -o foo"
+  Args.ClaimAllArgs(options::OPT_emit_llvm);
+  // and for "clang -w foo.o -o foo". Other warning options are already
+  // handled somewhere else.
+  Args.ClaimAllArgs(options::OPT_w);
+
+  if (!D.SysRoot.empty())
+    CmdArgs.push_back(Args.MakeArgString("--sysroot=" + D.SysRoot));
+
+  if (Args.hasArg(options::OPT_pie))
+    CmdArgs.push_back("-pie");
+
+  if (Args.hasArg(options::OPT_rdynamic))
+    CmdArgs.push_back("-export-dynamic");
+  if (Args.hasArg(options::OPT_shared))
+    CmdArgs.push_back("--oformat=so");
+
+  if (Output.isFilename()) {
+    CmdArgs.push_back("-o");
+    CmdArgs.push_back(Output.getFilename());
+  } else {
+    assert(Output.isNothing() && "Invalid output.");
+  }
+
+  AddPS4SanitizerArgs(ToolChain, CmdArgs);
+
+  Args.AddAllArgs(CmdArgs, options::OPT_L);
+  Args.AddAllArgs(CmdArgs, options::OPT_T_Group);
+  Args.AddAllArgs(CmdArgs, options::OPT_e);
+  Args.AddAllArgs(CmdArgs, options::OPT_s);
+  Args.AddAllArgs(CmdArgs, options::OPT_t);
+  Args.AddAllArgs(CmdArgs, options::OPT_r);
+
+  if (Args.hasArg(options::OPT_Z_Xlinker__no_demangle))
+    CmdArgs.push_back("--no-demangle");
+
+  AddLinkerInputs(ToolChain, Inputs, Args, CmdArgs);
+
+  if (Args.hasArg(options::OPT_pthread)) {
+    CmdArgs.push_back("-lpthread");
+  }
+
+  AddPS4ProfileRT(ToolChain, Args, CmdArgs);
+
+  const char *Exec = Args.MakeArgString(ToolChain.GetProgramPath("ps4-ld"));
+
+  C.addCommand(llvm::make_unique<Command>(JA, T, Exec, CmdArgs, Inputs));
+}
+
+static void ConstructGoldLinkJob(const Tool &T, Compilation &C,
+                                 const JobAction &JA, const InputInfo &Output,
+                                 const InputInfoList &Inputs,
+                                 const ArgList &Args,
+                                 const char *LinkingOutput) {
+  const toolchains::FreeBSD &ToolChain =
+      static_cast<const toolchains::FreeBSD &>(T.getToolChain());
+  const Driver &D = ToolChain.getDriver();
+  ArgStringList CmdArgs;
+
+  // Silence warning for "clang -g foo.o -o foo"
+  Args.ClaimAllArgs(options::OPT_g_Group);
+  // and "clang -emit-llvm foo.o -o foo"
+  Args.ClaimAllArgs(options::OPT_emit_llvm);
+  // and for "clang -w foo.o -o foo". Other warning options are already
+  // handled somewhere else.
+  Args.ClaimAllArgs(options::OPT_w);
+
+  if (!D.SysRoot.empty())
+    CmdArgs.push_back(Args.MakeArgString("--sysroot=" + D.SysRoot));
+
+  if (Args.hasArg(options::OPT_pie))
+    CmdArgs.push_back("-pie");
+
+  if (Args.hasArg(options::OPT_static)) {
+    CmdArgs.push_back("-Bstatic");
+  } else {
+    if (Args.hasArg(options::OPT_rdynamic))
+      CmdArgs.push_back("-export-dynamic");
+    CmdArgs.push_back("--eh-frame-hdr");
+    if (Args.hasArg(options::OPT_shared)) {
+      CmdArgs.push_back("-Bshareable");
+    } else {
+      CmdArgs.push_back("-dynamic-linker");
+      CmdArgs.push_back("/libexec/ld-elf.so.1");
+    }
+    CmdArgs.push_back("--enable-new-dtags");
+  }
+
+  if (Output.isFilename()) {
+    CmdArgs.push_back("-o");
+    CmdArgs.push_back(Output.getFilename());
+  } else {
+    assert(Output.isNothing() && "Invalid output.");
+  }
+
+  AddPS4SanitizerArgs(ToolChain, CmdArgs);
+
+  if (!Args.hasArg(options::OPT_nostdlib) &&
+      !Args.hasArg(options::OPT_nostartfiles)) {
+    const char *crt1 = NULL;
+    if (!Args.hasArg(options::OPT_shared)) {
+      if (Args.hasArg(options::OPT_pg))
+        crt1 = "gcrt1.o";
+      else if (Args.hasArg(options::OPT_pie))
+        crt1 = "Scrt1.o";
+      else
+        crt1 = "crt1.o";
+    }
+    if (crt1)
+      CmdArgs.push_back(Args.MakeArgString(ToolChain.GetFilePath(crt1)));
+
+    CmdArgs.push_back(Args.MakeArgString(ToolChain.GetFilePath("crti.o")));
+
+    const char *crtbegin = NULL;
+    if (Args.hasArg(options::OPT_static))
+      crtbegin = "crtbeginT.o";
+    else if (Args.hasArg(options::OPT_shared) || Args.hasArg(options::OPT_pie))
+      crtbegin = "crtbeginS.o";
+    else
+      crtbegin = "crtbegin.o";
+
+    CmdArgs.push_back(Args.MakeArgString(ToolChain.GetFilePath(crtbegin)));
+  }
+
+  Args.AddAllArgs(CmdArgs, options::OPT_L);
+
+  const ToolChain::path_list Paths = ToolChain.getFilePaths();
+  for (ToolChain::path_list::const_iterator i = Paths.begin(), e = Paths.end();
+       i != e; ++i)
+    CmdArgs.push_back(Args.MakeArgString(StringRef("-L") + *i));
+
+  Args.AddAllArgs(CmdArgs, options::OPT_T_Group);
+  Args.AddAllArgs(CmdArgs, options::OPT_e);
+  Args.AddAllArgs(CmdArgs, options::OPT_s);
+  Args.AddAllArgs(CmdArgs, options::OPT_t);
+  Args.AddAllArgs(CmdArgs, options::OPT_r);
+
+  if (Args.hasArg(options::OPT_Z_Xlinker__no_demangle))
+    CmdArgs.push_back("--no-demangle");
+
+  AddLinkerInputs(ToolChain, Inputs, Args, CmdArgs);
+
+  if (!Args.hasArg(options::OPT_nostdlib) &&
+      !Args.hasArg(options::OPT_nodefaultlibs)) {
+    // For PS4, we always want to pass libm, libstdc++ and libkernel
+    // libraries for both C and C++ compilations.
+    CmdArgs.push_back("-lkernel");
+    if (D.CCCIsCXX()) {
+      ToolChain.AddCXXStdlibLibArgs(Args, CmdArgs);
+      if (Args.hasArg(options::OPT_pg))
+        CmdArgs.push_back("-lm_p");
+      else
+        CmdArgs.push_back("-lm");
+    }
+    // FIXME: For some reason GCC passes -lgcc and -lgcc_s before adding
+    // the default system libraries. Just mimic this for now.
+    if (Args.hasArg(options::OPT_pg))
+      CmdArgs.push_back("-lgcc_p");
+    else
+      CmdArgs.push_back("-lcompiler_rt");
+    if (Args.hasArg(options::OPT_static)) {
+      CmdArgs.push_back("-lstdc++");
+    } else if (Args.hasArg(options::OPT_pg)) {
+      CmdArgs.push_back("-lgcc_eh_p");
+    } else {
+      CmdArgs.push_back("--as-needed");
+      CmdArgs.push_back("-lstdc++");
+      CmdArgs.push_back("--no-as-needed");
+    }
+
+    if (Args.hasArg(options::OPT_pthread)) {
+      if (Args.hasArg(options::OPT_pg))
+        CmdArgs.push_back("-lpthread_p");
+      else
+        CmdArgs.push_back("-lpthread");
+    }
+
+    if (Args.hasArg(options::OPT_pg)) {
+      if (Args.hasArg(options::OPT_shared))
+        CmdArgs.push_back("-lc");
+      else {
+        if (Args.hasArg(options::OPT_static)) {
+          CmdArgs.push_back("--start-group");
+          CmdArgs.push_back("-lc_p");
+          CmdArgs.push_back("-lpthread_p");
+          CmdArgs.push_back("--end-group");
+        } else {
+          CmdArgs.push_back("-lc_p");
+        }
+      }
+      CmdArgs.push_back("-lgcc_p");
+    } else {
+      if (Args.hasArg(options::OPT_static)) {
+        CmdArgs.push_back("--start-group");
+        CmdArgs.push_back("-lc");
+        CmdArgs.push_back("-lpthread");
+        CmdArgs.push_back("--end-group");
+      } else {
+        CmdArgs.push_back("-lc");
+      }
+      CmdArgs.push_back("-lcompiler_rt");
+    }
+
+    if (Args.hasArg(options::OPT_static)) {
+      CmdArgs.push_back("-lstdc++");
+    } else if (Args.hasArg(options::OPT_pg)) {
+      CmdArgs.push_back("-lgcc_eh_p");
+    } else {
+      CmdArgs.push_back("--as-needed");
+      CmdArgs.push_back("-lstdc++");
+      CmdArgs.push_back("--no-as-needed");
+    }
+  }
+
+  if (!Args.hasArg(options::OPT_nostdlib) &&
+      !Args.hasArg(options::OPT_nostartfiles)) {
+    if (Args.hasArg(options::OPT_shared) || Args.hasArg(options::OPT_pie))
+      CmdArgs.push_back(Args.MakeArgString(ToolChain.GetFilePath("crtendS.o")));
+    else
+      CmdArgs.push_back(Args.MakeArgString(ToolChain.GetFilePath("crtend.o")));
+    CmdArgs.push_back(Args.MakeArgString(ToolChain.GetFilePath("crtn.o")));
+  }
+
+  AddPS4ProfileRT(ToolChain, Args, CmdArgs);
+
+  const char *Exec =
+#ifdef LLVM_ON_WIN32
+      Args.MakeArgString(ToolChain.GetProgramPath("ps4-ld.gold.exe"));
+#else
+      Args.MakeArgString(ToolChain.GetProgramPath("ps4-ld"));
+#endif
+
+  C.addCommand(llvm::make_unique<Command>(JA, T, Exec, CmdArgs, Inputs));
+}
+
+void PS4cpu::Link::ConstructJob(Compilation &C, const JobAction &JA,
+                                const InputInfo &Output,
+                                const InputInfoList &Inputs,
+                                const ArgList &Args,
+                                const char *LinkingOutput) const {
+  const toolchains::FreeBSD &ToolChain =
+      static_cast<const toolchains::FreeBSD &>(getToolChain());
+  const Driver &D = ToolChain.getDriver();
+  bool PS4Linker;
+  StringRef LinkerOptName;
+  if (const Arg *A = Args.getLastArg(options::OPT_fuse_ld_EQ)) {
+    LinkerOptName = A->getValue();
+    if (LinkerOptName != "ps4" && LinkerOptName != "gold")
+      D.Diag(diag::err_drv_unsupported_linker) << LinkerOptName;
+  }
+
+  if (LinkerOptName == "gold")
+    PS4Linker = false;
+  else if (LinkerOptName == "ps4")
+    PS4Linker = true;
+  else
+    PS4Linker = !Args.hasArg(options::OPT_shared);
+
+  if (PS4Linker)
+    ConstructPS4LinkJob(*this, C, JA, Output, Inputs, Args, LinkingOutput);
+  else
+    ConstructGoldLinkJob(*this, C, JA, Output, Inputs, Args, LinkingOutput);
 }

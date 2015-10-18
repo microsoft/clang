@@ -216,6 +216,13 @@ protected:
   /// \brief Check whether the target triple's architecture is 32-bits.
   bool isTarget32Bit() const { return getTriple().isArch32Bit(); }
 
+  bool addLibStdCXXIncludePaths(Twine Base, Twine Suffix, StringRef GCCTriple,
+                                StringRef GCCMultiarchTriple,
+                                StringRef TargetMultiarchTriple,
+                                Twine IncludeSuffix,
+                                const llvm::opt::ArgList &DriverArgs,
+                                llvm::opt::ArgStringList &CC1Args) const;
+
   /// @}
 
 private:
@@ -746,13 +753,6 @@ protected:
   Tool *buildLinker() const override;
 
 private:
-  bool addLibStdCXXIncludePaths(Twine Base, Twine Suffix, StringRef GCCTriple,
-                                StringRef GCCMultiarchTriple,
-                                StringRef TargetMultiarchTriple,
-                                Twine IncludeSuffix,
-                                const llvm::opt::ArgList &DriverArgs,
-                                llvm::opt::ArgStringList &CC1Args) const;
-
   std::string computeSysRoot() const;
 };
 
@@ -978,6 +978,9 @@ public:
   void
   AddClangSystemIncludeArgs(const llvm::opt::ArgList &DriverArgs,
                             llvm::opt::ArgStringList &CC1Args) const override;
+  void AddClangCXXStdlibIncludeArgs(
+      const llvm::opt::ArgList &DriverArgs,
+      llvm::opt::ArgStringList &CC1Args) const override;
   Tool *SelectTool(const JobAction &JA) const override;
   void getCompilerSupportDir(std::string &Dir) const;
   void getBuiltinLibDir(std::string &Dir) const;
@@ -1013,6 +1016,27 @@ private:
   bool SupportsProfiling() const override;
   void addClangTargetOptions(const llvm::opt::ArgList &DriverArgs,
                              llvm::opt::ArgStringList &CC1Args) const override;
+};
+
+class LLVM_LIBRARY_VISIBILITY PS4CPU : public Generic_ELF {
+public:
+  PS4CPU(const Driver &D, const llvm::Triple &Triple,
+         const llvm::opt::ArgList &Args);
+
+  bool IsMathErrnoDefault() const override { return false; }
+  bool IsObjCNonFragileABIDefault() const override { return true; }
+  bool HasNativeLLVMSupport() const override;
+  bool isPICDefault() const override;
+
+  unsigned GetDefaultStackProtectorLevel(bool KernelOrKext) const override {
+    return 2; // SSPStrong
+  }
+
+  SanitizerMask getSupportedSanitizers() const override;
+
+protected:
+  Tool *buildAssembler() const override;
+  Tool *buildLinker() const override;
 };
 
 } // end namespace toolchains

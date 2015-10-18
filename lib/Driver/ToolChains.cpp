@@ -2170,6 +2170,40 @@ bool Generic_GCC::IsIntegratedAssemblerDefault() const {
   }
 }
 
+/// \brief Helper to add the variant paths of a libstdc++ installation.
+bool Generic_GCC::addLibStdCXXIncludePaths(
+    Twine Base, Twine Suffix, StringRef GCCTriple, StringRef GCCMultiarchTriple,
+    StringRef TargetMultiarchTriple, Twine IncludeSuffix,
+    const ArgList &DriverArgs, ArgStringList &CC1Args) const {
+  if (!getVFS().exists(Base + Suffix))
+    return false;
+
+  addSystemInclude(DriverArgs, CC1Args, Base + Suffix);
+
+  // The vanilla GCC layout of libstdc++ headers uses a triple subdirectory. If
+  // that path exists or we have neither a GCC nor target multiarch triple, use
+  // this vanilla search path.
+  if ((GCCMultiarchTriple.empty() && TargetMultiarchTriple.empty()) ||
+      getVFS().exists(Base + Suffix + "/" + GCCTriple + IncludeSuffix)) {
+    addSystemInclude(DriverArgs, CC1Args,
+                     Base + Suffix + "/" + GCCTriple + IncludeSuffix);
+  } else {
+    // Otherwise try to use multiarch naming schemes which have normalized the
+    // triples and put the triple before the suffix.
+    //
+    // GCC surprisingly uses *both* the GCC triple with a multilib suffix and
+    // the target triple, so we support that here.
+    addSystemInclude(DriverArgs, CC1Args,
+                     Base + "/" + GCCMultiarchTriple + Suffix + IncludeSuffix);
+    addSystemInclude(DriverArgs, CC1Args,
+                     Base + "/" + TargetMultiarchTriple + Suffix);
+  }
+
+  addSystemInclude(DriverArgs, CC1Args, Base + Suffix + "/backward");
+  return true;
+}
+
+
 void Generic_ELF::addClangTargetOptions(const ArgList &DriverArgs,
                                         ArgStringList &CC1Args) const {
   const Generic_GCC::GCCVersion &V = GCCInstallation.getVersion();
@@ -3676,38 +3710,6 @@ void Linux::AddClangSystemIncludeArgs(const ArgList &DriverArgs,
   addExternCSystemInclude(DriverArgs, CC1Args, SysRoot + "/usr/include");
 }
 
-/// \brief Helper to add the variant paths of a libstdc++ installation.
-bool Linux::addLibStdCXXIncludePaths(
-    Twine Base, Twine Suffix, StringRef GCCTriple, StringRef GCCMultiarchTriple,
-    StringRef TargetMultiarchTriple, Twine IncludeSuffix,
-    const ArgList &DriverArgs, ArgStringList &CC1Args) const {
-  if (!getVFS().exists(Base + Suffix))
-    return false;
-
-  addSystemInclude(DriverArgs, CC1Args, Base + Suffix);
-
-  // The vanilla GCC layout of libstdc++ headers uses a triple subdirectory. If
-  // that path exists or we have neither a GCC nor target multiarch triple, use
-  // this vanilla search path.
-  if ((GCCMultiarchTriple.empty() && TargetMultiarchTriple.empty()) ||
-      getVFS().exists(Base + Suffix + "/" + GCCTriple + IncludeSuffix)) {
-    addSystemInclude(DriverArgs, CC1Args,
-                     Base + Suffix + "/" + GCCTriple + IncludeSuffix);
-  } else {
-    // Otherwise try to use multiarch naming schemes which have normalized the
-    // triples and put the triple before the suffix.
-    //
-    // GCC surprisingly uses *both* the GCC triple with a multilib suffix and
-    // the target triple, so we support that here.
-    addSystemInclude(DriverArgs, CC1Args,
-                     Base + "/" + GCCMultiarchTriple + Suffix + IncludeSuffix);
-    addSystemInclude(DriverArgs, CC1Args,
-                     Base + "/" + TargetMultiarchTriple + Suffix);
-  }
-
-  addSystemInclude(DriverArgs, CC1Args, Base + Suffix + "/backward");
-  return true;
-}
 
 void Linux::AddClangCXXStdlibIncludeArgs(const ArgList &DriverArgs,
                                          ArgStringList &CC1Args) const {
@@ -3993,6 +3995,22 @@ void MyriadToolChain::AddClangSystemIncludeArgs(const ArgList &DriverArgs,
     addSystemInclude(DriverArgs, CC1Args, getDriver().SysRoot + "/include");
 }
 
+void MyriadToolChain::AddClangCXXStdlibIncludeArgs(const ArgList &DriverArgs,
+                                                   ArgStringList &CC1Args) const {
+  if (DriverArgs.hasArg(options::OPT_nostdlibinc) ||
+      DriverArgs.hasArg(options::OPT_nostdincxx))
+    return;
+
+  // Only libstdc++, for now.
+  StringRef LibDir = GCCInstallation.getParentLibPath();
+  const GCCVersion &Version = GCCInstallation.getVersion();
+  StringRef TripleStr = GCCInstallation.getTriple().str();
+  const Multilib &Multilib = GCCInstallation.getMultilib();
+
+  addLibStdCXXIncludePaths(LibDir.str() + "/../" + TripleStr.str() + "/include/c++/" + Version.Text,
+                           "", TripleStr, "", "", Multilib.includeSuffix(), DriverArgs, CC1Args);
+}
+
 // MyriadToolChain handles several triples:
 //  {shave,sparc{,el}}-myriad-{rtems,unknown}-elf
 Tool *MyriadToolChain::SelectTool(const JobAction &JA) const {
@@ -4065,4 +4083,78 @@ void WebAssembly::addClangTargetOptions(const ArgList &DriverArgs,
   if (DriverArgs.hasFlag(options::OPT_fuse_init_array,
                          options::OPT_fno_use_init_array, true))
     CC1Args.push_back("-fuse-init-array");
+}
+
+PS4CPU::PS4CPU(const Driver &D, const llvm::Triple &Triple, const ArgList &Args)
+    : Generic_ELF(D, Triple, Args) {
+  if (Args.hasArg(options::OPT_static))
+    D.Diag(diag::err_drv_unsupported_opt_for_target) << "-static" << "PS4";
+
+  // Determine where to find the PS4 libraries. We use SCE_PS4_SDK_DIR
+  // if it exists; otherwise use the driver's installation path, which
+  // should be <SDK_DIR>/host_tools/bin.
+
+  SmallString<512> PS4SDKDir;
+  if (const char *EnvValue = getenv("SCE_PS4_SDK_DIR")) {
+    if (!llvm::sys::fs::exists(EnvValue))
+      getDriver().Diag(clang::diag::warn_drv_ps4_sdk_dir) << EnvValue;
+    PS4SDKDir = EnvValue;
+  } else {
+    PS4SDKDir = getDriver().Dir;
+    llvm::sys::path::append(PS4SDKDir, "/../../");
+  } 
+
+  // By default, the driver won't report a warning if it can't find 
+  // PS4's include or lib directories. This behavior could be changed if
+  // -Weverything or -Winvalid-or-nonexistent-directory options are passed.  
+  // If -isysroot was passed, use that as the SDK base path.
+  std::string PrefixDir;
+  if (const Arg *A = Args.getLastArg(options::OPT_isysroot)) {
+    PrefixDir = A->getValue();
+    if (!llvm::sys::fs::exists(PrefixDir))
+      getDriver().Diag(clang::diag::warn_missing_sysroot) << PrefixDir;
+  } else
+    PrefixDir = PS4SDKDir.str();
+
+  SmallString<512> PS4SDKIncludeDir(PrefixDir);
+  llvm::sys::path::append(PS4SDKIncludeDir, "target/include");
+  if (!Args.hasArg(options::OPT_nostdinc) &&
+      !Args.hasArg(options::OPT_nostdlibinc) &&
+      !Args.hasArg(options::OPT_isysroot) &&
+      !Args.hasArg(options::OPT__sysroot_EQ) &&
+      !llvm::sys::fs::exists(PS4SDKIncludeDir)) {
+    getDriver().Diag(clang::diag::warn_drv_unable_to_find_directory_expected)
+        << "PS4 system headers" << PS4SDKIncludeDir;
+  }
+
+  SmallString<512> PS4SDKLibDir(PS4SDKDir);
+  llvm::sys::path::append(PS4SDKLibDir, "target/lib");
+  if (!Args.hasArg(options::OPT_nostdlib) &&
+      !Args.hasArg(options::OPT_nodefaultlibs) &&
+      !Args.hasArg(options::OPT__sysroot_EQ) && !Args.hasArg(options::OPT_E) &&
+      !Args.hasArg(options::OPT_c) && !Args.hasArg(options::OPT_S) &&
+      !Args.hasArg(options::OPT_emit_ast) &&
+      !llvm::sys::fs::exists(PS4SDKLibDir)) {
+    getDriver().Diag(clang::diag::warn_drv_unable_to_find_directory_expected)
+        << "PS4 system libraries" << PS4SDKLibDir;
+    return;
+  }
+  getFilePaths().push_back(PS4SDKLibDir.str());
+}
+
+Tool *PS4CPU::buildAssembler() const {
+  return new tools::PS4cpu::Assemble(*this);
+}
+
+Tool *PS4CPU::buildLinker() const { return new tools::PS4cpu::Link(*this); }
+
+bool PS4CPU::isPICDefault() const { return true; }
+
+bool PS4CPU::HasNativeLLVMSupport() const { return true; }
+
+SanitizerMask PS4CPU::getSupportedSanitizers() const {
+  SanitizerMask Res = ToolChain::getSupportedSanitizers();
+  Res |= SanitizerKind::Address;
+  Res |= SanitizerKind::Vptr;
+  return Res;
 }
