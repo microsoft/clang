@@ -516,8 +516,7 @@ public:
   /// Return information about target-specific builtins for
   /// the current primary target, and info about which builtins are non-portable
   /// across the current set of primary and secondary targets.
-  virtual void getTargetBuiltins(const Builtin::Info *&Records,
-                                 unsigned &NumRecords) const = 0;
+  virtual ArrayRef<Builtin::Info> getTargetBuiltins() const = 0;
 
   /// The __builtin_clz* and __builtin_ctz* built-in
   /// functions are specified to have undefined results for zero inputs, but
@@ -930,14 +929,10 @@ protected:
   virtual enum IntType getPtrDiffTypeV(unsigned AddrSpace) const {
     return PtrDiffType;
   }
-  virtual void getGCCRegNames(const char * const *&Names,
-                              unsigned &NumNames) const = 0;
-  virtual void getGCCRegAliases(const GCCRegAlias *&Aliases,
-                                unsigned &NumAliases) const = 0;
-  virtual void getGCCAddlRegNames(const AddlRegName *&Addl,
-                                  unsigned &NumAddl) const {
-    Addl = nullptr;
-    NumAddl = 0;
+  virtual ArrayRef<const char *> getGCCRegNames() const = 0;
+  virtual ArrayRef<GCCRegAlias> getGCCRegAliases() const = 0;
+  virtual ArrayRef<AddlRegName> getGCCAddlRegNames() const {
+    return None;
   }
 };
 
