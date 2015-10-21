@@ -1154,11 +1154,14 @@ def err_incompatible_exception_specs : Error<
   "target exception specification is not superset of source">;
 def err_deep_exception_specs_differ : Error<
   "exception specifications of %select{return|argument}0 types differ">;
-def ext_missing_exception_specification : ExtWarn<
-  "%0 is missing exception specification '%1'">,
-  InGroup<DiagGroup<"missing-exception-spec">>;
 def err_missing_exception_specification : Error<
   "%0 is missing exception specification '%1'">;
+def ext_missing_exception_specification : ExtWarn<
+  err_missing_exception_specification.Text>,
+  InGroup<DiagGroup<"missing-exception-spec">>;
+def ext_ms_missing_exception_specification : ExtWarn<
+  err_missing_exception_specification.Text>,
+  InGroup<MicrosoftExceptionSpec>;
 def err_noexcept_needs_constant_expression : Error<
   "argument to noexcept specifier must be a constant expression">;
 def err_exception_spec_not_parsed : Error<
@@ -2971,6 +2974,9 @@ def note_ovl_candidate : Note<"candidate "
     "%select{none|const|restrict|const and restrict|volatile|const and volatile"
     "|volatile and restrict|const, volatile, and restrict}4)"
     "| made ineligible by enable_if}2">;
+def ext_ovl_equivalent_internal_linkage_functions_in_modules : ExtWarn<
+  "ambiguous use of internal linkage function %0 defined in multiple modules">,
+  InGroup<DiagGroup<"modules-ambiguous-internal-linkage-function">>;
 
 def note_ovl_candidate_inherited_constructor : Note<"inherited from here">;
 def note_ovl_candidate_illegal_constructor : Note<
