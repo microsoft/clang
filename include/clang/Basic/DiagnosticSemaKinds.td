@@ -4423,8 +4423,10 @@ def note_protected_by_seh_finally : Note<
   "jump bypasses initialization of __finally block">;
 def note_protected_by___block : Note<
   "jump bypasses setup of __block variable">;
-def note_protected_by_objc_ownership : Note<
-  "jump bypasses initialization of retaining variable">;
+def note_protected_by_objc_strong_init : Note<
+  "jump bypasses initialization of __strong variable">;
+def note_protected_by_objc_weak_init : Note<
+  "jump bypasses initialization of __weak variable">;
 def note_enters_block_captures_cxx_obj : Note<
   "jump enters lifetime of block which captures a destructible C++ object">;
 def note_enters_block_captures_strong : Note<
@@ -4461,8 +4463,10 @@ def note_exits_seh_finally : Note<
   "jump exits __finally block">;
 def note_exits_objc_autoreleasepool : Note<
   "jump exits autoreleasepool block">;
-def note_exits_objc_ownership : Note<
-  "jump exits scope of retaining variable">;
+def note_exits_objc_strong : Note<
+  "jump exits scope of __strong variable">;
+def note_exits_objc_weak : Note<
+  "jump exits scope of __weak variable">;
 def note_exits_block_captures_cxx_obj : Note<
   "jump exits lifetime of block which captures a destructible C++ object">;
 def note_exits_block_captures_strong : Note<
@@ -4665,7 +4669,7 @@ def err_arc_strong_property_ownership : Error<
   "existing instance variable %1 for strong property %0 may not be "
   "%select{|__unsafe_unretained||__weak}2">;
 def err_arc_assign_property_ownership : Error<
-  "existing instance variable %1 for property %0 with %select{unsafe_unretained| assign}2 "
+  "existing instance variable %1 for property %0 with %select{unsafe_unretained|assign}2 "
   "attribute must be __unsafe_unretained">;
 def err_arc_inconsistent_property_ownership : Error<
   "%select{|unsafe_unretained|strong|weak}1 property %0 may not also be "
@@ -7821,6 +7825,27 @@ def err_module_self_import : Error<
   "import of module '%0' appears within same top-level module '%1'">;
 def err_module_import_in_implementation : Error<
   "@import of module '%0' in implementation of '%1'; use #import">;
+}
+
+let CategoryName = "Coroutines Issue" in {
+def err_return_in_coroutine : Error<"return statement in coroutine">;
+def note_declared_coroutine_here : Note<
+  "function is a coroutine due to use of "
+  "'%select{co_await|co_yield|co_return}0' here">;
+def err_coroutine_objc_method : Error<
+  "Objective-C methods as coroutines are not yet supported">;
+def err_coroutine_outside_function : Error<
+  "'%0' cannot be used outside a function">;
+def err_coroutine_ctor_dtor : Error<
+  "'%1' cannot be used in a %select{constructor|destructor}0">;
+def err_coroutine_constexpr : Error<
+  "'%0' cannot be used in a constexpr function">;
+def err_coroutine_varargs : Error<
+  "'%0' cannot be used in a varargs function">;
+def ext_coroutine_without_coawait_coyield : ExtWarn<
+  "'co_return' used in a function "
+  "that uses neither 'co_await' nor 'co_yield'">,
+  InGroup<DiagGroup<"coreturn-without-coawait">>;
 }
 
 let CategoryName = "Documentation Issue" in {

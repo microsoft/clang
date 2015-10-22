@@ -365,7 +365,8 @@ bool MicrosoftMangleContextImpl::shouldMangleCXXName(const NamedDecl *D) {
         DC = getEffectiveParentContext(DC);
 
     if (DC->isTranslationUnit() && D->getFormalLinkage() == InternalLinkage &&
-        !isa<VarTemplateSpecializationDecl>(D))
+        !isa<VarTemplateSpecializationDecl>(D) &&
+        D->getIdentifier() != nullptr)
       return false;
   }
 
@@ -801,7 +802,7 @@ void MicrosoftCXXNameMangler::mangleUnqualifiedName(const NamedDecl *ND,
       } else {
         // Otherwise, number the types using a $S prefix.
         Name += "$S";
-        Name += llvm::utostr(Context.getAnonymousStructId(TD));
+        Name += llvm::utostr(Context.getAnonymousStructId(TD) + 1);
       }
       Name += ">";
       mangleSourceName(Name.str());
@@ -1042,6 +1043,14 @@ void MicrosoftCXXNameMangler::mangleOperatorName(OverloadedOperatorKind OO,
     DiagnosticsEngine &Diags = Context.getDiags();
     unsigned DiagID = Diags.getCustomDiagID(DiagnosticsEngine::Error,
       "cannot mangle this conditional operator yet");
+    Diags.Report(Loc, DiagID);
+    break;
+  }
+
+  case OO_Coawait: {
+    DiagnosticsEngine &Diags = Context.getDiags();
+    unsigned DiagID = Diags.getCustomDiagID(DiagnosticsEngine::Error,
+      "cannot mangle this operator co_await yet");
     Diags.Report(Loc, DiagID);
     break;
   }

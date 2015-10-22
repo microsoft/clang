@@ -342,8 +342,7 @@ Decl *Parser::ParseObjCAtInterfaceDeclaration(SourceLocation AtLoc,
       }
       Actions.FindProtocolDeclaration(/*WarnOnDeclarations=*/true,
                                       /*ForObjCContainer=*/true,
-                                      &ProtocolIdents[0], ProtocolIdents.size(),
-                                      protocols);
+                                      ProtocolIdents, protocols);
     }
   } else if (protocols.empty() && Tok.is(tok::less) &&
              ParseObjCProtocolReferences(protocols, protocolLocs, true, true,
@@ -1584,8 +1583,7 @@ ParseObjCProtocolReferences(SmallVectorImpl<Decl *> &Protocols,
 
   // Convert the list of protocols identifiers into a list of protocol decls.
   Actions.FindProtocolDeclaration(WarnOnDeclarations, ForObjCContainer,
-                                  &ProtocolIdents[0], ProtocolIdents.size(),
-                                  Protocols);
+                                  ProtocolIdents, Protocols);
   return false;
 }
 
@@ -2015,7 +2013,7 @@ Parser::ParseObjCAtProtocolDeclaration(SourceLocation AtLoc,
 
   if (TryConsumeToken(tok::semi)) { // forward declaration of one protocol.
     IdentifierLocPair ProtoInfo(protocolName, nameLoc);
-    return Actions.ActOnForwardProtocolDeclaration(AtLoc, &ProtoInfo, 1,
+    return Actions.ActOnForwardProtocolDeclaration(AtLoc, ProtoInfo,
                                                    attrs.getList());
   }
 
@@ -2044,9 +2042,7 @@ Parser::ParseObjCAtProtocolDeclaration(SourceLocation AtLoc,
     if (ExpectAndConsume(tok::semi, diag::err_expected_after, "@protocol"))
       return DeclGroupPtrTy();
 
-    return Actions.ActOnForwardProtocolDeclaration(AtLoc,
-                                                   &ProtocolRefs[0],
-                                                   ProtocolRefs.size(),
+    return Actions.ActOnForwardProtocolDeclaration(AtLoc, ProtocolRefs,
                                                    attrs.getList());
   }
 

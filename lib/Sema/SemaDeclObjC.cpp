@@ -1208,26 +1208,23 @@ static bool NestedProtocolHasNoDefinition(ObjCProtocolDecl *PDecl,
 /// protocol declarations in its 'Protocols' argument.
 void
 Sema::FindProtocolDeclaration(bool WarnOnDeclarations, bool ForObjCContainer,
-                              const IdentifierLocPair *ProtocolId,
-                              unsigned NumProtocols,
+                              ArrayRef<IdentifierLocPair> ProtocolId,
                               SmallVectorImpl<Decl *> &Protocols) {
-  for (unsigned i = 0; i != NumProtocols; ++i) {
-    ObjCProtocolDecl *PDecl = LookupProtocol(ProtocolId[i].first,
-                                             ProtocolId[i].second);
+  for (const IdentifierLocPair &Pair : ProtocolId) {
+    ObjCProtocolDecl *PDecl = LookupProtocol(Pair.first, Pair.second);
     if (!PDecl) {
       TypoCorrection Corrected = CorrectTypo(
-          DeclarationNameInfo(ProtocolId[i].first, ProtocolId[i].second),
+          DeclarationNameInfo(Pair.first, Pair.second),
           LookupObjCProtocolName, TUScope, nullptr,
           llvm::make_unique<DeclFilterCCC<ObjCProtocolDecl>>(),
           CTK_ErrorRecovery);
       if ((PDecl = Corrected.getCorrectionDeclAs<ObjCProtocolDecl>()))
         diagnoseTypo(Corrected, PDiag(diag::err_undeclared_protocol_suggest)
-                                    << ProtocolId[i].first);
+                                    << Pair.first);
     }
 
     if (!PDecl) {
-      Diag(ProtocolId[i].second, diag::err_undeclared_protocol)
-        << ProtocolId[i].first;
+      Diag(Pair.second, diag::err_undeclared_protocol) << Pair.first;
       continue;
     }
     // If this is a forward protocol declaration, get its definition.
@@ -1237,7 +1234,7 @@ Sema::FindProtocolDeclaration(bool WarnOnDeclarations, bool ForObjCContainer,
     // For an objc container, delay protocol reference checking until after we
     // can set the objc decl as the availability context, otherwise check now.
     if (!ForObjCContainer) {
-      (void)DiagnoseUseOfDecl(PDecl, ProtocolId[i].second);
+      (void)DiagnoseUseOfDecl(PDecl, Pair.second);
     }
 
     // If this is a forward declaration and we are supposed to warn in this
@@ -1247,8 +1244,7 @@ Sema::FindProtocolDeclaration(bool WarnOnDeclarations, bool ForObjCContainer,
     
     if (WarnOnDeclarations &&
         NestedProtocolHasNoDefinition(PDecl, UndefinedProtocol)) {
-      Diag(ProtocolId[i].second, diag::warn_undef_protocolref)
-        << ProtocolId[i].first;
+      Diag(Pair.second, diag::warn_undef_protocolref) << Pair.first;
       Diag(UndefinedProtocol->getLocation(), diag::note_protocol_decl_undefined)
         << UndefinedProtocol;
     }
@@ -1679,17 +1675,16 @@ void Sema::DiagnoseClassExtensionDupMethods(ObjCCategoryDecl *CAT,
 /// ActOnForwardProtocolDeclaration - Handle \@protocol foo;
 Sema::DeclGroupPtrTy
 Sema::ActOnForwardProtocolDeclaration(SourceLocation AtProtocolLoc,
-                                      const IdentifierLocPair *IdentList,
-                                      unsigned NumElts,
+                                      ArrayRef<IdentifierLocPair> IdentList,
                                       AttributeList *attrList) {
   SmallVector<Decl *, 8> DeclsInGroup;
-  for (unsigned i = 0; i != NumElts; ++i) {
-    IdentifierInfo *Ident = IdentList[i].first;
-    ObjCProtocolDecl *PrevDecl = LookupProtocol(Ident, IdentList[i].second,
+  for (const IdentifierLocPair &IdentPair : IdentList) {
+    IdentifierInfo *Ident = IdentPair.first;
+    ObjCProtocolDecl *PrevDecl = LookupProtocol(Ident, IdentPair.second,
                                                 ForRedeclaration);
     ObjCProtocolDecl *PDecl
       = ObjCProtocolDecl::Create(Context, CurContext, Ident, 
-                                 IdentList[i].second, AtProtocolLoc,
+                                 IdentPair.second, AtProtocolLoc,
                                  PrevDecl);
         
     PushOnScopeChains(PDecl, TUScope);
