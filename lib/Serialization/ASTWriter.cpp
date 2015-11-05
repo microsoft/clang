@@ -12,6 +12,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/Serialization/ASTWriter.h"
+#include "clang/Serialization/ModuleFileExtension.h"
 #include "ASTCommon.h"
 #include "ASTReaderInternals.h"
 #include "MultiOnDiskHashTable.h"
@@ -1094,7 +1095,11 @@ void ASTWriter::WriteBlockInfoBlock() {
   RECORD(PPD_MACRO_EXPANSION);
   RECORD(PPD_MACRO_DEFINITION);
   RECORD(PPD_INCLUSION_DIRECTIVE);
-  
+
+  // Decls and Types block.
+  BLOCK(EXTENSION_BLOCK);
+  RECORD(EXTENSION_METADATA);
+
 #undef RECORD
 #undef BLOCK
   Stream.ExitBlock();
@@ -3513,11 +3518,11 @@ ASTWriter::GenerateNameLookupTable(const DeclContext *ConstDC,
     auto &Name = Lookup.first;
     auto &Result = Lookup.second;
 
-    // If there are no local declarations in our lookup result, we don't
-    // need to write an entry for the name at all unless we're rewriting
-    // the decl context. If we can't write out a lookup set without
-    // performing more deserialization, just skip this entry.
-    if (isLookupResultExternal(Result, DC) && !isRewritten(cast<Decl>(DC)) &&
+    // If there are no local declarations in our lookup result, we
+    // don't need to write an entry for the name at all. If we can't
+    // write out a lookup set without performing more deserialization,
+    // just skip this entry.
+    if (isLookupResultExternal(Result, DC) &&
         isLookupResultEntirelyExternal(Result, DC))
       continue;
 
@@ -3758,9 +3763,6 @@ uint64_t ASTWriter::WriteDeclContextVisibleBlock(ASTContext &Context,
 /// (in C++), for namespaces, and for classes with forward-declared unscoped
 /// enumeration members (in C++11).
 void ASTWriter::WriteDeclContextVisibleUpdate(const DeclContext *DC) {
-  if (isRewritten(cast<Decl>(DC)))
-    return;
-
   StoredDeclsMap *Map = DC->getLookupPtr();
   if (!Map || Map->empty())
     return;
@@ -3879,6 +3881,40 @@ void ASTWriter::WriteOptimizePragmaOptions(Sema &SemaRef) {
   Stream.EmitRecord(OPTIMIZE_PRAGMA_OPTIONS, Record);
 }
 
+void ASTWriter::WriteModuleFileExtension(ModuleFileExtensionWriter &Writer) {
+  // Enter the extension block.
+  Stream.EnterSubblock(EXTENSION_BLOCK_ID, 4);
+
+  // Emit the metadata record abbreviation.
+  llvm::BitCodeAbbrev *Abv = new llvm::BitCodeAbbrev();
+  Abv->Add(llvm::BitCodeAbbrevOp(EXTENSION_METADATA));
+  Abv->Add(llvm::BitCodeAbbrevOp(llvm::BitCodeAbbrevOp::VBR, 6));
+  Abv->Add(llvm::BitCodeAbbrevOp(llvm::BitCodeAbbrevOp::VBR, 6));
+  Abv->Add(llvm::BitCodeAbbrevOp(llvm::BitCodeAbbrevOp::VBR, 6));
+  Abv->Add(llvm::BitCodeAbbrevOp(llvm::BitCodeAbbrevOp::VBR, 6));
+  Abv->Add(llvm::BitCodeAbbrevOp(llvm::BitCodeAbbrevOp::Blob));
+  unsigned Abbrev = Stream.EmitAbbrev(Abv);
+
+  // Emit the metadata record.
+  RecordData Record;
+  auto Metadata = Writer.getExtension()->getExtensionMetadata();
+  Record.push_back(EXTENSION_METADATA);
+  Record.push_back(Metadata.MajorVersion);
+  Record.push_back(Metadata.MinorVersion);
+  Record.push_back(Metadata.BlockName.size());
+  Record.push_back(Metadata.UserInfo.size());
+  SmallString<64> Buffer;
+  Buffer += Metadata.BlockName;
+  Buffer += Metadata.UserInfo;
+  Stream.EmitRecordWithBlob(Abbrev, Record, Buffer);
+
+  // Emit the contents of the extension block.
+  Writer.writeExtensionContents(Stream);
+
+  // Exit the extension block.
+  Stream.ExitBlock();
+}
+
 //===----------------------------------------------------------------------===//
 // General Serialization Routines
 //===----------------------------------------------------------------------===//
@@ -3982,7 +4018,10 @@ void ASTWriter::SetSelectorOffset(Selector Sel, uint32_t Offset) {
   SelectorOffsets[ID - FirstSelectorID] = Offset;
 }
 
-ASTWriter::ASTWriter(llvm::BitstreamWriter &Stream, bool IncludeTimestamps)
+ASTWriter::ASTWriter(
+  llvm::BitstreamWriter &Stream,
+  ArrayRef<llvm::IntrusiveRefCntPtr<ModuleFileExtension>> Extensions,
+  bool IncludeTimestamps)
     : Stream(Stream), Context(nullptr), PP(nullptr), Chain(nullptr),
       WritingModule(nullptr), IncludeTimestamps(IncludeTimestamps),
       WritingAST(false), DoneWritingDeclsAndTypes(false),
@@ -4002,7 +4041,12 @@ ASTWriter::ASTWriter(llvm::BitstreamWriter &Stream, bool IncludeTimestamps)
       DeclVarAbbrev(0), DeclFieldAbbrev(0), DeclEnumAbbrev(0),
       DeclObjCIvarAbbrev(0), DeclCXXMethodAbbrev(0), DeclRefExprAbbrev(0),
       CharacterLiteralAbbrev(0), IntegerLiteralAbbrev(0),
-      ExprImplicitCastAbbrev(0) {}
+      ExprImplicitCastAbbrev(0) {
+  for (const auto &Ext : Extensions) {
+    if (auto Writer = Ext->createExtensionWriter(*this))
+      ModuleFileExtensionWriters.push_back(std::move(Writer));
+  }
+}
 
 ASTWriter::~ASTWriter() {
   llvm::DeleteContainerSeconds(FileDeclIDs);
@@ -4092,6 +4136,8 @@ uint64_t ASTWriter::WriteASTCore(Sema &SemaRef, StringRef isysroot,
   RegisterPredefDecl(Context.BuiltinMSVaListDecl,
                      PREDEF_DECL_BUILTIN_MS_VA_LIST_ID);
   RegisterPredefDecl(Context.ExternCContext, PREDEF_DECL_EXTERN_C_CONTEXT_ID);
+  RegisterPredefDecl(Context.MakeIntegerSeqDecl,
+                     PREDEF_DECL_MAKE_INTEGER_SEQ_ID);
 
   // Build a record containing all of the tentative definitions in this file, in
   // TentativeDefinitions order.  Generally, this record will be empty for
@@ -4376,10 +4422,6 @@ uint64_t ASTWriter::WriteASTCore(Sema &SemaRef, StringRef isysroot,
   Stream.EnterSubblock(DECLTYPES_BLOCK_ID, /*bits for abbreviations*/5);
   WriteTypeAbbrevs();
   WriteDeclAbbrevs();
-  for (DeclsToRewriteTy::iterator I = DeclsToRewrite.begin(),
-                                  E = DeclsToRewrite.end();
-       I != E; ++I)
-    DeclTypesToEmit.push(const_cast<Decl*>(*I));
   do {
     WriteDeclUpdatesBlocks(DeclUpdatesOffsetsRecord);
     while (!DeclTypesToEmit.empty()) {
@@ -4403,7 +4445,6 @@ uint64_t ASTWriter::WriteASTCore(Sema &SemaRef, StringRef isysroot,
   WriteCXXCtorInitializersOffsets();
   WriteFileDeclIDsMap();
   WriteSourceManagerBlock(Context.getSourceManager(), PP);
-
   WriteComments();
   WritePreprocessor(PP, isModule);
   WriteHeaderSearch(PP.getHeaderSearchInfo());
@@ -4533,6 +4574,10 @@ uint64_t ASTWriter::WriteASTCore(Sema &SemaRef, StringRef isysroot,
   Stream.EmitRecord(STATISTICS, Record);
   Stream.ExitBlock();
 
+  // Write the module file extension blocks.
+  for (const auto &ExtWriter : ModuleFileExtensionWriters)
+    WriteModuleFileExtension(*ExtWriter);
+
   return Signature;
 }
 
@@ -4545,8 +4590,6 @@ void ASTWriter::WriteDeclUpdatesBlocks(RecordDataImpl &OffsetsRecord) {
 
   for (auto &DeclUpdate : LocalUpdates) {
     const Decl *D = DeclUpdate.first;
-    if (isRewritten(D))
-      continue; // The decl will be written completely,no need to store updates.
 
     bool HasUpdatedBody = false;
     RecordData Record;
@@ -5754,21 +5797,6 @@ void ASTWriter::AddedObjCCategoryToInterface(const ObjCCategoryDecl *CatD,
   assert(IFD->getDefinition() && "Category on a class without a definition?");
   ObjCClassesWithCategories.insert(
     const_cast<ObjCInterfaceDecl *>(IFD->getDefinition()));
-}
-
-
-void ASTWriter::AddedObjCPropertyInClassExtension(const ObjCPropertyDecl *Prop,
-                                          const ObjCPropertyDecl *OrigProp,
-                                          const ObjCCategoryDecl *ClassExt) {
-  const ObjCInterfaceDecl *D = ClassExt->getClassInterface();
-  if (!D)
-    return;
-
-  assert(!WritingAST && "Already writing the AST!");
-  if (!D->isFromASTFile())
-    return; // Declaration not imported from PCH.
-
-  RewriteDecl(D);
 }
 
 void ASTWriter::DeclarationMarkedUsed(const Decl *D) {

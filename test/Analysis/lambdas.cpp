@@ -176,6 +176,40 @@ void inlineDefensiveChecks() {
   (void)p;
 }
 
+
+template<typename T>
+void callLambda(T t) {
+  t();
+}
+
+struct DontCrash {
+  int x;
+  void f() {
+    callLambda([&](){ ++x; });
+    callLambdaFromStatic([&](){ ++x; });
+  }
+  
+  template<typename T>
+  static void callLambdaFromStatic(T t) {
+    t();
+  }
+};
+
+
+// Capture constants
+
+void captureConstants() {
+  const int i = 5;
+  [=]() {
+    if (i != 5)
+      clang_analyzer_warnIfReached();
+  }();
+  [&] {
+    if (i != 5)
+      clang_analyzer_warnIfReached();
+  }();
+}
+
 // CHECK: [B2 (ENTRY)]
 // CHECK:   Succs (1): B1
 // CHECK: [B1]

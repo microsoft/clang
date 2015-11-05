@@ -279,6 +279,50 @@ static llvm::Value *EmitOverflowIntrinsic(CodeGenFunction &CGF,
   return CGF.Builder.CreateExtractValue(Tmp, 0);
 }
 
+namespace {
+  struct WidthAndSignedness {
+    unsigned Width;
+    bool Signed;
+  };
+}
+
+static WidthAndSignedness
+getIntegerWidthAndSignedness(const clang::ASTContext &context,
+                             const clang::QualType Type) {
+  assert(Type->isIntegerType() && "Given type is not an integer.");
+  unsigned Width = Type->isBooleanType() ? 1 : context.getTypeInfo(Type).Width;
+  bool Signed = Type->isSignedIntegerType();
+  return {Width, Signed};
+}
+
+// Given one or more integer types, this function produces an integer type that
+// encompasses them: any value in one of the given types could be expressed in
+// the encompassing type.
+static struct WidthAndSignedness
+EncompassingIntegerType(ArrayRef<struct WidthAndSignedness> Types) {
+  assert(Types.size() > 0 && "Empty list of types.");
+
+  // If any of the given types is signed, we must return a signed type.
+  bool Signed = false;
+  for (const auto &Type : Types) {
+    Signed |= Type.Signed;
+  }
+
+  // The encompassing type must have a width greater than or equal to the width
+  // of the specified types.  Aditionally, if the encompassing type is signed,
+  // its width must be strictly greater than the width of any unsigned types
+  // given.
+  unsigned Width = 0;
+  for (const auto &Type : Types) {
+    unsigned MinWidth = Type.Width + (Signed && !Type.Signed);
+    if (Width < MinWidth) {
+      Width = MinWidth;
+    }
+  }
+
+  return {Width, Signed};
+}
+
 Value *CodeGenFunction::EmitVAStartEnd(Value *ArgValue, bool IsStart) {
   llvm::Type *DestType = Int8PtrTy;
   if (ArgValue->getType() != DestType)
@@ -296,53 +340,58 @@ bool CodeGenFunction::checkBuiltinTargetFeatures(
   if (!TargetDecl)
     return true;
 
-  // Get the current enclosing function if it exists.
-  if (const FunctionDecl *FD = dyn_cast_or_null<FunctionDecl>(CurFuncDecl)) {
-    unsigned BuiltinID = TargetDecl->getBuiltinID();
-    const char *FeatureList =
-        CGM.getContext().BuiltinInfo.getRequiredFeatures(BuiltinID);
-    if (FeatureList && StringRef(FeatureList) != "") {
-      StringRef TargetCPU = Target.getTargetOpts().CPU;
-      llvm::StringMap<bool> FeatureMap;
+  // Get the current enclosing function if it exists. If it doesn't
+  // we can't check the target features anyhow.
+  const FunctionDecl *FD = dyn_cast_or_null<FunctionDecl>(CurFuncDecl);
+  if (!FD) return true;
 
-      if (const auto *TD = FD->getAttr<TargetAttr>()) {
-        // If we have a TargetAttr build up the feature map based on that.
-        TargetAttr::ParsedTargetAttr ParsedAttr = TD->parse();
+  unsigned BuiltinID = TargetDecl->getBuiltinID();
+  const char *FeatureList =
+      CGM.getContext().BuiltinInfo.getRequiredFeatures(BuiltinID);
 
-        // Make a copy of the features as passed on the command line into the
-        // beginning of the additional features from the function to override.
-        ParsedAttr.first.insert(
-            ParsedAttr.first.begin(),
-            Target.getTargetOpts().FeaturesAsWritten.begin(),
-            Target.getTargetOpts().FeaturesAsWritten.end());
+  if (!FeatureList || StringRef(FeatureList) == "")
+    return true;
 
-        if (ParsedAttr.second != "")
-          TargetCPU = ParsedAttr.second;
+  StringRef TargetCPU = Target.getTargetOpts().CPU;
+  llvm::StringMap<bool> FeatureMap;
 
-        // Now populate the feature map, first with the TargetCPU which is
-        // either
-        // the default or a new one from the target attribute string. Then we'll
-        // use the passed in features (FeaturesAsWritten) along with the new
-        // ones
-        // from the attribute.
-        Target.initFeatureMap(FeatureMap, CGM.getDiags(), TargetCPU,
-                              ParsedAttr.first);
-      } else {
-        Target.initFeatureMap(FeatureMap, CGM.getDiags(), TargetCPU,
-                              Target.getTargetOpts().Features);
-      }
+  if (const auto *TD = FD->getAttr<TargetAttr>()) {
+    // If we have a TargetAttr build up the feature map based on that.
+    TargetAttr::ParsedTargetAttr ParsedAttr = TD->parse();
 
-      // If we have at least one of the features in the feature list return
-      // true, otherwise return false.
-      SmallVector<StringRef, 1> AttrFeatures;
-      StringRef(FeatureList).split(AttrFeatures, ",");
-      for (const auto &Feature : AttrFeatures)
-        if (FeatureMap[Feature])
-	  return true;
-      return false;
-    }
+    // Make a copy of the features as passed on the command line into the
+    // beginning of the additional features from the function to override.
+    ParsedAttr.first.insert(ParsedAttr.first.begin(),
+                            Target.getTargetOpts().FeaturesAsWritten.begin(),
+                            Target.getTargetOpts().FeaturesAsWritten.end());
+
+    if (ParsedAttr.second != "")
+      TargetCPU = ParsedAttr.second;
+
+    // Now populate the feature map, first with the TargetCPU which is either
+    // the default or a new one from the target attribute string. Then we'll use
+    // the passed in features (FeaturesAsWritten) along with the new ones from
+    // the attribute.
+    Target.initFeatureMap(FeatureMap, CGM.getDiags(), TargetCPU,
+                          ParsedAttr.first);
+  } else {
+    Target.initFeatureMap(FeatureMap, CGM.getDiags(), TargetCPU,
+                          Target.getTargetOpts().Features);
   }
-  return true;
+
+  // If we have at least one of the features in the feature list return
+  // true, otherwise return false.
+  SmallVector<StringRef, 1> AttrFeatures;
+  StringRef(FeatureList).split(AttrFeatures, ",");
+  return std::all_of(AttrFeatures.begin(), AttrFeatures.end(),
+                     [&](StringRef &Feature) {
+                       SmallVector<StringRef, 1> OrFeatures;
+                       Feature.split(OrFeatures, "|");
+                       return std::any_of(OrFeatures.begin(), OrFeatures.end(),
+                                          [&](StringRef &Feature) {
+                                            return FeatureMap[Feature];
+                                          });
+                     });
 }
 
 RValue CodeGenFunction::EmitBuiltinExpr(const FunctionDecl *FD,
@@ -1601,6 +1650,88 @@ RValue CodeGenFunction::EmitBuiltinExpr(const FunctionDecl *FD,
     Builder.CreateStore(CarryOut, CarryOutPtr);
     return RValue::get(Sum2);
   }
+
+  case Builtin::BI__builtin_add_overflow:
+  case Builtin::BI__builtin_sub_overflow:
+  case Builtin::BI__builtin_mul_overflow: {
+    const clang::Expr *LeftArg = E->getArg(0);
+    const clang::Expr *RightArg = E->getArg(1);
+    const clang::Expr *ResultArg = E->getArg(2);
+
+    clang::QualType ResultQTy =
+        ResultArg->getType()->castAs<PointerType>()->getPointeeType();
+
+    WidthAndSignedness LeftInfo =
+        getIntegerWidthAndSignedness(CGM.getContext(), LeftArg->getType());
+    WidthAndSignedness RightInfo =
+        getIntegerWidthAndSignedness(CGM.getContext(), RightArg->getType());
+    WidthAndSignedness ResultInfo =
+        getIntegerWidthAndSignedness(CGM.getContext(), ResultQTy);
+    WidthAndSignedness EncompassingInfo =
+        EncompassingIntegerType({LeftInfo, RightInfo, ResultInfo});
+
+    llvm::Type *EncompassingLLVMTy =
+        llvm::IntegerType::get(CGM.getLLVMContext(), EncompassingInfo.Width);
+
+    llvm::Type *ResultLLVMTy = CGM.getTypes().ConvertType(ResultQTy);
+
+    llvm::Intrinsic::ID IntrinsicId;
+    switch (BuiltinID) {
+    default:
+      llvm_unreachable("Unknown overflow builtin id.");
+    case Builtin::BI__builtin_add_overflow:
+      IntrinsicId = EncompassingInfo.Signed
+                        ? llvm::Intrinsic::sadd_with_overflow
+                        : llvm::Intrinsic::uadd_with_overflow;
+      break;
+    case Builtin::BI__builtin_sub_overflow:
+      IntrinsicId = EncompassingInfo.Signed
+                        ? llvm::Intrinsic::ssub_with_overflow
+                        : llvm::Intrinsic::usub_with_overflow;
+      break;
+    case Builtin::BI__builtin_mul_overflow:
+      IntrinsicId = EncompassingInfo.Signed
+                        ? llvm::Intrinsic::smul_with_overflow
+                        : llvm::Intrinsic::umul_with_overflow;
+      break;
+    }
+
+    llvm::Value *Left = EmitScalarExpr(LeftArg);
+    llvm::Value *Right = EmitScalarExpr(RightArg);
+    Address ResultPtr = EmitPointerWithAlignment(ResultArg);
+
+    // Extend each operand to the encompassing type.
+    Left = Builder.CreateIntCast(Left, EncompassingLLVMTy, LeftInfo.Signed);
+    Right = Builder.CreateIntCast(Right, EncompassingLLVMTy, RightInfo.Signed);
+
+    // Perform the operation on the extended values.
+    llvm::Value *Overflow, *Result;
+    Result = EmitOverflowIntrinsic(*this, IntrinsicId, Left, Right, Overflow);
+
+    if (EncompassingInfo.Width > ResultInfo.Width) {
+      // The encompassing type is wider than the result type, so we need to
+      // truncate it.
+      llvm::Value *ResultTrunc = Builder.CreateTrunc(Result, ResultLLVMTy);
+
+      // To see if the truncation caused an overflow, we will extend
+      // the result and then compare it to the original result.
+      llvm::Value *ResultTruncExt = Builder.CreateIntCast(
+          ResultTrunc, EncompassingLLVMTy, ResultInfo.Signed);
+      llvm::Value *TruncationOverflow =
+          Builder.CreateICmpNE(Result, ResultTruncExt);
+
+      Overflow = Builder.CreateOr(Overflow, TruncationOverflow);
+      Result = ResultTrunc;
+    }
+
+    // Finally, store the result using the pointer.
+    bool isVolatile =
+      ResultArg->getType()->getPointeeType().isVolatileQualified();
+    Builder.CreateStore(EmitToMemory(Result, ResultQTy), ResultPtr, isVolatile);
+
+    return RValue::get(Overflow);
+  }
+
   case Builtin::BI__builtin_uadd_overflow:
   case Builtin::BI__builtin_uaddl_overflow:
   case Builtin::BI__builtin_uaddll_overflow:
@@ -1630,7 +1761,7 @@ RValue CodeGenFunction::EmitBuiltinExpr(const FunctionDecl *FD,
     // Decide which of the overflow intrinsics we are lowering to:
     llvm::Intrinsic::ID IntrinsicId;
     switch (BuiltinID) {
-    default: llvm_unreachable("Unknown security overflow builtin id.");
+    default: llvm_unreachable("Unknown overflow builtin id.");
     case Builtin::BI__builtin_uadd_overflow:
     case Builtin::BI__builtin_uaddl_overflow:
     case Builtin::BI__builtin_uaddll_overflow:
@@ -2106,7 +2237,8 @@ enum {
       AddRetType | VectorizeRetType | Add1ArgType | InventFloatType
 };
 
- struct NeonIntrinsicInfo {
+namespace {
+struct NeonIntrinsicInfo {
   unsigned BuiltinID;
   unsigned LLVMIntrinsic;
   unsigned AltLLVMIntrinsic;
@@ -2117,6 +2249,7 @@ enum {
     return BuiltinID < RHSBuiltinID;
   }
 };
+} // end anonymous namespace
 
 #define NEONMAP0(NameBase) \
   { NEON::BI__builtin_neon_ ## NameBase, 0, 0, #NameBase, 0 }
