@@ -2350,7 +2350,7 @@ void CodeGenFunction::EmitFunctionEpilog(const CGFunctionInfo &FI,
     if (RetAI.getInAllocaSRet()) {
       llvm::Function::arg_iterator EI = CurFn->arg_end();
       --EI;
-      llvm::Value *ArgStruct = EI;
+      llvm::Value *ArgStruct = &*EI;
       llvm::Value *SRet = Builder.CreateStructGEP(
           nullptr, ArgStruct, RetAI.getInAllocaFieldIndex());
       RV = Builder.CreateAlignedLoad(SRet, getPointerAlign(), "sret");
@@ -2365,7 +2365,7 @@ void CodeGenFunction::EmitFunctionEpilog(const CGFunctionInfo &FI,
     case TEK_Complex: {
       ComplexPairTy RT =
         EmitLoadOfComplex(MakeAddrLValue(ReturnValue, RetTy), EndLoc);
-      EmitStoreOfComplex(RT, MakeNaturalAlignAddrLValue(AI, RetTy),
+      EmitStoreOfComplex(RT, MakeNaturalAlignAddrLValue(&*AI, RetTy),
                          /*isInit*/ true);
       break;
     }
@@ -2374,7 +2374,7 @@ void CodeGenFunction::EmitFunctionEpilog(const CGFunctionInfo &FI,
       break;
     case TEK_Scalar:
       EmitStoreOfScalar(Builder.CreateLoad(ReturnValue),
-                        MakeNaturalAlignAddrLValue(AI, RetTy),
+                        MakeNaturalAlignAddrLValue(&*AI, RetTy),
                         /*isInit*/ true);
       break;
     }
@@ -3492,6 +3492,10 @@ RValue CodeGenFunction::EmitCall(const CGFunctionInfo &CallInfo,
   // The stack cleanup for inalloca arguments has to run out of the normal
   // lexical order, so deactivate it and run it manually here.
   CallArgs.freeArgumentMemory(*this);
+
+  if (llvm::CallInst *Call = dyn_cast<llvm::CallInst>(CI))
+    if (TargetDecl && TargetDecl->hasAttr<NotTailCalledAttr>())
+      Call->setTailCallKind(llvm::CallInst::TCK_NoTail);
 
   RValue Ret = [&] {
     switch (RetAI.getKind()) {
