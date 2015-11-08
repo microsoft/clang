@@ -408,7 +408,9 @@ void CompilerInstance::createPCHExternalASTSource(
   ModuleManager = createPCHExternalASTSource(
       Path, getHeaderSearchOpts().Sysroot, DisablePCHValidation,
       AllowPCHWithCompilerErrors, getPreprocessor(), getASTContext(),
-      getPCHContainerReader(), DeserializationListener,
+      getPCHContainerReader(),
+      getFrontendOpts().ModuleFileExtensions,
+      DeserializationListener,
       OwnDeserializationListener, Preamble,
       getFrontendOpts().UseGlobalModuleIndex);
 }
@@ -417,15 +419,16 @@ IntrusiveRefCntPtr<ASTReader> CompilerInstance::createPCHExternalASTSource(
     StringRef Path, StringRef Sysroot, bool DisablePCHValidation,
     bool AllowPCHWithCompilerErrors, Preprocessor &PP, ASTContext &Context,
     const PCHContainerReader &PCHContainerRdr,
+    ArrayRef<IntrusiveRefCntPtr<ModuleFileExtension>> Extensions,
     void *DeserializationListener, bool OwnDeserializationListener,
     bool Preamble, bool UseGlobalModuleIndex) {
   HeaderSearchOptions &HSOpts = PP.getHeaderSearchInfo().getHeaderSearchOpts();
 
   IntrusiveRefCntPtr<ASTReader> Reader(new ASTReader(
-      PP, Context, PCHContainerRdr, Sysroot.empty() ? "" : Sysroot.data(),
-      DisablePCHValidation, AllowPCHWithCompilerErrors,
-      /*AllowConfigurationMismatch*/ false, HSOpts.ModulesValidateSystemHeaders,
-      UseGlobalModuleIndex));
+      PP, Context, PCHContainerRdr, Extensions,
+      Sysroot.empty() ? "" : Sysroot.data(), DisablePCHValidation,
+      AllowPCHWithCompilerErrors, /*AllowConfigurationMismatch*/ false,
+      HSOpts.ModulesValidateSystemHeaders, UseGlobalModuleIndex));
 
   // We need the external source to be set up before we read the AST, because
   // eagerly-deserialized declarations may use it.
@@ -1267,6 +1270,7 @@ void CompilerInstance::createModuleManager() {
                                                  *FrontendTimerGroup);
     ModuleManager = new ASTReader(
         getPreprocessor(), getASTContext(), getPCHContainerReader(),
+        getFrontendOpts().ModuleFileExtensions,
         Sysroot.empty() ? "" : Sysroot.c_str(), PPOpts.DisablePCHValidation,
         /*AllowASTWithCompilerErrors=*/false,
         /*AllowConfigurationMismatch=*/false,
@@ -1323,6 +1327,17 @@ bool CompilerInstance::loadModuleFile(StringRef FileName) {
       }
       LoadedModules.clear();
     }
+
+    void markAllUnavailable() {
+      for (auto *II : LoadedModules) {
+        if (Module *M = CI.getPreprocessor()
+                            .getHeaderSearchInfo()
+                            .getModuleMap()
+                            .findModule(II->getName()))
+          M->HasIncompatibleModuleFile = true;
+      }
+      LoadedModules.clear();
+    }
   };
 
   // If we don't already have an ASTReader, create one now.
@@ -1339,15 +1354,18 @@ bool CompilerInstance::loadModuleFile(StringRef FileName) {
                                  SourceLocation(),
                                  ASTReader::ARR_ConfigurationMismatch)) {
   case ASTReader::Success:
-  // We successfully loaded the module file; remember the set of provided
-  // modules so that we don't try to load implicit modules for them.
-  ListenerRef.registerAll();
-  return true;
+    // We successfully loaded the module file; remember the set of provided
+    // modules so that we don't try to load implicit modules for them.
+    ListenerRef.registerAll();
+    return true;
 
   case ASTReader::ConfigurationMismatch:
     // Ignore unusable module files.
     getDiagnostics().Report(SourceLocation(), diag::warn_module_config_mismatch)
         << FileName;
+    // All modules provided by any files we tried and failed to load are now
+    // unavailable; includes of those modules should now be handled textually.
+    ListenerRef.markAllUnavailable();
     return true;
 
   default:
@@ -1403,6 +1421,12 @@ CompilerInstance::loadModule(SourceLocation ImportLoc,
     std::string ModuleFileName =
         PP->getHeaderSearchInfo().getModuleFileName(Module);
     if (ModuleFileName.empty()) {
+      if (Module->HasIncompatibleModuleFile) {
+        // We tried and failed to load a module file for this module. Fall
+        // back to textual inclusion for its headers.
+        return ModuleLoadResult(nullptr, /*missingExpected*/true);
+      }
+
       getDiagnostics().Report(ModuleNameLoc, diag::err_module_build_disabled)
           << ModuleName;
       ModuleBuildFailed = true;

@@ -108,17 +108,14 @@ struct OrderGlobalInits {
   }
 };
 
-struct RREntrypoints {
-  RREntrypoints() { memset(this, 0, sizeof(*this)); }
-  /// void objc_autoreleasePoolPop(void*);
+struct ObjCEntrypoints {
+  ObjCEntrypoints() { memset(this, 0, sizeof(*this)); }
+
+    /// void objc_autoreleasePoolPop(void*);
   llvm::Constant *objc_autoreleasePoolPop;
 
   /// void *objc_autoreleasePoolPush(void);
   llvm::Constant *objc_autoreleasePoolPush;
-};
-
-struct ARCEntrypoints {
-  ARCEntrypoints() { memset(this, 0, sizeof(*this)); }
 
   /// id objc_autorelease(id);
   llvm::Constant *objc_autorelease;
@@ -288,9 +285,8 @@ private:
   CGOpenMPRuntime* OpenMPRuntime;
   CGCUDARuntime* CUDARuntime;
   CGDebugInfo* DebugInfo;
-  ARCEntrypoints *ARCData;
+  ObjCEntrypoints *ObjCData;
   llvm::MDNode *NoObjCARCExceptionsMetadata;
-  RREntrypoints *RRData;
   std::unique_ptr<llvm::IndexedInstrProfReader> PGOReader;
   InstrProfStats PGOStats;
 
@@ -530,14 +526,9 @@ public:
     return *CUDARuntime;
   }
 
-  ARCEntrypoints &getARCEntrypoints() const {
-    assert(getLangOpts().ObjCAutoRefCount && ARCData != nullptr);
-    return *ARCData;
-  }
-
-  RREntrypoints &getRREntrypoints() const {
-    assert(RRData != nullptr);
-    return *RRData;
+  ObjCEntrypoints &getObjCEntrypoints() const {
+    assert(ObjCData != nullptr);
+    return *ObjCData;
   }
 
   InstrProfStats &getPGOStats() { return PGOStats; }
@@ -695,6 +686,7 @@ public:
 
   llvm::Function *
   CreateGlobalInitOrDestructFunction(llvm::FunctionType *ty, const Twine &name,
+                                     const CGFunctionInfo &FI,
                                      SourceLocation Loc = SourceLocation(),
                                      bool TLS = false);
 
@@ -920,6 +912,11 @@ public:
   llvm::Constant *EmitConstantValueForMemory(const APValue &Value,
                                              QualType DestType,
                                              CodeGenFunction *CGF = nullptr);
+
+  /// \brief Emit type info if type of an expression is a variably modified
+  /// type. Also emit proper debug info for cast types.
+  void EmitExplicitCastExprType(const ExplicitCastExpr *E,
+                                CodeGenFunction *CGF = nullptr);
 
   /// Return the result of value-initializing the given type, i.e. a null
   /// expression of the given type.  This is usually, but not always, an LLVM

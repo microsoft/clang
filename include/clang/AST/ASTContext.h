@@ -70,6 +70,7 @@ namespace clang {
   class VTableContextBase;
 
   namespace Builtin { class Context; }
+  enum BuiltinTemplateKind : int;
 
   namespace comments {
     class FullComment;
@@ -246,6 +247,9 @@ class ASTContext : public RefCountedBase<ASTContext> {
   /// The identifier 'NSCopying'.
   IdentifierInfo *NSCopyingName = nullptr;
 
+  /// The identifier '__make_integer_seq'.
+  mutable IdentifierInfo *MakeIntegerSeqName = nullptr;
+
   QualType ObjCConstantStringType;
   mutable RecordDecl *CFConstantStringTypeDecl;
   
@@ -399,6 +403,7 @@ private:
   
   TranslationUnitDecl *TUDecl;
   mutable ExternCContextDecl *ExternCContext;
+  mutable BuiltinTemplateDecl *MakeIntegerSeqDecl;
 
   /// \brief The associated SourceManager object.a
   SourceManager &SourceMgr;
@@ -451,10 +456,59 @@ public:
   /// \brief Contains parents of a node.
   typedef llvm::SmallVector<ast_type_traits::DynTypedNode, 2> ParentVector;
 
-  /// \brief Maps from a node to its parents.
+  /// \brief Maps from a node to its parents. This is used for nodes that have
+  /// pointer identity only, which are more common and we can save space by
+  /// only storing a unique pointer to them.
   typedef llvm::DenseMap<const void *,
-                         llvm::PointerUnion<ast_type_traits::DynTypedNode *,
-                                            ParentVector *>> ParentMap;
+                         llvm::PointerUnion4<const Decl *, const Stmt *,
+                                             ast_type_traits::DynTypedNode *,
+                                             ParentVector *>> ParentMapPointers;
+
+  /// Parent map for nodes without pointer identity. We store a full
+  /// DynTypedNode for all keys.
+  typedef llvm::DenseMap<
+      ast_type_traits::DynTypedNode,
+      llvm::PointerUnion4<const Decl *, const Stmt *,
+                          ast_type_traits::DynTypedNode *, ParentVector *>>
+      ParentMapOtherNodes;
+
+  /// Container for either a single DynTypedNode or for an ArrayRef to
+  /// DynTypedNode. For use with ParentMap.
+  class DynTypedNodeList {
+    typedef ast_type_traits::DynTypedNode DynTypedNode;
+    llvm::AlignedCharArrayUnion<ast_type_traits::DynTypedNode,
+                                ArrayRef<DynTypedNode>> Storage;
+    bool IsSingleNode;
+
+  public:
+    DynTypedNodeList(const DynTypedNode &N) : IsSingleNode(true) {
+      new (Storage.buffer) DynTypedNode(N);
+    }
+    DynTypedNodeList(ArrayRef<DynTypedNode> A) : IsSingleNode(false) {
+      new (Storage.buffer) ArrayRef<DynTypedNode>(A);
+    }
+
+    const ast_type_traits::DynTypedNode *begin() const {
+      if (!IsSingleNode)
+        return reinterpret_cast<const ArrayRef<DynTypedNode> *>(Storage.buffer)
+            ->begin();
+      return reinterpret_cast<const DynTypedNode *>(Storage.buffer);
+    }
+
+    const ast_type_traits::DynTypedNode *end() const {
+      if (!IsSingleNode)
+        return reinterpret_cast<const ArrayRef<DynTypedNode> *>(Storage.buffer)
+            ->end();
+      return reinterpret_cast<const DynTypedNode *>(Storage.buffer) + 1;
+    }
+
+    size_t size() const { return end() - begin(); }
+    bool empty() const { return begin() == end(); }
+    const DynTypedNode &operator[](size_t N) const {
+      assert(N < size() && "Out of bounds!");
+      return *(begin() + N);
+    }
+  };
 
   /// \brief Returns the parents of the given node.
   ///
@@ -480,13 +534,11 @@ public:
   ///
   /// 'NodeT' can be one of Decl, Stmt, Type, TypeLoc,
   /// NestedNameSpecifier or NestedNameSpecifierLoc.
-  template <typename NodeT>
-  ArrayRef<ast_type_traits::DynTypedNode> getParents(const NodeT &Node) {
+  template <typename NodeT> DynTypedNodeList getParents(const NodeT &Node) {
     return getParents(ast_type_traits::DynTypedNode::create(Node));
   }
 
-  ArrayRef<ast_type_traits::DynTypedNode>
-  getParents(const ast_type_traits::DynTypedNode &Node);
+  DynTypedNodeList getParents(const ast_type_traits::DynTypedNode &Node);
 
   const clang::PrintingPolicy &getPrintingPolicy() const {
     return PrintingPolicy;
@@ -821,6 +873,7 @@ public:
   TranslationUnitDecl *getTranslationUnitDecl() const { return TUDecl; }
 
   ExternCContextDecl *getExternCContextDecl() const;
+  BuiltinTemplateDecl *getMakeIntegerSeqDecl() const;
 
   // Builtin Types.
   CanQualType VoidTy;
@@ -893,6 +946,9 @@ public:
 
   void PrintStats() const;
   const SmallVectorImpl<Type *>& getTypes() const { return Types; }
+
+  BuiltinTemplateDecl *buildBuiltinTemplateDecl(BuiltinTemplateKind BTK,
+                                                const IdentifierInfo *II) const;
 
   /// \brief Create a new implicit TU-level CXXRecordDecl or RecordDecl
   /// declaration.
@@ -1395,6 +1451,12 @@ public:
     }
 
     return NSCopyingName;
+  }
+
+  IdentifierInfo *getMakeIntegerSeqName() const {
+    if (!MakeIntegerSeqName)
+      MakeIntegerSeqName = &Idents.get("__make_integer_seq");
+    return MakeIntegerSeqName;
   }
 
   /// \brief Retrieve the Objective-C "instancetype" type, if already known;
@@ -2476,7 +2538,8 @@ private:
   void ReleaseDeclContextMaps();
   void ReleaseParentMapEntries();
 
-  std::unique_ptr<ParentMap> AllParents;
+  std::unique_ptr<ParentMapPointers> PointerParents;
+  std::unique_ptr<ParentMapOtherNodes> OtherParents;
 
   std::unique_ptr<VTableContextBase> VTContext;
 

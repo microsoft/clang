@@ -23,10 +23,12 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/TargetRegistry.h"
+#include "llvm/Support/TargetParser.h"
 
 using namespace clang::driver;
 using namespace clang::driver::tools;
 using namespace clang;
+using namespace llvm;
 using namespace llvm::opt;
 
 static llvm::opt::Arg *GetRTTIArgument(const ArgList &Args) {
@@ -301,9 +303,28 @@ std::string ToolChain::getCompilerRT(const ArgList &Args, StringRef Component,
   return Path.str();
 }
 
+const char *ToolChain::getCompilerRTArgString(const llvm::opt::ArgList &Args,
+                                              StringRef Component,
+                                              bool Shared) const {
+  return Args.MakeArgString(getCompilerRT(Args, Component, Shared));
+}
+
+bool ToolChain::needsProfileRT(const ArgList &Args) {
+  if (Args.hasFlag(options::OPT_fprofile_arcs, options::OPT_fno_profile_arcs,
+                   false) ||
+      Args.hasArg(options::OPT_fprofile_generate) ||
+      Args.hasArg(options::OPT_fprofile_generate_EQ) ||
+      Args.hasArg(options::OPT_fprofile_instr_generate) ||
+      Args.hasArg(options::OPT_fprofile_instr_generate_EQ) ||
+      Args.hasArg(options::OPT_fcreate_profile) ||
+      Args.hasArg(options::OPT_coverage))
+    return true;
+
+  return false;
+}
+
 Tool *ToolChain::SelectTool(const JobAction &JA) const {
-  if (getDriver().ShouldUseClangCompiler(JA))
-    return getClang();
+  if (getDriver().ShouldUseClangCompiler(JA)) return getClang();
   Action::ActionClass AC = JA.getKind();
   if (AC == Action::AssembleJobClass && useIntegratedAs())
     return getClangAs();
@@ -447,9 +468,9 @@ std::string ToolChain::ComputeLLVMTriple(const ArgList &Args,
             : tools::arm::getARMTargetCPU(MCPU, MArch, Triple);
     StringRef Suffix =
       tools::arm::getLLVMArchSuffixForARM(CPU, MArch, Triple);
-    bool ThumbDefault = Suffix.startswith("v6m") || Suffix.startswith("v7m") ||
-      Suffix.startswith("v7em") ||
-      (Suffix.startswith("v7") && getTriple().isOSBinFormatMachO());
+    bool IsMProfile = ARM::parseArchProfile(Suffix) == ARM::PK_M;
+    bool ThumbDefault = IsMProfile || (ARM::parseArchVersion(Suffix) == 7 && 
+                                       getTriple().isOSBinFormatMachO());
     // FIXME: this is invalid for WindowsCE
     if (getTriple().isOSWindows())
       ThumbDefault = true;
@@ -459,10 +480,9 @@ std::string ToolChain::ComputeLLVMTriple(const ArgList &Args,
     else
       ArchName = "arm";
 
-    // Assembly files should start in ARM mode.
-    if (InputType != types::TY_PP_Asm &&
-        Args.hasFlag(options::OPT_mthumb, options::OPT_mno_thumb, ThumbDefault))
-    {
+    // Assembly files should start in ARM mode, unless arch is M-profile.
+    if ((InputType != types::TY_PP_Asm && Args.hasFlag(options::OPT_mthumb,
+         options::OPT_mno_thumb, ThumbDefault)) || IsMProfile) {
       if (IsBigEndian)
         ArchName = "thumbeb";
       else
@@ -491,9 +511,16 @@ void ToolChain::addClangTargetOptions(const ArgList &DriverArgs,
 
 void ToolChain::addClangWarningOptions(ArgStringList &CC1Args) const {}
 
+void ToolChain::addProfileRTLibs(const llvm::opt::ArgList &Args,
+                                 llvm::opt::ArgStringList &CmdArgs) const {
+  if (!needsProfileRT(Args)) return;
+
+  CmdArgs.push_back(getCompilerRTArgString(Args, "profile"));
+  return;
+}
+
 ToolChain::RuntimeLibType ToolChain::GetRuntimeLibType(
-  const ArgList &Args) const
-{
+    const ArgList &Args) const {
   if (Arg *A = Args.getLastArg(options::OPT_rtlib_EQ)) {
     StringRef Value = A->getValue();
     if (Value == "compiler-rt")

@@ -796,8 +796,10 @@ class X86_32ABIInfo : public ABIInfo {
   static const unsigned MinABIStackAlignInBytes = 4;
 
   bool IsDarwinVectorABI;
-  bool IsSmallStructInRegABI;
+  bool IsRetSmallStructInRegABI;
   bool IsWin32StructABI;
+  bool IsSoftFloatABI;
+  bool IsMCUABI;
   unsigned DefaultNumRegisterParameters;
 
   static bool isRegisterSize(unsigned Size) {
@@ -845,17 +847,25 @@ public:
   Address EmitVAArg(CodeGenFunction &CGF, Address VAListAddr,
                     QualType Ty) const override;
 
-  X86_32ABIInfo(CodeGen::CodeGenTypes &CGT, bool d, bool p, bool w,
-                unsigned r)
-    : ABIInfo(CGT), IsDarwinVectorABI(d), IsSmallStructInRegABI(p),
-      IsWin32StructABI(w), DefaultNumRegisterParameters(r) {}
+  X86_32ABIInfo(CodeGen::CodeGenTypes &CGT, bool DarwinVectorABI,
+                bool RetSmallStructInRegABI, bool Win32StructABI,
+                unsigned NumRegisterParameters, bool SoftFloatABI)
+    : ABIInfo(CGT), IsDarwinVectorABI(DarwinVectorABI),
+      IsRetSmallStructInRegABI(RetSmallStructInRegABI), 
+      IsWin32StructABI(Win32StructABI),
+      IsSoftFloatABI(SoftFloatABI),
+      IsMCUABI(CGT.getTarget().getTriple().isOSIAMCU()),
+      DefaultNumRegisterParameters(NumRegisterParameters) {}
 };
 
 class X86_32TargetCodeGenInfo : public TargetCodeGenInfo {
 public:
-  X86_32TargetCodeGenInfo(CodeGen::CodeGenTypes &CGT,
-      bool d, bool p, bool w, unsigned r)
-    :TargetCodeGenInfo(new X86_32ABIInfo(CGT, d, p, w, r)) {}
+  X86_32TargetCodeGenInfo(CodeGen::CodeGenTypes &CGT, bool DarwinVectorABI,
+                          bool RetSmallStructInRegABI, bool Win32StructABI,
+                          unsigned NumRegisterParameters, bool SoftFloatABI)
+      : TargetCodeGenInfo(new X86_32ABIInfo(
+            CGT, DarwinVectorABI, RetSmallStructInRegABI, Win32StructABI,
+            NumRegisterParameters, SoftFloatABI)) {}
 
   static bool isStructReturnInRegABI(
       const llvm::Triple &Triple, const CodeGenOptions &Opts);
@@ -978,7 +988,7 @@ void X86_32TargetCodeGenInfo::addReturnRegisterOutputs(
 }
 
 /// shouldReturnTypeInRegister - Determine if the given type should be
-/// passed in a register (for the Darwin ABI).
+/// returned in a register (for the Darwin and MCU ABI).
 bool X86_32ABIInfo::shouldReturnTypeInRegister(QualType Ty,
                                                ASTContext &Context) const {
   uint64_t Size = Context.getTypeSize(Ty);
@@ -1083,7 +1093,7 @@ ABIArgInfo X86_32ABIInfo::classifyReturnType(QualType RetTy,
     }
 
     // If specified, structs and unions are always indirect.
-    if (!IsSmallStructInRegABI && !RetTy->isAnyComplexType())
+    if (!IsRetSmallStructInRegABI && !RetTy->isAnyComplexType())
       return getIndirectReturnResult(RetTy, State);
 
     // Small structures which are register sized are generally returned
@@ -1206,9 +1216,11 @@ X86_32ABIInfo::Class X86_32ABIInfo::classify(QualType Ty) const {
 bool X86_32ABIInfo::shouldUseInReg(QualType Ty, CCState &State,
                                    bool &NeedsPadding) const {
   NeedsPadding = false;
-  Class C = classify(Ty);
-  if (C == Float)
-    return false;
+  if (!IsSoftFloatABI) {
+    Class C = classify(Ty);
+    if (C == Float)
+      return false;
+  }
 
   unsigned Size = getContext().getTypeSize(Ty);
   unsigned SizeInRegs = (Size + 31) / 32;
@@ -1216,9 +1228,18 @@ bool X86_32ABIInfo::shouldUseInReg(QualType Ty, CCState &State,
   if (SizeInRegs == 0)
     return false;
 
-  if (SizeInRegs > State.FreeRegs) {
-    State.FreeRegs = 0;
-    return false;
+  if (!IsMCUABI) {
+    if (SizeInRegs > State.FreeRegs) {
+      State.FreeRegs = 0;
+      return false;
+    }
+  } else {
+    // The MCU psABI allows passing parameters in-reg even if there are
+    // earlier parameters that are passed on the stack. Also,
+    // it does not allow passing >8-byte structs in-register,
+    // even if there are 3 free registers available.
+    if (SizeInRegs > State.FreeRegs || SizeInRegs > 2)
+      return false;
   }
 
   State.FreeRegs -= SizeInRegs;
@@ -1362,6 +1383,8 @@ void X86_32ABIInfo::computeInfo(CGFunctionInfo &FI) const {
     State.FreeSSERegs = 6;
   } else if (FI.getHasRegParm())
     State.FreeRegs = FI.getRegParm();
+  else if (IsMCUABI)
+    State.FreeRegs = 3;
   else
     State.FreeRegs = DefaultNumRegisterParameters;
 
@@ -1510,7 +1533,7 @@ bool X86_32TargetCodeGenInfo::isStructReturnInRegABI(
     return true;
   }
 
-  if (Triple.isOSDarwin())
+  if (Triple.isOSDarwin() || Triple.isOSIAMCU())
     return true;
 
   switch (Triple.getOS()) {
@@ -1749,12 +1772,10 @@ public:
 
 /// WinX86_64ABIInfo - The Windows X86_64 ABI information.
 class WinX86_64ABIInfo : public ABIInfo {
-
-  ABIArgInfo classify(QualType Ty, unsigned &FreeSSERegs,
-                      bool IsReturnType) const;
-
 public:
-  WinX86_64ABIInfo(CodeGen::CodeGenTypes &CGT) : ABIInfo(CGT) {}
+  WinX86_64ABIInfo(CodeGen::CodeGenTypes &CGT)
+      : ABIInfo(CGT),
+        IsMingw64(getTarget().getTriple().isWindowsGNUEnvironment()) {}
 
   void computeInfo(CGFunctionInfo &FI) const override;
 
@@ -1771,6 +1792,12 @@ public:
     // FIXME: Assumes vectorcall is in use.
     return isX86VectorCallAggregateSmallEnough(NumMembers);
   }
+
+private:
+  ABIArgInfo classify(QualType Ty, unsigned &FreeSSERegs,
+                      bool IsReturnType) const;
+
+  bool IsMingw64;
 };
 
 class X86_64TargetCodeGenInfo : public TargetCodeGenInfo {
@@ -1876,8 +1903,10 @@ static std::string qualifyWindowsLibrary(llvm::StringRef Lib) {
 class WinX86_32TargetCodeGenInfo : public X86_32TargetCodeGenInfo {
 public:
   WinX86_32TargetCodeGenInfo(CodeGen::CodeGenTypes &CGT,
-        bool d, bool p, bool w, unsigned RegParms)
-    : X86_32TargetCodeGenInfo(CGT, d, p, w, RegParms) {}
+        bool DarwinVectorABI, bool RetSmallStructInRegABI, bool Win32StructABI,
+        unsigned NumRegisterParameters)
+    : X86_32TargetCodeGenInfo(CGT, DarwinVectorABI, RetSmallStructInRegABI,
+        Win32StructABI, NumRegisterParameters, false) {}
 
   void setTargetAttributes(const Decl *D, llvm::GlobalValue *GV,
                            CodeGen::CodeGenModule &CGM) const override;
@@ -3292,7 +3321,7 @@ ABIArgInfo WinX86_64ABIInfo::classify(QualType Ty, unsigned &FreeSSERegs,
 
   TypeInfo Info = getContext().getTypeInfo(Ty);
   uint64_t Width = Info.Width;
-  unsigned Align = getContext().toCharUnitsFromBits(Info.Align).getQuantity();
+  CharUnits Align = getContext().toCharUnitsFromBits(Info.Align);
 
   const RecordType *RT = Ty->getAs<RecordType>();
   if (RT) {
@@ -3304,10 +3333,6 @@ ABIArgInfo WinX86_64ABIInfo::classify(QualType Ty, unsigned &FreeSSERegs,
     if (RT->getDecl()->hasFlexibleArrayMember())
       return getNaturalAlignIndirect(Ty, /*ByVal=*/false);
 
-    // FIXME: mingw-w64-gcc emits 128-bit struct as i128
-    if (Width == 128 && getTarget().getTriple().isWindowsGNUEnvironment())
-      return ABIArgInfo::getDirect(llvm::IntegerType::get(getVMContext(),
-                                                          Width));
   }
 
   // vectorcall adds the concept of a homogenous vector aggregate, similar to
@@ -3321,8 +3346,7 @@ ABIArgInfo WinX86_64ABIInfo::classify(QualType Ty, unsigned &FreeSSERegs,
         return ABIArgInfo::getDirect();
       return ABIArgInfo::getExpand();
     }
-    return ABIArgInfo::getIndirect(CharUnits::fromQuantity(Align),
-                                   /*ByVal=*/false);
+    return ABIArgInfo::getIndirect(Align, /*ByVal=*/false);
   }
 
 
@@ -3349,6 +3373,14 @@ ABIArgInfo WinX86_64ABIInfo::classify(QualType Ty, unsigned &FreeSSERegs,
   const BuiltinType *BT = Ty->getAs<BuiltinType>();
   if (BT && BT->getKind() == BuiltinType::Bool)
     return ABIArgInfo::getExtend();
+
+  // Mingw64 GCC uses the old 80 bit extended precision floating point unit. It
+  // passes them indirectly through memory.
+  if (IsMingw64 && BT && BT->getKind() == BuiltinType::LongDouble) {
+    const llvm::fltSemantics *LDF = &getTarget().getLongDoubleFormat();
+    if (LDF == &llvm::APFloat::x87DoubleExtended)
+      return ABIArgInfo::getIndirect(Align, /*ByVal=*/false);
+  }
 
   return ABIArgInfo::getDirect();
 }
@@ -4657,7 +4689,8 @@ public:
   enum ABIKind {
     APCS = 0,
     AAPCS = 1,
-    AAPCS_VFP
+    AAPCS_VFP = 2,
+    AAPCS16_VFP = 3,
   };
 
 private:
@@ -4767,7 +4800,8 @@ public:
 
     Fn->addFnAttr("interrupt", Kind);
 
-    if (cast<ARMABIInfo>(getABIInfo()).getABIKind() == ARMABIInfo::APCS)
+    ARMABIInfo::ABIKind ABI = cast<ARMABIInfo>(getABIInfo()).getABIKind();
+    if (ABI == ARMABIInfo::APCS)
       return;
 
     // AAPCS guarantees that sp will be 8-byte aligned on any public interface,
@@ -4833,7 +4867,7 @@ void ARMABIInfo::computeInfo(CGFunctionInfo &FI) const {
 /// Return the default calling convention that LLVM will use.
 llvm::CallingConv::ID ARMABIInfo::getLLVMDefaultCC() const {
   // The default calling convention that LLVM will infer.
-  if (isEABIHF())
+  if (isEABIHF() || getTarget().getTriple().isWatchOS())
     return llvm::CallingConv::ARM_AAPCS_VFP;
   else if (isEABI())
     return llvm::CallingConv::ARM_AAPCS;
@@ -4848,6 +4882,7 @@ llvm::CallingConv::ID ARMABIInfo::getABIDefaultCC() const {
   case APCS: return llvm::CallingConv::ARM_APCS;
   case AAPCS: return llvm::CallingConv::ARM_AAPCS;
   case AAPCS_VFP: return llvm::CallingConv::ARM_AAPCS_VFP;
+  case AAPCS16_VFP: return llvm::CallingConv::ARM_AAPCS_VFP;
   }
   llvm_unreachable("bad ABI kind");
 }
@@ -4861,8 +4896,20 @@ void ARMABIInfo::setCCs() {
   if (abiCC != getLLVMDefaultCC())
     RuntimeCC = abiCC;
 
-  BuiltinCC = (getABIKind() == APCS ?
-               llvm::CallingConv::ARM_APCS : llvm::CallingConv::ARM_AAPCS);
+  // AAPCS apparently requires runtime support functions to be soft-float, but
+  // that's almost certainly for historic reasons (Thumb1 not supporting VFP
+  // most likely). It's more convenient for AAPCS16_VFP to be hard-float.
+  switch (getABIKind()) {
+  case APCS:
+  case AAPCS16_VFP:
+    if (abiCC != getLLVMDefaultCC())
+      BuiltinCC = abiCC;
+    break;
+  case AAPCS:
+  case AAPCS_VFP:
+    BuiltinCC = llvm::CallingConv::ARM_AAPCS;
+    break;
+  }
 }
 
 ABIArgInfo ARMABIInfo::classifyArgumentType(QualType Ty,
@@ -4937,6 +4984,27 @@ ABIArgInfo ARMABIInfo::classifyArgumentType(QualType Ty,
       // Base can be a floating-point or a vector.
       return ABIArgInfo::getDirect(nullptr, 0, nullptr, false);
     }
+  } else if (getABIKind() == ARMABIInfo::AAPCS16_VFP) {
+    // WatchOS does have homogeneous aggregates. Note that we intentionally use
+    // this convention even for a variadic function: the backend will use GPRs
+    // if needed.
+    const Type *Base = nullptr;
+    uint64_t Members = 0;
+    if (isHomogeneousAggregate(Ty, Base, Members)) {
+      assert(Base && Members <= 4 && "unexpected homogeneous aggregate");
+      llvm::Type *Ty =
+        llvm::ArrayType::get(CGT.ConvertType(QualType(Base, 0)), Members);
+      return ABIArgInfo::getDirect(Ty, 0, nullptr, false);
+    }
+  }
+
+  if (getABIKind() == ARMABIInfo::AAPCS16_VFP &&
+      getContext().getTypeSizeInChars(Ty) > CharUnits::fromQuantity(16)) {
+    // WatchOS is adopting the 64-bit AAPCS rule on composite types: if they're
+    // bigger than 128-bits, they get placed in space allocated by the caller,
+    // and a pointer is passed.
+    return ABIArgInfo::getIndirect(
+        CharUnits::fromQuantity(getContext().getTypeAlign(Ty) / 8), false);
   }
 
   // Support byval for ARM.
@@ -4950,6 +5018,7 @@ ABIArgInfo ARMABIInfo::classifyArgumentType(QualType Ty,
     ABIAlign = std::min(std::max(TyAlign, (uint64_t)4), (uint64_t)8);
 
   if (getContext().getTypeSizeInChars(Ty) > CharUnits::fromQuantity(64)) {
+    assert(getABIKind() != ARMABIInfo::AAPCS16_VFP && "unexpected byval");
     return ABIArgInfo::getIndirect(CharUnits::fromQuantity(ABIAlign),
                                    /*ByVal=*/true,
                                    /*Realign=*/TyAlign > ABIAlign);
@@ -5058,7 +5127,8 @@ static bool isIntegerLikeType(QualType Ty, ASTContext &Context,
 
 ABIArgInfo ARMABIInfo::classifyReturnType(QualType RetTy,
                                           bool isVariadic) const {
-  bool IsEffectivelyAAPCS_VFP = getABIKind() == AAPCS_VFP && !isVariadic;
+  bool IsEffectivelyAAPCS_VFP =
+      (getABIKind() == AAPCS_VFP || getABIKind() == AAPCS16_VFP) && !isVariadic;
 
   if (RetTy->isVoidType())
     return ABIArgInfo::getIgnore();
@@ -5123,7 +5193,7 @@ ABIArgInfo ARMABIInfo::classifyReturnType(QualType RetTy,
   // Check for homogeneous aggregates with AAPCS-VFP.
   if (IsEffectivelyAAPCS_VFP) {
     const Type *Base = nullptr;
-    uint64_t Members;
+    uint64_t Members = 0;
     if (isHomogeneousAggregate(RetTy, Base, Members)) {
       assert(Base && "Base class should be set for homogeneous aggregate");
       // Homogeneous Aggregates are returned directly.
@@ -5145,6 +5215,11 @@ ABIArgInfo ARMABIInfo::classifyReturnType(QualType RetTy,
     if (Size <= 16)
       return ABIArgInfo::getDirect(llvm::Type::getInt16Ty(getVMContext()));
     return ABIArgInfo::getDirect(llvm::Type::getInt32Ty(getVMContext()));
+  } else if (Size <= 128 && getABIKind() == AAPCS16_VFP) {
+    llvm::Type *Int32Ty = llvm::Type::getInt32Ty(getVMContext());
+    llvm::Type *CoerceTy =
+        llvm::ArrayType::get(Int32Ty, llvm::RoundUpToAlignment(Size, 32) / 32);
+    return ABIArgInfo::getDirect(CoerceTy);
   }
 
   return getNaturalAlignIndirect(RetTy);
@@ -5202,7 +5277,16 @@ Address ARMABIInfo::EmitVAArg(CodeGenFunction &CGF, Address VAListAddr,
 
   // Use indirect if size of the illegal vector is bigger than 16 bytes.
   bool IsIndirect = false;
+  const Type *Base = nullptr;
+  uint64_t Members = 0;
   if (TyInfo.first > CharUnits::fromQuantity(16) && isIllegalVectorType(Ty)) {
+    IsIndirect = true;
+
+  // ARMv7k passes structs bigger than 16 bytes indirectly, in space
+  // allocated by the caller.
+  } else if (TyInfo.first > CharUnits::fromQuantity(16) &&
+             getABIKind() == ARMABIInfo::AAPCS16_VFP &&
+             !isHomogeneousAggregate(Ty, Base, Members)) {
     IsIndirect = true;
 
   // Otherwise, bound the type's ABI alignment.
@@ -5213,6 +5297,10 @@ Address ARMABIInfo::EmitVAArg(CodeGenFunction &CGF, Address VAListAddr,
              getABIKind() == ARMABIInfo::AAPCS) {
     TyAlignForABI = std::max(TyAlignForABI, CharUnits::fromQuantity(4));
     TyAlignForABI = std::min(TyAlignForABI, CharUnits::fromQuantity(8));
+  } else if (getABIKind() == ARMABIInfo::AAPCS16_VFP) {
+    // ARMv7k allows type alignment up to 16 bytes.
+    TyAlignForABI = std::max(TyAlignForABI, CharUnits::fromQuantity(4));
+    TyAlignForABI = std::min(TyAlignForABI, CharUnits::fromQuantity(16));
   } else {
     TyAlignForABI = CharUnits::fromQuantity(4);
   }
@@ -7326,8 +7414,11 @@ const TargetCodeGenInfo &CodeGenModule::getTargetCodeGenInfo() {
       }
 
       ARMABIInfo::ABIKind Kind = ARMABIInfo::AAPCS;
-      if (getTarget().getABI() == "apcs-gnu")
+      StringRef ABIStr = getTarget().getABI();
+      if (ABIStr == "apcs-gnu")
         Kind = ARMABIInfo::APCS;
+      else if (ABIStr == "aapcs16")
+        Kind = ARMABIInfo::AAPCS16_VFP;
       else if (CodeGenOpts.FloatABI == "hard" ||
                (CodeGenOpts.FloatABI != "soft" &&
                 Triple.getEnvironment() == llvm::Triple::GNUEABIHF))
@@ -7378,18 +7469,19 @@ const TargetCodeGenInfo &CodeGenModule::getTargetCodeGenInfo() {
 
   case llvm::Triple::x86: {
     bool IsDarwinVectorABI = Triple.isOSDarwin();
-    bool IsSmallStructInRegABI =
+    bool RetSmallStructInRegABI =
         X86_32TargetCodeGenInfo::isStructReturnInRegABI(Triple, CodeGenOpts);
     bool IsWin32FloatStructABI = Triple.isOSWindows() && !Triple.isOSCygMing();
 
     if (Triple.getOS() == llvm::Triple::Win32) {
       return *(TheTargetCodeGenInfo = new WinX86_32TargetCodeGenInfo(
-                   Types, IsDarwinVectorABI, IsSmallStructInRegABI,
+                   Types, IsDarwinVectorABI, RetSmallStructInRegABI,
                    IsWin32FloatStructABI, CodeGenOpts.NumRegisterParameters));
     } else {
       return *(TheTargetCodeGenInfo = new X86_32TargetCodeGenInfo(
-                   Types, IsDarwinVectorABI, IsSmallStructInRegABI,
-                   IsWin32FloatStructABI, CodeGenOpts.NumRegisterParameters));
+                   Types, IsDarwinVectorABI, RetSmallStructInRegABI,
+                   IsWin32FloatStructABI, CodeGenOpts.NumRegisterParameters,
+                   CodeGenOpts.FloatABI == "soft"));
     }
   }
 

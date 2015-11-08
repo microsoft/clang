@@ -102,12 +102,18 @@ def err_drv_cc_print_options_failure : Error<
     "unable to open CC_PRINT_OPTIONS file: %0">;
 def err_drv_preamble_format : Error<
     "incorrect format for -preamble-bytes=N,END">;
+def err_drv_conflicting_deployment_targets : Error<
+  "conflicting deployment targets, both '%0' and '%1' are present in environment">;
 def err_drv_objc_gc_arr : Error<
   "cannot specify both '-fobjc-arc' and '%0'">;
 def err_arc_unsupported_on_runtime : Error<
   "-fobjc-arc is not supported on platforms using the legacy runtime">;
 def err_arc_unsupported_on_toolchain : Error< // feel free to generalize this
   "-fobjc-arc is not supported on versions of OS X prior to 10.6">;
+def err_objc_weak_with_gc : Error<
+  "-fobjc-weak is not supported in Objective-C garbage collection">;
+def err_objc_weak_unsupported : Error<
+  "-fobjc-weak is not supported on the current deployment target">;
 def err_drv_mg_requires_m_or_mm : Error<
   "option '-MG' requires '-M' or '-MM'">;
 def err_drv_unknown_objc_runtime : Error<
@@ -186,6 +192,10 @@ def err_analyzer_config_multiple_values : Error<
 def err_drv_modules_validate_once_requires_timestamp : Error<
   "option '-fmodules-validate-once-per-build-session' requires "
   "'-fbuild-session-timestamp=<seconds since Epoch>' or '-fbuild-session-file=<file>'">;
+
+def err_test_module_file_extension_format : Error<
+  "-ftest-module-file-extension argument '%0' is not of the required form "
+  "'blockname:major:minor:hashed:user info'">;
 
 def warn_drv_invoking_fallback : Warning<"falling back to %0">,
   InGroup<Fallback>;

@@ -129,6 +129,7 @@ static const EHPersonality &getObjCPersonality(const llvm::Triple &T,
     return getCPersonality(T, L);
   case ObjCRuntime::MacOSX:
   case ObjCRuntime::iOS:
+  case ObjCRuntime::WatchOS:
     return EHPersonality::NeXT_ObjC;
   case ObjCRuntime::GNUstep:
     if (L.ObjCRuntime.getVersion() >= VersionTuple(1, 7))
@@ -160,6 +161,7 @@ static const EHPersonality &getObjCXXPersonality(const llvm::Triple &T,
   // function on targets using (backend-driven) SJLJ EH.
   case ObjCRuntime::MacOSX:
   case ObjCRuntime::iOS:
+  case ObjCRuntime::WatchOS:
     return EHPersonality::NeXT_ObjC;
 
   // In the fragile ABI, just use C++ exception handling and hope
@@ -1575,7 +1577,7 @@ void CodeGenFunction::EmitCapturedLocals(CodeGenFunction &ParentCGF,
     // second parameter.
     auto AI = CurFn->arg_begin();
     ++AI;
-    ParentFP = AI;
+    ParentFP = &*AI;
   }
 
   // Create llvm.localrecover calls for all captures.
@@ -1730,8 +1732,7 @@ void CodeGenFunction::EmitSEHExceptionCodeSave(CodeGenFunction &ParentCGF,
   // __exception_info intrinsic.
   if (CGM.getTarget().getTriple().getArch() != llvm::Triple::x86) {
     // On Win64, the info is passed as the first parameter to the filter.
-    auto AI = CurFn->arg_begin();
-    SEHInfo = AI;
+    SEHInfo = &*CurFn->arg_begin();
     SEHCodeSlotStack.push_back(
         CreateMemTemp(getContext().IntTy, "__exception_code"));
   } else {

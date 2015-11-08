@@ -884,7 +884,8 @@ def err_property_type : Error<"property cannot have array or function type %0">;
 def error_missing_property_context : Error<
   "missing context for property implementation declaration">;
 def error_bad_property_decl : Error<
-  "property implementation must have its declaration in interface %0">;
+  "property implementation must have its declaration in interface %0 or one of "
+  "its extensions">;
 def error_category_property : Error<
   "property declared in category %0 cannot be implemented in "
   "class implementation">;
@@ -907,8 +908,6 @@ def error_bad_property_context : Error<
 def error_missing_property_ivar_decl : Error<
   "synthesized property %0 must either be named the same as a compatible"
   " instance variable or must explicitly name an instance variable">;
-def error_synthesize_weak_non_arc_or_gc : Error<
-  "@synthesize of 'weak' property is only allowed in ARC or GC mode">;
 def err_arc_perform_selector_retains : Error<
   "performSelector names a selector which retains the object">;
 def warn_arc_perform_selector_leaks : Warning<
@@ -1154,11 +1153,14 @@ def err_incompatible_exception_specs : Error<
   "target exception specification is not superset of source">;
 def err_deep_exception_specs_differ : Error<
   "exception specifications of %select{return|argument}0 types differ">;
-def ext_missing_exception_specification : ExtWarn<
-  "%0 is missing exception specification '%1'">,
-  InGroup<DiagGroup<"missing-exception-spec">>;
 def err_missing_exception_specification : Error<
   "%0 is missing exception specification '%1'">;
+def ext_missing_exception_specification : ExtWarn<
+  err_missing_exception_specification.Text>,
+  InGroup<DiagGroup<"missing-exception-spec">>;
+def ext_ms_missing_exception_specification : ExtWarn<
+  err_missing_exception_specification.Text>,
+  InGroup<MicrosoftExceptionSpec>;
 def err_noexcept_needs_constant_expression : Error<
   "argument to noexcept specifier must be a constant expression">;
 def err_exception_spec_not_parsed : Error<
@@ -1993,7 +1995,13 @@ def err_concept_decl_invalid_specifiers : Error<
 def warn_cxx98_compat_unicode_type : Warning<
   "'%0' type specifier is incompatible with C++98">,
   InGroup<CXX98Compat>, DefaultIgnore;
- 
+
+// __make_integer_seq
+def err_integer_sequence_negative_length : Error<
+  "integer sequences must have non-negative sequence length">;
+def err_integer_sequence_integral_element_type : Error<
+  "integer sequences must have integral element type">;
+
 // Objective-C++
 def err_objc_decls_may_only_appear_in_global_scope : Error<
   "Objective-C declarations may only appear in global scope">;
@@ -2346,7 +2354,7 @@ def warn_attribute_wrong_decl_type : Warning<
   "Objective-C instance methods|init methods of interface or class extension declarations|"
   "variables, functions and classes|Objective-C protocols|"
   "functions and global variables|structs, unions, and typedefs|structs and typedefs|"
-  "interface or protocol declarations|kernel functions}1">,
+  "interface or protocol declarations|kernel functions|non-K&R-style functions}1">,
   InGroup<IgnoredAttributes>;
 def err_attribute_wrong_decl_type : Error<warn_attribute_wrong_decl_type.Text>;
 def warn_type_attribute_wrong_type : Warning<
@@ -2401,6 +2409,8 @@ def warn_attribute_not_on_decl : Warning<
   "%0 attribute ignored when parsing type">, InGroup<IgnoredAttributes>;
 def err_base_specifier_attribute : Error<
   "%0 attribute cannot be applied to a base specifier">;
+def err_invalid_attribute_on_virtual_function : Error<
+  "%0 attribute cannot be applied to virtual functions">;
 
 // Availability attribute
 def warn_availability_unknown_platform : Warning<
@@ -2589,6 +2599,9 @@ def warn_impcast_complex_scalar : Warning<
 def warn_impcast_float_precision : Warning<
   "implicit conversion loses floating-point precision: %0 to %1">,
   InGroup<Conversion>, DefaultIgnore;
+def warn_impcast_double_promotion : Warning<
+  "implicit conversion increases floating-point precision: %0 to %1">,
+  InGroup<DoublePromotion>, DefaultIgnore;
 def warn_impcast_float_integer : Warning<
   "implicit conversion turns floating-point number into integer: %0 to %1">,
   InGroup<FloatConversion>, DefaultIgnore;
@@ -2631,6 +2644,10 @@ def warn_impcast_null_pointer_to_integer : Warning<
 def warn_impcast_floating_point_to_bool : Warning<
     "implicit conversion turns floating-point number into bool: %0 to %1">,
     InGroup<ImplicitConversionFloatingPointToBool>;
+def ext_ms_impcast_fn_obj : ExtWarn<
+  "implicit conversion between pointer-to-function and pointer-to-object is a "
+  "Microsoft extension">,
+  InGroup<MicrosoftCast>, DefaultError, SFINAEFailure;
 
 def warn_impcast_pointer_to_bool : Warning<
     "address of%select{| function| array}0 '%1' will always evaluate to "
@@ -4417,8 +4434,10 @@ def note_protected_by_seh_finally : Note<
   "jump bypasses initialization of __finally block">;
 def note_protected_by___block : Note<
   "jump bypasses setup of __block variable">;
-def note_protected_by_objc_ownership : Note<
-  "jump bypasses initialization of retaining variable">;
+def note_protected_by_objc_strong_init : Note<
+  "jump bypasses initialization of __strong variable">;
+def note_protected_by_objc_weak_init : Note<
+  "jump bypasses initialization of __weak variable">;
 def note_enters_block_captures_cxx_obj : Note<
   "jump enters lifetime of block which captures a destructible C++ object">;
 def note_enters_block_captures_strong : Note<
@@ -4455,8 +4474,10 @@ def note_exits_seh_finally : Note<
   "jump exits __finally block">;
 def note_exits_objc_autoreleasepool : Note<
   "jump exits autoreleasepool block">;
-def note_exits_objc_ownership : Note<
-  "jump exits scope of retaining variable">;
+def note_exits_objc_strong : Note<
+  "jump exits scope of __strong variable">;
+def note_exits_objc_weak : Note<
+  "jump exits scope of __weak variable">;
 def note_exits_block_captures_cxx_obj : Note<
   "jump exits lifetime of block which captures a destructible C++ object">;
 def note_exits_block_captures_strong : Note<
@@ -4516,7 +4537,18 @@ let CategoryName = "ARC Semantic Issue" in {
 let CategoryName = "ARC Weak References" in {
 
 def err_arc_weak_no_runtime : Error<
-  "the current deployment target does not support automated __weak references">;
+  "cannot create __weak reference because the current deployment target "
+  "does not support weak references">;
+def err_arc_weak_disabled : Error<
+  "cannot create __weak reference in file using manual reference counting">;
+def err_synthesizing_arc_weak_property_disabled : Error<
+  "cannot synthesize weak property in file using manual reference counting">;
+def err_synthesizing_arc_weak_property_no_runtime : Error<
+  "cannot synthesize weak property because the current deployment target "
+  "does not support weak references">;
+def warn_objc_weak_compat : Warning<
+  "the meaning of __weak has changed in manual reference-counting">,
+  InGroup<DiagGroup<"objc-weak-compat">>, DefaultIgnore;
 def err_arc_unsupported_weak_class : Error<
   "class is incompatible with __weak references">;
 def err_arc_weak_unavailable_assign : Error<
@@ -4533,6 +4565,21 @@ def err_arc_convesion_of_weak_unavailable : Error<
 } // end "ARC Weak References" category
 
 let CategoryName = "ARC Restrictions" in {
+
+def err_unavailable_in_arc : Error<
+  "%0 is unavailable in ARC">;
+def note_arc_forbidden_type : Note<
+  "declaration uses type that is ill-formed in ARC">;
+def note_performs_forbidden_arc_conversion : Note<
+  "inline function performs a conversion which is forbidden in ARC">;
+def note_arc_init_returns_unrelated : Note<
+  "init method must return a type related to its receiver type">;
+def note_arc_weak_disabled : Note<
+  "declaration uses __weak, but ARC is disabled">;
+def note_arc_weak_no_runtime : Note<"declaration uses __weak, which "
+  "the current deployment target does not support">;
+def note_arc_field_with_ownership : Note<
+  "field has non-trivial ownership qualification">;
 
 def err_arc_illegal_explicit_message : Error<
   "ARC forbids explicit message send of %0">;
@@ -4659,7 +4706,7 @@ def err_arc_strong_property_ownership : Error<
   "existing instance variable %1 for strong property %0 may not be "
   "%select{|__unsafe_unretained||__weak}2">;
 def err_arc_assign_property_ownership : Error<
-  "existing instance variable %1 for property %0 with %select{unsafe_unretained| assign}2 "
+  "existing instance variable %1 for property %0 with %select{unsafe_unretained|assign}2 "
   "attribute must be __unsafe_unretained">;
 def err_arc_inconsistent_property_ownership : Error<
   "%select{|unsafe_unretained|strong|weak}1 property %0 may not also be "
@@ -6222,6 +6269,12 @@ def err_atomic_op_bitwise_needs_atomic_int : Error<
 def warn_atomic_op_has_invalid_memory_order : Warning<
   "memory order argument to atomic operation is invalid">,
   InGroup<DiagGroup<"atomic-memory-ordering">>;
+
+def err_overflow_builtin_must_be_int : Error<
+  "operand argument to overflow builtin must be an integer (%0 invalid)">;
+def err_overflow_builtin_must_be_ptr_int : Error<
+  "result argument to overflow builtin must be a pointer "
+  "to a non-const integer (%0 invalid)">;
 
 def err_atomic_load_store_uses_lib : Error<
   "atomic %select{load|store}0 requires runtime support that is not "
@@ -7815,6 +7868,45 @@ def err_module_self_import : Error<
   "import of module '%0' appears within same top-level module '%1'">;
 def err_module_import_in_implementation : Error<
   "@import of module '%0' in implementation of '%1'; use #import">;
+
+def ext_equivalent_internal_linkage_decl_in_modules : ExtWarn<
+  "ambiguous use of internal linkage declaration %0 defined in multiple modules">,
+  InGroup<DiagGroup<"modules-ambiguous-internal-linkage">>;
+def note_equivalent_internal_linkage_decl : Note<
+  "declared here%select{ in module '%1'|}0">;
+}
+
+let CategoryName = "Coroutines Issue" in {
+def err_return_in_coroutine : Error<
+  "return statement not allowed in coroutine; did you mean 'co_return'?">;
+def note_declared_coroutine_here : Note<
+  "function is a coroutine due to use of "
+  "'%select{co_await|co_yield|co_return}0' here">;
+def err_coroutine_objc_method : Error<
+  "Objective-C methods as coroutines are not yet supported">;
+def err_coroutine_outside_function : Error<
+  "'%0' cannot be used outside a function">;
+def err_coroutine_ctor_dtor : Error<
+  "'%1' cannot be used in a %select{constructor|destructor}0">;
+def err_coroutine_constexpr : Error<
+  "'%0' cannot be used in a constexpr function">;
+def err_coroutine_varargs : Error<
+  "'%0' cannot be used in a varargs function">;
+def ext_coroutine_without_co_await_co_yield : ExtWarn<
+  "'co_return' used in a function "
+  "that uses neither 'co_await' nor 'co_yield'">,
+  InGroup<DiagGroup<"coreturn-without-coawait">>;
+def err_implied_std_coroutine_traits_not_found : Error<
+  "you need to include <coroutine> before defining a coroutine">;
+def err_malformed_std_coroutine_traits : Error<
+  "std::coroutine_traits must be a class template">;
+def err_implied_std_coroutine_traits_promise_type_not_found : Error<
+  "this function cannot be a coroutine: %0 has no member named 'promise_type'">;
+def err_implied_std_coroutine_traits_promise_type_not_class : Error<
+  "this function cannot be a coroutine: %0 is not a class">;
+def err_coroutine_traits_missing_specialization : Error<
+  "this function cannot be a coroutine: missing definition of "
+  "specialization %0">;
 }
 
 let CategoryName = "Documentation Issue" in {

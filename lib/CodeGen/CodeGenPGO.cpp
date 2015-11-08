@@ -73,7 +73,7 @@ void CodeGenPGO::createFuncNameVar(llvm::GlobalValue::LinkageTypes Linkage) {
       llvm::ConstantDataArray::getString(CGM.getLLVMContext(), FuncName, false);
   FuncNameVar =
       new llvm::GlobalVariable(CGM.getModule(), Value->getType(), true, Linkage,
-                               Value, "__llvm_profile_name_" + FuncName);
+                               Value, llvm::getInstrProfNameVarPrefix() + FuncName);
 
   // Hide the symbol so that we correctly get a copy for each executable.
   if (!llvm::GlobalValue::isLocalLinkage(FuncNameVar->getLinkage()))
@@ -779,7 +779,7 @@ CodeGenPGO::applyFunctionAttributes(llvm::IndexedInstrProfReader *PGOReader,
 void CodeGenPGO::emitCounterIncrement(CGBuilderTy &Builder, const Stmt *S) {
   if (!CGM.getCodeGenOpts().ProfileInstrGenerate || !RegionCounterMap)
     return;
-  if (!Builder.GetInsertPoint())
+  if (!Builder.GetInsertBlock())
     return;
 
   unsigned Counter = (*RegionCounterMap)[S];

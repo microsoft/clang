@@ -390,12 +390,8 @@ private:
   }
 
   void updateParameterCount(FormatToken *Left, FormatToken *Current) {
-    if (Current->is(TT_LambdaLSquare) ||
-        (Current->is(tok::caret) && Current->is(TT_UnaryOperator)) ||
-        (Style.Language == FormatStyle::LK_JavaScript &&
-         Current->is(Keywords.kw_function))) {
+    if (Current->is(tok::l_brace) && !Current->is(TT_DictLiteral))
       ++Left->BlockParameterCount;
-    }
     if (Current->is(tok::comma)) {
       ++Left->ParameterCount;
       if (!Left->Role)
@@ -731,7 +727,7 @@ public:
     while (CurrentToken) {
       if (CurrentToken->is(tok::kw_virtual))
         KeywordVirtualFound = true;
-      if (IsImportStatement(*CurrentToken))
+      if (isImportStatement(*CurrentToken))
         ImportStatement = true;
       if (!consumeToken())
         return LT_Invalid;
@@ -752,14 +748,15 @@ public:
   }
 
 private:
-  bool IsImportStatement(const FormatToken &Tok) {
+  bool isImportStatement(const FormatToken &Tok) {
     // FIXME: Closure-library specific stuff should not be hard-coded but be
     // configurable.
     return Style.Language == FormatStyle::LK_JavaScript &&
            Tok.TokenText == "goog" && Tok.Next && Tok.Next->is(tok::period) &&
            Tok.Next->Next && (Tok.Next->Next->TokenText == "module" ||
+                              Tok.Next->Next->TokenText == "provide" ||
                               Tok.Next->Next->TokenText == "require" ||
-                              Tok.Next->Next->TokenText == "provide") &&
+                              Tok.Next->Next->TokenText == "setTestOnly") &&
            Tok.Next->Next->Next && Tok.Next->Next->Next->is(tok::l_paren);
   }
 
@@ -1086,7 +1083,8 @@ private:
         Tok.Previous->isOneOf(TT_PointerOrReference, TT_TemplateCloser) ||
         Tok.Previous->isSimpleTypeSpecifier();
     bool ParensCouldEndDecl =
-        Tok.Next && Tok.Next->isOneOf(tok::equal, tok::semi, tok::l_brace);
+        Tok.Next &&
+        Tok.Next->isOneOf(tok::equal, tok::semi, tok::l_brace, tok::greater);
     bool IsSizeOfOrAlignOf =
         LeftOfParens && LeftOfParens->isOneOf(tok::kw_sizeof, tok::kw_alignof);
     if (ParensAreType && !ParensCouldEndDecl && !IsSizeOfOrAlignOf &&
@@ -1759,7 +1757,8 @@ unsigned TokenAnnotator::splitPenalty(const AnnotatedLine &Line,
   if (Left.is(tok::colon) && Left.is(TT_ObjCMethodExpr))
     return Line.MightBeFunctionDecl ? 50 : 500;
 
-  if (Left.is(tok::l_paren) && InFunctionDecl && Style.AlignAfterOpenBracket)
+  if (Left.is(tok::l_paren) && InFunctionDecl &&
+      Style.AlignAfterOpenBracket != FormatStyle::BAS_DontAlign)
     return 100;
   if (Left.is(tok::l_paren) && Left.Previous &&
       Left.Previous->isOneOf(tok::kw_if, tok::kw_for))
@@ -1771,7 +1770,7 @@ unsigned TokenAnnotator::splitPenalty(const AnnotatedLine &Line,
   if (Left.is(TT_TemplateOpener))
     return 100;
   if (Left.opensScope()) {
-    if (!Style.AlignAfterOpenBracket)
+    if (Style.AlignAfterOpenBracket == FormatStyle::BAS_DontAlign)
       return 0;
     return Left.ParameterCount > 1 ? Style.PenaltyBreakBeforeFirstCallParameter
                                    : 19;

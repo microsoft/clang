@@ -112,6 +112,39 @@ static bool SemaBuiltinAddressof(Sema &S, CallExpr *TheCall) {
   return false;
 }
 
+static bool SemaBuiltinOverflow(Sema &S, CallExpr *TheCall) {
+  if (checkArgCount(S, TheCall, 3))
+    return true;
+
+  // First two arguments should be integers.
+  for (unsigned I = 0; I < 2; ++I) {
+    Expr *Arg = TheCall->getArg(I);
+    QualType Ty = Arg->getType();
+    if (!Ty->isIntegerType()) {
+      S.Diag(Arg->getLocStart(), diag::err_overflow_builtin_must_be_int)
+          << Ty << Arg->getSourceRange();
+      return true;
+    }
+  }
+
+  // Third argument should be a pointer to a non-const integer.
+  // IRGen correctly handles volatile, restrict, and address spaces, and
+  // the other qualifiers aren't possible.
+  {
+    Expr *Arg = TheCall->getArg(2);
+    QualType Ty = Arg->getType();
+    const auto *PtrTy = Ty->getAs<PointerType>();
+    if (!(PtrTy && PtrTy->getPointeeType()->isIntegerType() &&
+          !PtrTy->getPointeeType().isConstQualified())) {
+      S.Diag(Arg->getLocStart(), diag::err_overflow_builtin_must_be_ptr_int)
+          << Ty << Arg->getSourceRange();
+      return true;
+    }
+  }
+
+  return false;
+}
+
 static void SemaBuiltinMemChkCall(Sema &S, FunctionDecl *FDecl,
 		                  CallExpr *TheCall, unsigned SizeIdx,
                                   unsigned DstSizeIdx) {
@@ -455,6 +488,12 @@ Sema::CheckBuiltinFunctionCall(FunctionDecl *FDecl, unsigned BuiltinID,
     break;
   case Builtin::BI__builtin_addressof:
     if (SemaBuiltinAddressof(*this, TheCall))
+      return ExprError();
+    break;
+  case Builtin::BI__builtin_add_overflow:
+  case Builtin::BI__builtin_sub_overflow:
+  case Builtin::BI__builtin_mul_overflow:
+    if (SemaBuiltinOverflow(*this, TheCall))
       return ExprError();
     break;
   case Builtin::BI__builtin_operator_new:
@@ -1031,12 +1070,32 @@ bool Sema::CheckSystemZBuiltinFunctionCall(unsigned BuiltinID,
   return SemaBuiltinConstantArgRange(TheCall, i, l, u);
 }
 
+/// SemaBuiltinCpuSupports - Handle __builtin_cpu_supports(char *).
+/// This checks that the target supports __builtin_cpu_supports and
+/// that the string argument is constant and valid.
+static bool SemaBuiltinCpuSupports(Sema &S, CallExpr *TheCall) {
+  Expr *Arg = TheCall->getArg(0);
+
+  // Check if the argument is a string literal.
+  if (!isa<StringLiteral>(Arg->IgnoreParenImpCasts()))
+    return S.Diag(TheCall->getLocStart(), diag::err_expr_not_string_literal)
+           << Arg->getSourceRange();
+
+  // Check the contents of the string.
+  StringRef Feature =
+      cast<StringLiteral>(Arg->IgnoreParenImpCasts())->getString();
+  if (!S.Context.getTargetInfo().validateCpuSupports(Feature))
+    return S.Diag(TheCall->getLocStart(), diag::err_invalid_cpu_supports)
+           << Arg->getSourceRange();
+  return false;
+}
+
 bool Sema::CheckX86BuiltinFunctionCall(unsigned BuiltinID, CallExpr *TheCall) {
   unsigned i = 0, l = 0, u = 0;
   switch (BuiltinID) {
   default: return false;
   case X86::BI__builtin_cpu_supports:
-    return SemaBuiltinCpuSupports(TheCall);
+    return SemaBuiltinCpuSupports(*this, TheCall);
   case X86::BI__builtin_ms_va_start:
     return SemaBuiltinMSVAStart(TheCall);
   case X86::BI_mm_prefetch: i = 1; l = 0; u = 3; break;
@@ -2910,26 +2969,6 @@ bool Sema::SemaBuiltinARMSpecialReg(unsigned BuiltinID, CallExpr *TheCall,
     return SemaBuiltinConstantArgRange(TheCall, 1, 0, 15);
   }
 
-  return false;
-}
-
-/// SemaBuiltinCpuSupports - Handle __builtin_cpu_supports(char *).
-/// This checks that the target supports __builtin_cpu_supports and
-/// that the string argument is constant and valid.
-bool Sema::SemaBuiltinCpuSupports(CallExpr *TheCall) {
-  Expr *Arg = TheCall->getArg(0);
-
-  // Check if the argument is a string literal.
-  if (!isa<StringLiteral>(Arg->IgnoreParenImpCasts()))
-    return Diag(TheCall->getLocStart(), diag::err_expr_not_string_literal)
-           << Arg->getSourceRange();
-
-  // Check the contents of the string.
-  StringRef Feature =
-      cast<StringLiteral>(Arg->IgnoreParenImpCasts())->getString();
-  if (!Context.getTargetInfo().validateCpuSupports(Feature))
-    return Diag(TheCall->getLocStart(), diag::err_invalid_cpu_supports)
-           << Arg->getSourceRange();
   return false;
 }
 
@@ -7217,6 +7256,14 @@ void CheckImplicitConversion(Sema &S, Expr *E, QualType T,
           return;
 
         DiagnoseImpCast(S, E, T, CC, diag::warn_impcast_float_precision);
+
+      }
+      // ... or possibly if we're increasing rank, too
+      else if (TargetBT->getKind() > SourceBT->getKind()) {
+        if (S.SourceMgr.isInSystemMacro(CC))
+          return;
+
+        DiagnoseImpCast(S, E, T, CC, diag::warn_impcast_double_promotion);
       }
       return;
     }

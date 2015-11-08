@@ -1212,16 +1212,6 @@ public:
 
   bool CheckFunctionReturnType(QualType T, SourceLocation Loc);
 
-  unsigned deduceWeakPropertyFromType(QualType T) {
-    if ((getLangOpts().getGC() != LangOptions::NonGC &&
-         T.isObjCGCWeak()) ||
-        (getLangOpts().ObjCAutoRefCount &&
-         T.getObjCLifetime() == Qualifiers::OCL_Weak))
-        return ObjCDeclSpec::DQ_PR_weak;
-    return 0;
-  }
-
-
   /// \brief Build a function type.
   ///
   /// This routine checks the function type according to C++ rules and
@@ -1395,6 +1385,15 @@ public:
   bool
   hasVisibleDefaultArgument(const NamedDecl *D,
                             llvm::SmallVectorImpl<Module *> *Modules = nullptr);
+
+  /// Determine if \p A and \p B are equivalent internal linkage declarations
+  /// from different modules, and thus an ambiguity error can be downgraded to
+  /// an extension warning.
+  bool isEquivalentInternalLinkageDeclaration(const NamedDecl *A,
+                                              const NamedDecl *B);
+  void diagnoseEquivalentInternalLinkageDeclarations(
+      SourceLocation Loc, const NamedDecl *D,
+      ArrayRef<const NamedDecl *> Equiv);
 
   bool RequireCompleteType(SourceLocation Loc, QualType T,
                            TypeDiagnoser &Diagnoser);
@@ -2502,17 +2501,8 @@ public:
     FRS_DiagnosticIssued
   };
 
-  // An enum to represent whether something is dealing with a call to begin()
-  // or a call to end() in a range-based for loop.
-  enum BeginEndFunction {
-    BEF_begin,
-    BEF_end
-  };
-
-  ForRangeStatus BuildForRangeBeginEndCall(Scope *S, SourceLocation Loc,
+  ForRangeStatus BuildForRangeBeginEndCall(SourceLocation Loc,
                                            SourceLocation RangeLoc,
-                                           VarDecl *Decl,
-                                           BeginEndFunction BEF,
                                            const DeclarationNameInfo &NameInfo,
                                            LookupResult &MemberLookup,
                                            OverloadCandidateSet *CandidateSet,
@@ -3066,7 +3056,7 @@ public:
   /// warning) when atomic property has one but not the other user-declared
   /// setter or getter.
   void AtomicPropertySetterGetterRules(ObjCImplDecl* IMPDecl,
-                                       ObjCContainerDecl* IDecl);
+                                       ObjCInterfaceDecl* IDecl);
 
   void DiagnoseOwningPropertyGetterSynthesis(const ObjCImplementationDecl *D);
 
@@ -3334,11 +3324,14 @@ public:
     BFRK_Check
   };
 
-  StmtResult ActOnCXXForRangeStmt(SourceLocation ForLoc, Stmt *LoopVar,
+  StmtResult ActOnCXXForRangeStmt(Scope *S, SourceLocation ForLoc,
+                                  SourceLocation CoawaitLoc,
+                                  Stmt *LoopVar,
                                   SourceLocation ColonLoc, Expr *Collection,
                                   SourceLocation RParenLoc,
                                   BuildForRangeKind Kind);
   StmtResult BuildCXXForRangeStmt(SourceLocation ForLoc,
+                                  SourceLocation CoawaitLoc,
                                   SourceLocation ColonLoc,
                                   Stmt *RangeDecl, Stmt *BeginEndDecl,
                                   Expr *Cond, Expr *Inc,
@@ -3514,7 +3507,7 @@ public:
                                bool ObjCPropertyAccess);
 
   bool makeUnavailableInSystemHeader(SourceLocation loc,
-                                     StringRef message);
+                                     UnavailableAttr::ImplicitReason reason);
 
   //===--------------------------------------------------------------------===//
   // Expression Parsing Callbacks: SemaExpr.cpp.
@@ -3691,9 +3684,6 @@ public:
       DeclAccessPair FoundDecl = DeclAccessPair::make(nullptr, AS_none),
       Expr *baseObjectExpr = nullptr,
       SourceLocation opLoc = SourceLocation());
-
-  void DiagnoseInstanceReference(const CXXScopeSpec &SS, NamedDecl *Rep,
-                                 const DeclarationNameInfo &nameInfo);
 
   ExprResult BuildPossibleImplicitMemberExpr(const CXXScopeSpec &SS,
                                              SourceLocation TemplateKWLoc,
@@ -3969,15 +3959,13 @@ public:
   /// __builtin_offsetof(type, a.b[123][456].c)
   ExprResult BuildBuiltinOffsetOf(SourceLocation BuiltinLoc,
                                   TypeSourceInfo *TInfo,
-                                  OffsetOfComponent *CompPtr,
-                                  unsigned NumComponents,
+                                  ArrayRef<OffsetOfComponent> Components,
                                   SourceLocation RParenLoc);
   ExprResult ActOnBuiltinOffsetOf(Scope *S,
                                   SourceLocation BuiltinLoc,
                                   SourceLocation TypeLoc,
                                   ParsedType ParsedArgTy,
-                                  OffsetOfComponent *CompPtr,
-                                  unsigned NumComponents,
+                                  ArrayRef<OffsetOfComponent> Components,
                                   SourceLocation RParenLoc);
 
   // __builtin_choose_expr(constExpr, expr1, expr2)
@@ -7205,13 +7193,11 @@ public:
                    unsigned NumElts);
 
   DeclGroupPtrTy ActOnForwardProtocolDeclaration(SourceLocation AtProtoclLoc,
-                                        const IdentifierLocPair *IdentList,
-                                        unsigned NumElts,
+                                        ArrayRef<IdentifierLocPair> IdentList,
                                         AttributeList *attrList);
 
   void FindProtocolDeclaration(bool WarnOnDeclarations, bool ForObjCContainer,
-                               const IdentifierLocPair *ProtocolId,
-                               unsigned NumProtocols,
+                               ArrayRef<IdentifierLocPair> ProtocolId,
                                SmallVectorImpl<Decl *> &Protocols);
 
   /// Given a list of identifiers (and their locations), resolve the
@@ -7280,14 +7266,7 @@ public:
   /// Process the specified property declaration and create decls for the
   /// setters and getters as needed.
   /// \param property The property declaration being processed
-  /// \param CD The semantic container for the property
-  /// \param redeclaredProperty Declaration for property if redeclared
-  ///        in class extension.
-  /// \param lexicalDC Container for redeclaredProperty.
-  void ProcessPropertyDecl(ObjCPropertyDecl *property,
-                           ObjCContainerDecl *CD,
-                           ObjCPropertyDecl *redeclaredProperty = nullptr,
-                           ObjCContainerDecl *lexicalDC = nullptr);
+  void ProcessPropertyDecl(ObjCPropertyDecl *property);
 
 
   void DiagnosePropertyMismatch(ObjCPropertyDecl *Property,
@@ -7710,7 +7689,22 @@ public:
   void AddLaunchBoundsAttr(SourceRange AttrRange, Decl *D, Expr *MaxThreads,
                            Expr *MinBlocks, unsigned SpellingListIndex);
 
+  //===--------------------------------------------------------------------===//
+  // C++ Coroutines TS
+  //
+  ExprResult ActOnCoawaitExpr(Scope *S, SourceLocation KwLoc, Expr *E);
+  ExprResult ActOnCoyieldExpr(Scope *S, SourceLocation KwLoc, Expr *E);
+  StmtResult ActOnCoreturnStmt(SourceLocation KwLoc, Expr *E);
+
+  ExprResult BuildCoawaitExpr(SourceLocation KwLoc, Expr *E);
+  ExprResult BuildCoyieldExpr(SourceLocation KwLoc, Expr *E);
+  StmtResult BuildCoreturnStmt(SourceLocation KwLoc, Expr *E);
+
+  void CheckCompletedCoroutineBody(FunctionDecl *FD, Stmt *Body);
+
+  //===--------------------------------------------------------------------===//
   // OpenMP directives and clauses.
+  //
 private:
   void *VarDataSharingAttributesStack;
   /// \brief Initialization of data-sharing attributes stack.
@@ -8852,8 +8846,8 @@ private:
     bool HasVAListArg;
   };
 
-  bool getFormatStringInfo(const FormatAttr *Format, bool IsCXXMember,
-                           FormatStringInfo *FSI);
+  static bool getFormatStringInfo(const FormatAttr *Format, bool IsCXXMember,
+                                  FormatStringInfo *FSI);
   bool CheckFunctionCall(FunctionDecl *FDecl, CallExpr *TheCall,
                          const FunctionProtoType *Proto);
   bool CheckObjCMethodCall(ObjCMethodDecl *Method, SourceLocation loc,
@@ -8918,7 +8912,6 @@ private:
   bool SemaBuiltinARMSpecialReg(unsigned BuiltinID, CallExpr *TheCall,
                                 int ArgNum, unsigned ExpectedFieldNum,
                                 bool AllowName);
-  bool SemaBuiltinCpuSupports(CallExpr *TheCall);
 public:
   enum FormatStringType {
     FST_Scanf,
@@ -8942,7 +8935,7 @@ public:
   
   bool FormatStringHasSArg(const StringLiteral *FExpr);
   
-  bool GetFormatNSStringIdx(const FormatAttr *Format, unsigned &Idx);
+  static bool GetFormatNSStringIdx(const FormatAttr *Format, unsigned &Idx);
 
 private:
   bool CheckFormatArguments(const FormatAttr *Format,

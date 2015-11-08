@@ -461,6 +461,7 @@ CodeGen::CGCXXABI *CodeGen::CreateItaniumCXXABI(CodeGenModule &CGM) {
   // between the ARM and iOS ABIs.
   case TargetCXXABI::GenericARM:
   case TargetCXXABI::iOS:
+  case TargetCXXABI::WatchOS:
     return new ARMCXXABI(CGM);
 
   case TargetCXXABI::iOS64:
@@ -2208,7 +2209,8 @@ void ItaniumCXXABI::EmitThreadLocalInitFuncs(
     // Generate a guarded initialization function.
     llvm::FunctionType *FTy =
         llvm::FunctionType::get(CGM.VoidTy, /*isVarArg=*/false);
-    InitFunc = CGM.CreateGlobalInitOrDestructFunction(FTy, "__tls_init",
+    const CGFunctionInfo &FI = CGM.getTypes().arrangeNullaryFunction();
+    InitFunc = CGM.CreateGlobalInitOrDestructFunction(FTy, "__tls_init", FI,
                                                       SourceLocation(),
                                                       /*TLS=*/true);
     llvm::GlobalVariable *Guard = new llvm::GlobalVariable(

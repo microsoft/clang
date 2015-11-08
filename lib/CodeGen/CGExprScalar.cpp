@@ -314,12 +314,7 @@ public:
     return EmitNullValue(E->getType());
   }
   Value *VisitExplicitCastExpr(ExplicitCastExpr *E) {
-    if (E->getType()->isVariablyModifiedType())
-      CGF.EmitVariablyModifiedType(E->getType());
-
-    if (CGDebugInfo *DI = CGF.getDebugInfo())
-      DI->EmitExplicitCastType(E->getType());
-
+    CGF.CGM.EmitExplicitCastExprType(E, &CGF);
     return VisitCastExpr(E);
   }
   Value *VisitCastExpr(CastExpr *E);
@@ -2121,7 +2116,7 @@ LValue ScalarExprEmitter::EmitCompoundAssignLValue(
   OpInfo.RHS = Visit(E->getRHS());
   OpInfo.Ty = E->getComputationResultType();
   OpInfo.Opcode = E->getOpcode();
-  OpInfo.FPContractable = false;
+  OpInfo.FPContractable = E->isFPContractable();
   OpInfo.E = E;
   // Load/convert the LHS.
   LValue LHSLV = EmitCheckedLValue(E->getLHS(), CodeGenFunction::TCK_Store);
@@ -2380,9 +2375,9 @@ Value *ScalarExprEmitter::EmitOverflowCheckedBinOp(const BinOpInfo &Ops) {
 
   // Branch in case of overflow.
   llvm::BasicBlock *initialBB = Builder.GetInsertBlock();
-  llvm::Function::iterator insertPt = initialBB;
+  llvm::Function::iterator insertPt = initialBB->getIterator();
   llvm::BasicBlock *continueBB = CGF.createBasicBlock("nooverflow", CGF.CurFn,
-                                                      std::next(insertPt));
+                                                      &*std::next(insertPt));
   llvm::BasicBlock *overflowBB = CGF.createBasicBlock("overflow", CGF.CurFn);
 
   Builder.CreateCondBr(overflow, overflowBB, continueBB);

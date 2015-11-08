@@ -285,10 +285,14 @@ bool Sema::CheckEquivalentExceptionSpec(FunctionDecl *Old, FunctionDecl *New) {
         NewProto->getExtProtoInfo().withExceptionSpec(ESI)));
   }
 
-  // Allow missing exception specifications in redeclarations as an extension,
-  // when declaring a replaceable global allocation function.
-  if (New->isReplaceableGlobalAllocationFunction() &&
-      ESI.Type != EST_ComputedNoexcept) {
+  if (getLangOpts().MicrosoftExt && ESI.Type != EST_ComputedNoexcept) {
+    // Allow missing exception specifications in redeclarations as an extension.
+    DiagID = diag::ext_ms_missing_exception_specification;
+    ReturnValueOnError = false;
+  } else if (New->isReplaceableGlobalAllocationFunction() &&
+             ESI.Type != EST_ComputedNoexcept) {
+    // Allow missing exception specifications in redeclarations as an extension,
+    // when declaring a replaceable global allocation function.
     DiagID = diag::ext_missing_exception_specification;
     ReturnValueOnError = false;
   } else {
@@ -1059,8 +1063,10 @@ CanThrowResult Sema::canThrow(const Expr *E) {
 
     // Many other things have subexpressions, so we have to test those.
     // Some are simple:
+  case Expr::CoawaitExprClass:
   case Expr::ConditionalOperatorClass:
   case Expr::CompoundLiteralExprClass:
+  case Expr::CoyieldExprClass:
   case Expr::CXXConstCastExprClass:
   case Expr::CXXReinterpretCastExprClass:
   case Expr::CXXStdInitializerListExprClass:

@@ -279,6 +279,8 @@ public:
   /// finally block or filter expression.
   bool IsOutlinedSEHHelper;
 
+  bool IsCleanupPadScope = false;
+
   const CodeGen::CGBlockInfo *BlockInfo;
   llvm::Value *BlockPointer;
 
@@ -371,6 +373,9 @@ public:
 
   /// Returns true inside SEH __try blocks.
   bool isSEHTryScope() const { return !SEHTryEpilogueStack.empty(); }
+
+  /// Returns true while emitting a cleanuppad.
+  bool isCleanupPadScope() const { return IsCleanupPadScope; }
 
   /// pushFullExprCleanup - Push a cleanup to be run at the end of the
   /// current full-expression.  Safe against the possibility that
@@ -2768,6 +2773,7 @@ public:
   // ARC primitives.
   void EmitARCInitWeak(Address addr, llvm::Value *value);
   void EmitARCDestroyWeak(Address addr);
+  llvm::Value *EmitARCLoadWeak(Address addr);
   llvm::Value *EmitARCLoadWeakRetained(Address addr);
   llvm::Value *EmitARCStoreWeak(Address addr, llvm::Value *value, bool ignored);
   void EmitARCCopyWeak(Address dst, Address src);
