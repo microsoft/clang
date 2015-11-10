@@ -52,6 +52,36 @@ using namespace clang::driver::tools;
 using namespace clang;
 using namespace llvm::opt;
 
+static const char *getSparcAsmModeForCPU(StringRef Name,
+                                         const llvm::Triple &Triple) {
+  if (Triple.getArch() == llvm::Triple::sparcv9) {
+    return llvm::StringSwitch<const char *>(Name)
+          .Case("niagara", "-Av9b")
+          .Case("niagara2", "-Av9b")
+          .Case("niagara3", "-Av9d")
+          .Case("niagara4", "-Av9d")
+          .Default("-Av9");
+  } else {
+    return llvm::StringSwitch<const char *>(Name)
+          .Case("v8", "-Av8")
+          .Case("supersparc", "-Av8")
+          .Case("sparclite", "-Asparclite")
+          .Case("f934", "-Asparclite")
+          .Case("hypersparc", "-Av8")
+          .Case("sparclite86x", "-Asparclite")
+          .Case("sparclet", "-Asparclet")
+          .Case("tsc701", "-Asparclet")
+          .Case("v9", "-Av8plus")
+          .Case("ultrasparc", "-Av8plus")
+          .Case("ultrasparc3", "-Av8plus")
+          .Case("niagara", "-Av8plusb")
+          .Case("niagara2", "-Av8plusb")
+          .Case("niagara3", "-Av8plusd")
+          .Case("niagara4", "-Av8plusd")
+          .Default("-Av8");
+  }
+}
+
 /// CheckPreprocessingOptions - Perform some validation of preprocessing
 /// arguments that is shared with gcc.
 static void CheckPreprocessingOptions(const Driver &D, const ArgList &Args) {
@@ -3410,6 +3440,11 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
       CmdArgs.push_back("-pie-level");
       CmdArgs.push_back(PICLevel == 1 ? "1" : "2");
     }
+  }
+
+  if (Arg *A = Args.getLastArg(options::OPT_meabi)) {
+    CmdArgs.push_back("-meabi");
+    CmdArgs.push_back(A->getValue());
   }
 
   CmdArgs.push_back("-mthread-model");
@@ -7121,7 +7156,6 @@ void openbsd::Assembler::ConstructJob(Compilation &C, const JobAction &JA,
                                       const char *LinkingOutput) const {
   claimNoWarnArgs(Args);
   ArgStringList CmdArgs;
-  bool NeedsKPIC = false;
 
   switch (getToolChain().getArch()) {
   case llvm::Triple::x86:
@@ -7136,16 +7170,21 @@ void openbsd::Assembler::ConstructJob(Compilation &C, const JobAction &JA,
     break;
 
   case llvm::Triple::sparc:
-  case llvm::Triple::sparcel:
+  case llvm::Triple::sparcel: {
     CmdArgs.push_back("-32");
-    NeedsKPIC = true;
+    std::string CPU = getCPUName(Args, getToolChain().getTriple());
+    CmdArgs.push_back(getSparcAsmModeForCPU(CPU, getToolChain().getTriple()));
+    AddAssemblerKPIC(getToolChain(), Args, CmdArgs);
     break;
+  }
 
-  case llvm::Triple::sparcv9:
+  case llvm::Triple::sparcv9: {
     CmdArgs.push_back("-64");
-    CmdArgs.push_back("-Av9a");
-    NeedsKPIC = true;
+    std::string CPU = getCPUName(Args, getToolChain().getTriple());
+    CmdArgs.push_back(getSparcAsmModeForCPU(CPU, getToolChain().getTriple()));
+    AddAssemblerKPIC(getToolChain(), Args, CmdArgs);
     break;
+  }
 
   case llvm::Triple::mips64:
   case llvm::Triple::mips64el: {
@@ -7161,16 +7200,13 @@ void openbsd::Assembler::ConstructJob(Compilation &C, const JobAction &JA,
     else
       CmdArgs.push_back("-EL");
 
-    NeedsKPIC = true;
+    AddAssemblerKPIC(getToolChain(), Args, CmdArgs);
     break;
   }
 
   default:
     break;
   }
-
-  if (NeedsKPIC)
-    AddAssemblerKPIC(getToolChain(), Args, CmdArgs);
 
   Args.AddAllArgValues(CmdArgs, options::OPT_Wa_COMMA, options::OPT_Xassembler);
 
@@ -7453,14 +7489,19 @@ void freebsd::Assembler::ConstructJob(Compilation &C, const JobAction &JA,
 
   // When building 32-bit code on FreeBSD/amd64, we have to explicitly
   // instruct as in the base system to assemble 32-bit code.
-  if (getToolChain().getArch() == llvm::Triple::x86)
+  switch (getToolChain().getArch()) {
+  default:
+    break;
+  case llvm::Triple::x86:
     CmdArgs.push_back("--32");
-  else if (getToolChain().getArch() == llvm::Triple::ppc)
+    break;
+  case llvm::Triple::ppc:
     CmdArgs.push_back("-a32");
-  else if (getToolChain().getArch() == llvm::Triple::mips ||
-           getToolChain().getArch() == llvm::Triple::mipsel ||
-           getToolChain().getArch() == llvm::Triple::mips64 ||
-           getToolChain().getArch() == llvm::Triple::mips64el) {
+    break;
+  case llvm::Triple::mips:
+  case llvm::Triple::mipsel:
+  case llvm::Triple::mips64:
+  case llvm::Triple::mips64el: {
     StringRef CPUName;
     StringRef ABIName;
     mips::getMipsCPUAndABI(Args, getToolChain().getTriple(), CPUName, ABIName);
@@ -7478,10 +7519,12 @@ void freebsd::Assembler::ConstructJob(Compilation &C, const JobAction &JA,
       CmdArgs.push_back("-EL");
 
     AddAssemblerKPIC(getToolChain(), Args, CmdArgs);
-  } else if (getToolChain().getArch() == llvm::Triple::arm ||
-             getToolChain().getArch() == llvm::Triple::armeb ||
-             getToolChain().getArch() == llvm::Triple::thumb ||
-             getToolChain().getArch() == llvm::Triple::thumbeb) {
+    break;
+  }
+  case llvm::Triple::arm:
+  case llvm::Triple::armeb:
+  case llvm::Triple::thumb:
+  case llvm::Triple::thumbeb: {
     arm::FloatABI ABI = arm::getARMFloatABI(getToolChain(), Args);
 
     if (ABI == arm::FloatABI::Hard)
@@ -7499,15 +7542,16 @@ void freebsd::Assembler::ConstructJob(Compilation &C, const JobAction &JA,
     default:
       CmdArgs.push_back("-matpcs");
     }
-  } else if (getToolChain().getArch() == llvm::Triple::sparc ||
-             getToolChain().getArch() == llvm::Triple::sparcel ||
-             getToolChain().getArch() == llvm::Triple::sparcv9) {
-    if (getToolChain().getArch() == llvm::Triple::sparc)
-      CmdArgs.push_back("-Av8plusa");
-    else
-      CmdArgs.push_back("-Av9a");
-
+    break;
+  }
+  case llvm::Triple::sparc:
+  case llvm::Triple::sparcel:
+  case llvm::Triple::sparcv9: {
+    std::string CPU = getCPUName(Args, getToolChain().getTriple());
+    CmdArgs.push_back(getSparcAsmModeForCPU(CPU, getToolChain().getTriple()));
     AddAssemblerKPIC(getToolChain(), Args, CmdArgs);
+    break;
+  }
   }
 
   Args.AddAllArgValues(CmdArgs, options::OPT_Wa_COMMA, options::OPT_Xassembler);
@@ -7757,16 +7801,21 @@ void netbsd::Assembler::ConstructJob(Compilation &C, const JobAction &JA,
   }
 
   case llvm::Triple::sparc:
-  case llvm::Triple::sparcel:
+  case llvm::Triple::sparcel: {
     CmdArgs.push_back("-32");
+    std::string CPU = getCPUName(Args, getToolChain().getTriple());
+    CmdArgs.push_back(getSparcAsmModeForCPU(CPU, getToolChain().getTriple()));
     AddAssemblerKPIC(getToolChain(), Args, CmdArgs);
     break;
+  }
 
-  case llvm::Triple::sparcv9:
+  case llvm::Triple::sparcv9: {
     CmdArgs.push_back("-64");
-    CmdArgs.push_back("-Av9");
+    std::string CPU = getCPUName(Args, getToolChain().getTriple());
+    CmdArgs.push_back(getSparcAsmModeForCPU(CPU, getToolChain().getTriple()));
     AddAssemblerKPIC(getToolChain(), Args, CmdArgs);
     break;
+  }
 
   default:
     break;
@@ -8006,7 +8055,6 @@ void gnutools::Assembler::ConstructJob(Compilation &C, const JobAction &JA,
   llvm::Triple Triple = llvm::Triple(TripleStr);
 
   ArgStringList CmdArgs;
-  bool NeedsKPIC = false;
 
   llvm::Reloc::Model RelocationModel;
   unsigned PICLevel;
@@ -8045,16 +8093,20 @@ void gnutools::Assembler::ConstructJob(Compilation &C, const JobAction &JA,
     CmdArgs.push_back("-mlittle-endian");
     break;
   case llvm::Triple::sparc:
-  case llvm::Triple::sparcel:
+  case llvm::Triple::sparcel: {
     CmdArgs.push_back("-32");
-    CmdArgs.push_back("-Av8plusa");
-    NeedsKPIC = true;
+    std::string CPU = getCPUName(Args, getToolChain().getTriple());
+    CmdArgs.push_back(getSparcAsmModeForCPU(CPU, getToolChain().getTriple()));
+    AddAssemblerKPIC(getToolChain(), Args, CmdArgs);
     break;
-  case llvm::Triple::sparcv9:
+  }
+  case llvm::Triple::sparcv9: {
     CmdArgs.push_back("-64");
-    CmdArgs.push_back("-Av9a");
-    NeedsKPIC = true;
+    std::string CPU = getCPUName(Args, getToolChain().getTriple());
+    CmdArgs.push_back(getSparcAsmModeForCPU(CPU, getToolChain().getTriple()));
+    AddAssemblerKPIC(getToolChain(), Args, CmdArgs);
     break;
+  }
   case llvm::Triple::arm:
   case llvm::Triple::armeb:
   case llvm::Triple::thumb:
@@ -8177,7 +8229,7 @@ void gnutools::Assembler::ConstructJob(Compilation &C, const JobAction &JA,
     Args.AddLastArg(CmdArgs, options::OPT_modd_spreg,
                     options::OPT_mno_odd_spreg);
 
-    NeedsKPIC = true;
+    AddAssemblerKPIC(getToolChain(), Args, CmdArgs);
     break;
   }
   case llvm::Triple::systemz: {
@@ -8187,11 +8239,6 @@ void gnutools::Assembler::ConstructJob(Compilation &C, const JobAction &JA,
     CmdArgs.push_back(Args.MakeArgString("-march=" + CPUName));
     break;
   }
-  }
-
-  if (NeedsKPIC) {
-    if (RelocationModel != llvm::Reloc::Static)
-      CmdArgs.push_back("-KPIC");
   }
 
   Args.AddAllArgs(CmdArgs, options::OPT_I);
