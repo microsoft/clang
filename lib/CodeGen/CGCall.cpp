@@ -1481,8 +1481,12 @@ void CodeGenModule::ConstructAttributeList(const CGFunctionInfo &FI,
       FuncAttrs.addAttribute("no-frame-pointer-elim-non-leaf");
     }
 
+    bool DisableTailCalls =
+        CodeGenOpts.DisableTailCalls ||
+        (TargetDecl && TargetDecl->hasAttr<DisableTailCallsAttr>());
     FuncAttrs.addAttribute("disable-tail-calls",
-                           llvm::toStringRef(CodeGenOpts.DisableTailCalls));
+                           llvm::toStringRef(DisableTailCalls));
+
     FuncAttrs.addAttribute("less-precise-fpmad",
                            llvm::toStringRef(CodeGenOpts.LessPreciseFPMAD));
     FuncAttrs.addAttribute("no-infs-fp-math",
@@ -1506,24 +1510,7 @@ void CodeGenModule::ConstructAttributeList(const CGFunctionInfo &FI,
     const FunctionDecl *FD = dyn_cast_or_null<FunctionDecl>(TargetDecl);
     if (FD && FD->hasAttr<TargetAttr>()) {
       llvm::StringMap<bool> FeatureMap;
-      const auto *TD = FD->getAttr<TargetAttr>();
-      TargetAttr::ParsedTargetAttr ParsedAttr = TD->parse();
-
-      // Make a copy of the features as passed on the command line into the
-      // beginning of the additional features from the function to override.
-      ParsedAttr.first.insert(
-          ParsedAttr.first.begin(),
-          getTarget().getTargetOpts().FeaturesAsWritten.begin(),
-          getTarget().getTargetOpts().FeaturesAsWritten.end());
-
-      if (ParsedAttr.second != "")
-        TargetCPU = ParsedAttr.second;
-
-      // Now populate the feature map, first with the TargetCPU which is either
-      // the default or a new one from the target attribute string. Then we'll
-      // use the passed in features (FeaturesAsWritten) along with the new ones
-      // from the attribute.
-      getTarget().initFeatureMap(FeatureMap, Diags, TargetCPU, ParsedAttr.first);
+      getFunctionFeatureMap(FeatureMap, FD);
 
       // Produce the canonical string for this set of features.
       std::vector<std::string> Features;
@@ -1533,6 +1520,13 @@ void CodeGenModule::ConstructAttributeList(const CGFunctionInfo &FI,
         Features.push_back((it->second ? "+" : "-") + it->first().str());
 
       // Now add the target-cpu and target-features to the function.
+      // While we populated the feature map above, we still need to
+      // get and parse the target attribute so we can get the cpu for
+      // the function.
+      const auto *TD = FD->getAttr<TargetAttr>();
+      TargetAttr::ParsedTargetAttr ParsedAttr = TD->parse();
+      if (ParsedAttr.second != "")
+        TargetCPU = ParsedAttr.second;
       if (TargetCPU != "")
         FuncAttrs.addAttribute("target-cpu", TargetCPU);
       if (!Features.empty()) {

@@ -3747,6 +3747,17 @@ RValue CodeGenFunction::EmitCall(QualType CalleeType, llvm::Value *Callee,
   assert(CalleeType->isFunctionPointerType() &&
          "Call must have function pointer type!");
 
+  if (const FunctionDecl *FD = dyn_cast_or_null<FunctionDecl>(TargetDecl))
+    // We can only guarantee that a function is called from the correct
+    // context/function based on the appropriate target attributes,
+    // so only check in the case where we have both always_inline and target
+    // since otherwise we could be making a conditional call after a check for
+    // the proper cpu features (and it won't cause code generation issues due to
+    // function based code generation).
+    if (TargetDecl->hasAttr<AlwaysInlineAttr>() &&
+        TargetDecl->hasAttr<TargetAttr>())
+      checkTargetFeatures(E, FD);
+
   CalleeType = getContext().getCanonicalType(CalleeType);
 
   const auto *FnType =

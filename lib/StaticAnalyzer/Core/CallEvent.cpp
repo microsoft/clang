@@ -420,8 +420,8 @@ const FunctionDecl *CXXInstanceCall::getDecl() const {
   return getSVal(CE->getCallee()).getAsFunctionDecl();
 }
 
-void CXXInstanceCall::getExtraInvalidatedValues(ValueList &Values,
-                        RegionAndSymbolInvalidationTraits *ETraits) const {
+void CXXInstanceCall::getExtraInvalidatedValues(
+    ValueList &Values, RegionAndSymbolInvalidationTraits *ETraits) const {
   SVal ThisVal = getCXXThisVal();
   Values.push_back(ThisVal);
 
@@ -438,9 +438,11 @@ void CXXInstanceCall::getExtraInvalidatedValues(ValueList &Values,
       return;
     // Preserve CXXThis.
     const MemRegion *ThisRegion = ThisVal.getAsRegion();
-    assert(ThisRegion && "ThisValue was not a memory region");
+    if (!ThisRegion)
+      return;
+
     ETraits->setTrait(ThisRegion->getBaseRegion(),
-      RegionAndSymbolInvalidationTraits::TK_PreserveContents);
+                      RegionAndSymbolInvalidationTraits::TK_PreserveContents);
   }
 }
 

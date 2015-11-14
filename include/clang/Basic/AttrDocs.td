@@ -1627,45 +1627,98 @@ def NotTailCalledDocs : Documentation {
 The ``not_tail_called`` attribute prevents tail-call optimization on statically bound calls. It has no effect on indirect calls. Virtual functions, objective-c methods, and functions marked as ``always_inline`` cannot be marked as ``not_tail_called``.
 
 For example, it prevents tail-call optimization in the following case:
-  .. code-block: c
-  int __attribute__((not_tail_called)) foo1(int);
 
-  int foo2(int a) {
-    return foo1(a); // No tail-call optimization on direct calls.
-  }
+  .. code-block: c
+
+    int __attribute__((not_tail_called)) foo1(int);
+
+    int foo2(int a) {
+      return foo1(a); // No tail-call optimization on direct calls.
+    }
 
 However, it doesn't prevent tail-call optimization in this case:
+
   .. code-block: c
-  int __attribute__((not_tail_called)) foo1(int);
 
-  int foo2(int a) {
-    int (*fn)(int) = &foo1;
+    int __attribute__((not_tail_called)) foo1(int);
 
-    // not_tail_called has no effect on an indirect call even if the call can be
-    // resolved at compile time.
-    return (*fn)(a);
-  }
+    int foo2(int a) {
+      int (*fn)(int) = &foo1;
+
+      // not_tail_called has no effect on an indirect call even if the call can be
+      // resolved at compile time.
+      return (*fn)(a);
+    }
 
 Marking virtual functions as ``not_tail_called`` is an error:
+
   .. code-block: c++
-  class Base {
-  public:
-    // not_tail_called on a virtual function is an error.
-    [[clang::not_tail_called]] virtual int foo1();
 
-    virtual int foo2();
+    class Base {
+    public:
+      // not_tail_called on a virtual function is an error.
+      [[clang::not_tail_called]] virtual int foo1();
 
-    // Non-virtual functions can be marked ``not_tail_called``.
-    [[clang::not_tail_called]] int foo3();
-  };
+      virtual int foo2();
 
-  class Derived1 : public Base {
-  public:
-    int foo1() override;
+      // Non-virtual functions can be marked ``not_tail_called``.
+      [[clang::not_tail_called]] int foo3();
+    };
 
-    // not_tail_called on a virtual function is an error.
-    [[clang::not_tail_called]] int foo2() override;
-  };
+    class Derived1 : public Base {
+    public:
+      int foo1() override;
+
+      // not_tail_called on a virtual function is an error.
+      [[clang::not_tail_called]] int foo2() override;
+    };
+  }];
+}
+
+def InternalLinkageDocs : Documentation {
+  let Category = DocCatFunction;
+  let Content = [{
+The ``internal_linkage`` attribute changes the linkage type of the declaration to internal.
+This is similar to C-style ``static``, but can be used on classes and class methods. When applied to a class definition,
+this attribute affects all methods and static data members of that class.
+This can be used to contain the ABI of a C++ library by excluding unwanted class methods from the export tables.
+  }];
+}
+
+def DisableTailCallsDocs : Documentation {
+  let Category = DocCatFunction;
+  let Content = [{
+The ``disable_tail_calls`` attribute instructs the backend to not perform tail call optimization inside the marked function.
+
+For example:
+
+  .. code-block:: c
+
+    int callee(int);
+
+    int foo(int a) __attribute__((disable_tail_calls)) {
+      return callee(a); // This call is not tail-call optimized.
+    }
+
+Marking virtual functions as ``disable_tail_calls`` is legal.
+
+  .. code-block: c++
+
+    int callee(int);
+
+    class Base {
+    public:
+      [[clang::disable_tail_calls]] virtual int foo1() {
+        return callee(); // This call is not tail-call optimized.
+      }
+    };
+
+    class Derived1 : public Base {
+    public:
+      int foo1() override {
+        return callee(); // This call is tail-call optimized.
+      }
+    };
 
   }];
 }

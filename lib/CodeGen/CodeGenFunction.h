@@ -2638,7 +2638,7 @@ public:
   RValue EmitCallExpr(const CallExpr *E,
                       ReturnValueSlot ReturnValue = ReturnValueSlot());
 
-  bool checkBuiltinTargetFeatures(const FunctionDecl *TargetDecl);
+  void checkTargetFeatures(const CallExpr *E, const FunctionDecl *TargetDecl);
 
   llvm::CallInst *EmitRuntimeCall(llvm::Value *callee,
                                   const Twine &name = "");
@@ -2936,7 +2936,7 @@ public:
 
   void EmitLambdaExpr(const LambdaExpr *E, AggValueSlot Dest);
 
-  RValue EmitAtomicExpr(AtomicExpr *E, Address Dest = Address::invalid());
+  RValue EmitAtomicExpr(AtomicExpr *E);
 
   //===--------------------------------------------------------------------===//
   //                         Annotations Emission
