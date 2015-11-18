@@ -4909,9 +4909,8 @@ def warn_floatingpoint_eq : Warning<
   "comparing floating point with == or != is unsafe">,
   InGroup<DiagGroup<"float-equal">>, DefaultIgnore;
 
-def warn_division_by_zero : Warning<"division by zero is undefined">,
-  InGroup<DivZero>;
-def warn_remainder_by_zero : Warning<"remainder by zero is undefined">,
+def warn_remainder_division_by_zero : Warning<
+  "%select{remainder|division}0 by zero is undefined">,
   InGroup<DivZero>;
 def warn_shift_lhs_negative : Warning<"shifting a negative signed value is undefined">,
   InGroup<DiagGroup<"shift-negative-value">>;
@@ -6544,6 +6543,10 @@ let CategoryName = "Inline Assembly Issue" in {
     "asm constraint has an unexpected number of alternatives: %0 vs %1">;
   def err_asm_incomplete_type : Error<"asm operand has incomplete type %0">;
   def err_asm_unknown_register_name : Error<"unknown register name '%0' in asm">;
+  def err_asm_invalid_global_var_reg : Error<"register '%0' unsuitable for "
+    "global register variables on this target">;
+  def err_asm_register_size_mismatch : Error<"size of register '%0' does not "
+    "match variable size">;
   def err_asm_bad_register_type : Error<"bad type for named register variable">;
   def err_asm_invalid_input_size : Error<
     "invalid input size for constraint '%0'">;
@@ -6677,10 +6680,8 @@ def err_anonymous_union_with_storage_spec : Error<
 def err_anonymous_struct_not_member : Error<
   "anonymous %select{structs|structs and classes}0 must be "
   "%select{struct or union|class}0 members">;
-def err_anonymous_union_member_redecl : Error<
-  "member of anonymous union redeclares %0">;
-def err_anonymous_struct_member_redecl : Error<
-  "member of anonymous struct redeclares %0">;
+def err_anonymous_record_member_redecl : Error<
+  "member of anonymous %select{struct|union}0 redeclares %1">;
 def err_anonymous_record_with_type : Error<
   "types cannot be declared in an anonymous %select{struct|union}0">;
 def ext_anonymous_record_with_type : Extension<
@@ -7033,17 +7034,12 @@ def warn_null_ret : Warning<
   InGroup<NonNull>;
 
 // CHECK: returning address/reference of stack memory
-def warn_ret_stack_addr : Warning<
-  "address of stack memory associated with local variable %0 returned">,
+def warn_ret_stack_addr_ref : Warning<
+  "%select{address of|reference to}0 stack memory associated with local "
+  "variable %1 returned">,
   InGroup<ReturnStackAddress>;
-def warn_ret_stack_ref : Warning<
-  "reference to stack memory associated with local variable %0 returned">,
-  InGroup<ReturnStackAddress>;
-def warn_ret_local_temp_addr : Warning<
-  "returning address of local temporary object">,
-  InGroup<ReturnStackAddress>;
-def warn_ret_local_temp_ref : Warning<
-  "returning reference to local temporary object">,
+def warn_ret_local_temp_addr_ref : Warning<
+  "returning %select{address of|reference to}0 local temporary object">,
   InGroup<ReturnStackAddress>;
 def warn_ret_addr_label : Warning<
   "returning address of label, which is local">,
@@ -7938,6 +7934,9 @@ def note_module_import_in_extern_c : Note<
   "extern \"C\" language linkage specification begins here">;
 def err_module_import_not_at_top_level_fatal : Error<
   "import of module '%0' appears within %1">, DefaultFatal;
+def ext_module_import_not_at_top_level_noop : ExtWarn<
+  "redundant #include of module '%0' appears within %1">, DefaultError,
+  InGroup<DiagGroup<"modules-import-nested-redundant">>;
 def note_module_import_not_at_top_level : Note<"%0 begins here">;
 def err_module_self_import : Error<
   "import of module '%0' appears within same top-level module '%1'">;
