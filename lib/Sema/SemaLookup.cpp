@@ -1547,6 +1547,14 @@ bool Sema::isVisibleSlow(const NamedDecl *D) {
   return LookupResult::isVisible(*this, const_cast<NamedDecl*>(D));
 }
 
+bool Sema::shouldLinkPossiblyHiddenDecl(LookupResult &R, const NamedDecl *New) {
+  for (auto *D : R) {
+    if (isVisible(D))
+      return true;
+  }
+  return New->isExternallyVisible();
+}
+
 /// \brief Retrieve the visible declaration corresponding to D, if any.
 ///
 /// This routine determines whether the declaration D is visible in the current
@@ -1899,7 +1907,18 @@ bool Sema::LookupQualifiedName(LookupResult &R, DeclContext *LookupCtx,
           cast<TagDecl>(LookupCtx)->isBeingDefined()) &&
          "Declaration context must already be complete!");
 
-  // Perform qualified name lookup into the LookupCtx.
+  struct QualifiedLookupInScope {
+    bool oldVal;
+    DeclContext *Context;
+    // Set flag in DeclContext informing debugger that we're looking for qualified name
+    QualifiedLookupInScope(DeclContext *ctx) : Context(ctx) { 
+      oldVal = ctx->setUseQualifiedLookup(); 
+    }
+    ~QualifiedLookupInScope() { 
+      Context->setUseQualifiedLookup(oldVal); 
+    }
+  } QL(LookupCtx);
+
   if (LookupDirect(*this, R, LookupCtx)) {
     R.resolveKind();
     if (isa<CXXRecordDecl>(LookupCtx))
@@ -3865,9 +3884,12 @@ void TypoCorrectionConsumer::addNamespaces(
     if (const Type *T = NNS->getAsType())
       SSIsTemplate = T->getTypeClass() == Type::TemplateSpecialization;
   }
-  for (const auto *TI : SemaRef.getASTContext().types()) {
-    if (!TI->isClassType() && isa<TemplateSpecializationType>(TI))
-      continue;
+  // Do not transform this into an iterator-based loop. The loop body can
+  // trigger the creation of further types (through lazy deserialization) and
+  // invalide iterators into this list.
+  auto &Types = SemaRef.getASTContext().getTypes();
+  for (unsigned I = 0; I != Types.size(); ++I) {
+    const auto *TI = Types[I];
     if (CXXRecordDecl *CD = TI->getAsCXXRecordDecl()) {
       CD = CD->getCanonicalDecl();
       if (!CD->isDependentType() && !CD->isAnonymousStructOrUnion() &&

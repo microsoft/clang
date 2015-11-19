@@ -664,6 +664,13 @@ bool CursorVisitor::VisitTranslationUnitDecl(TranslationUnitDecl *D) {
   llvm_unreachable("Translation units are visited directly by Visit()");
 }
 
+bool CursorVisitor::VisitTypeAliasTemplateDecl(TypeAliasTemplateDecl *D) {
+    if (VisitTemplateParameters(D->getTemplateParameters()))
+        return true;
+
+    return Visit(MakeCXCursor(D->getTemplatedDecl(), TU, RegionOfInterest));
+}
+
 bool CursorVisitor::VisitTypeAliasDecl(TypeAliasDecl *D) {
   if (TypeSourceInfo *TSInfo = D->getTypeSourceInfo())
     return Visit(TSInfo->getTypeLoc());
@@ -3082,11 +3089,11 @@ clang_parseTranslationUnit_Impl(CXIndex CIdx, const char *source_filename,
       break;
     }
   }
-  if (!FoundSpellCheckingArgument)
-    Args->push_back("-fno-spell-checking");
-  
   Args->insert(Args->end(), command_line_args,
                command_line_args + num_command_line_args);
+
+  if (!FoundSpellCheckingArgument)
+    Args->insert(Args->begin() + 1, "-fno-spell-checking");
 
   // The 'source_filename' argument is optional.  If the caller does not
   // specify it then it is assumed that the source file is specified
@@ -3150,14 +3157,23 @@ clang_parseTranslationUnit(CXIndex CIdx,
 }
 
 enum CXErrorCode clang_parseTranslationUnit2(
-    CXIndex CIdx,
-    const char *source_filename,
-    const char *const *command_line_args,
-    int num_command_line_args,
-    struct CXUnsavedFile *unsaved_files,
-    unsigned num_unsaved_files,
-    unsigned options,
-    CXTranslationUnit *out_TU) {
+    CXIndex CIdx, const char *source_filename,
+    const char *const *command_line_args, int num_command_line_args,
+    struct CXUnsavedFile *unsaved_files, unsigned num_unsaved_files,
+    unsigned options, CXTranslationUnit *out_TU) {
+  SmallVector<const char *, 4> Args;
+  Args.push_back("clang");
+  Args.append(command_line_args, command_line_args + num_command_line_args);
+  return clang_parseTranslationUnit2FullArgv(
+      CIdx, source_filename, Args.data(), Args.size(), unsaved_files,
+      num_unsaved_files, options, out_TU);
+}
+
+enum CXErrorCode clang_parseTranslationUnit2FullArgv(
+    CXIndex CIdx, const char *source_filename,
+    const char *const *command_line_args, int num_command_line_args,
+    struct CXUnsavedFile *unsaved_files, unsigned num_unsaved_files,
+    unsigned options, CXTranslationUnit *out_TU) {
   LOG_FUNC_SECTION {
     *Log << source_filename << ": ";
     for (int i = 0; i != num_command_line_args; ++i)
@@ -4436,6 +4452,8 @@ CXString clang_getCursorKindSpelling(enum CXCursorKind Kind) {
     return cxstring::createRef("OMPCancelDirective");
   case CXCursor_OverloadCandidate:
       return cxstring::createRef("OverloadCandidate");
+  case CXCursor_TypeAliasTemplateDecl:
+      return cxstring::createRef("TypeAliasTemplateDecl");
   }
 
   llvm_unreachable("Unhandled CXCursorKind");

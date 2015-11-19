@@ -1289,6 +1289,17 @@ clang_parseTranslationUnit2(CXIndex CIdx,
                             CXTranslationUnit *out_TU);
 
 /**
+ * \brief Same as clang_parseTranslationUnit2 but requires a full command line
+ * for \c command_line_args including argv[0]. This is useful if the standard
+ * library paths are relative to the binary.
+ */
+CINDEX_LINKAGE enum CXErrorCode clang_parseTranslationUnit2FullArgv(
+    CXIndex CIdx, const char *source_filename,
+    const char *const *command_line_args, int num_command_line_args,
+    struct CXUnsavedFile *unsaved_files, unsigned num_unsaved_files,
+    unsigned options, CXTranslationUnit *out_TU);
+
+/**
  * \brief Flags that control how translation units are saved.
  *
  * The enumerators in this enumeration type are meant to be bitwise
@@ -2296,8 +2307,9 @@ enum CXCursorKind {
    * \brief A module import declaration.
    */
   CXCursor_ModuleImportDecl              = 600,
+  CXCursor_TypeAliasTemplateDecl         = 601,
   CXCursor_FirstExtraDecl                = CXCursor_ModuleImportDecl,
-  CXCursor_LastExtraDecl                 = CXCursor_ModuleImportDecl,
+  CXCursor_LastExtraDecl                 = CXCursor_TypeAliasTemplateDecl,
 
   /**
    * \brief A code completion overload candidate.
@@ -2860,7 +2872,8 @@ enum CXTypeKind {
   CXType_IncompleteArray = 114,
   CXType_VariableArray = 115,
   CXType_DependentSizedArray = 116,
-  CXType_MemberPointer = 117
+  CXType_MemberPointer = 117,
+  CXType_Auto = 118
 };
 
 /**
@@ -5677,6 +5690,18 @@ CINDEX_LINKAGE int clang_indexSourceFile(CXIndexAction,
                                          unsigned num_unsaved_files,
                                          CXTranslationUnit *out_TU,
                                          unsigned TU_options);
+
+/**
+ * \brief Same as clang_indexSourceFile but requires a full command line
+ * for \c command_line_args including argv[0]. This is useful if the standard
+ * library paths are relative to the binary.
+ */
+CINDEX_LINKAGE int clang_indexSourceFileFullArgv(
+    CXIndexAction, CXClientData client_data, IndexerCallbacks *index_callbacks,
+    unsigned index_callbacks_size, unsigned index_options,
+    const char *source_filename, const char *const *command_line_args,
+    int num_command_line_args, struct CXUnsavedFile *unsaved_files,
+    unsigned num_unsaved_files, CXTranslationUnit *out_TU, unsigned TU_options);
 
 /**
  * \brief Index the given translation unit via callbacks implemented through

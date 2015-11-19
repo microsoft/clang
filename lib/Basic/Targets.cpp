@@ -2358,6 +2358,20 @@ public:
   bool validateAsmConstraint(const char *&Name,
                              TargetInfo::ConstraintInfo &info) const override;
 
+  bool validateGlobalRegisterVariable(StringRef RegName,
+                                      unsigned RegSize,
+                                      bool &HasSizeMismatch) const override {
+    // esp and ebp are the only 32-bit registers the x86 backend can currently
+    // handle.
+    if (RegName.equals("esp") || RegName.equals("ebp")) {
+      // Check that the register size is 32-bit.
+      HasSizeMismatch = RegSize != 32;
+      return true;
+    }
+
+    return false;
+  }
+
   bool validateOutputSize(StringRef Constraint, unsigned Size) const override;
 
   bool validateInputSize(StringRef Constraint, unsigned Size) const override;
@@ -3974,6 +3988,22 @@ public:
 
   // for x32 we need it here explicitly
   bool hasInt128Type() const override { return true; }
+
+  bool validateGlobalRegisterVariable(StringRef RegName,
+                                      unsigned RegSize,
+                                      bool &HasSizeMismatch) const override {
+    // rsp and rbp are the only 64-bit registers the x86 backend can currently
+    // handle.
+    if (RegName.equals("rsp") || RegName.equals("rbp")) {
+      // Check that the register size is 64-bit.
+      HasSizeMismatch = RegSize != 64;
+      return true;
+    }
+
+    // Check if the register is a 32-bit register the backend can handle.
+    return X86TargetInfo::validateGlobalRegisterVariable(RegName, RegSize,
+                                                         HasSizeMismatch);
+  }
 };
 
 // x86-64 Windows target
@@ -4501,13 +4531,14 @@ public:
                  const std::vector<std::string> &FeaturesVec) const override {
 
     std::vector<const char*> TargetFeatures;
+    unsigned Arch = llvm::ARM::parseArch(getTriple().getArchName());
 
     // get default FPU features
-    unsigned FPUKind = llvm::ARM::getDefaultFPU(CPU);
+    unsigned FPUKind = llvm::ARM::getDefaultFPU(CPU, Arch);
     llvm::ARM::getFPUFeatures(FPUKind, TargetFeatures);
 
     // get default Extension features
-    unsigned Extensions = llvm::ARM::getDefaultExtensions(CPU);
+    unsigned Extensions = llvm::ARM::getDefaultExtensions(CPU, Arch);
     llvm::ARM::getExtensionFeatures(Extensions, TargetFeatures);
 
     for (const char *Feature : TargetFeatures)

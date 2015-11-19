@@ -1834,8 +1834,7 @@ static void filterNonConflictingPreviousTypedefDecls(Sema &S,
         continue;
     }
 
-    if (!Old->isExternallyVisible())
-      Filter.erase();
+    Filter.erase();
   }
 
   Filter.done();
@@ -3344,6 +3343,9 @@ void Sema::MergeVarDecl(VarDecl *New, LookupResult &Previous) {
   if (New->isInvalidDecl())
     return;
 
+  if (!shouldLinkPossiblyHiddenDecl(Previous, New))
+    return;
+
   VarTemplateDecl *NewTemplate = New->getDescribedVarTemplate();
 
   // Verify the old decl was also a variable or variable template.
@@ -3374,9 +3376,6 @@ void Sema::MergeVarDecl(VarDecl *New, LookupResult &Previous) {
          diag::note_previous_definition);
     return New->setInvalidDecl();
   }
-
-  if (!shouldLinkPossiblyHiddenDecl(Old, New))
-    return;
 
   // Ensure the template parameters are compatible.
   if (NewTemplate &&
@@ -3914,7 +3913,7 @@ static bool CheckAnonMemberRedeclaration(Sema &SemaRef,
                                          DeclContext *Owner,
                                          DeclarationName Name,
                                          SourceLocation NameLoc,
-                                         unsigned diagnostic) {
+                                         bool IsUnion) {
   LookupResult R(SemaRef, Name, NameLoc, Sema::LookupMemberName,
                  Sema::ForRedeclaration);
   if (!SemaRef.LookupName(R, S)) return false;
@@ -3929,7 +3928,8 @@ static bool CheckAnonMemberRedeclaration(Sema &SemaRef,
   if (!SemaRef.isDeclInScope(PrevDecl, Owner, S))
     return false;
 
-  SemaRef.Diag(NameLoc, diagnostic) << Name;
+  SemaRef.Diag(NameLoc, diag::err_anonymous_record_member_redecl)
+    << IsUnion << Name;
   SemaRef.Diag(PrevDecl->getLocation(), diag::note_previous_declaration);
 
   return true;
@@ -3957,10 +3957,6 @@ static bool InjectAnonymousStructOrUnionMembers(Sema &SemaRef, Scope *S,
                                          AccessSpecifier AS,
                                          SmallVectorImpl<NamedDecl *> &Chaining,
                                          bool MSAnonStruct) {
-  unsigned diagKind
-    = AnonRecord->isUnion() ? diag::err_anonymous_union_member_redecl
-                            : diag::err_anonymous_struct_member_redecl;
-
   bool Invalid = false;
 
   // Look every FieldDecl and IndirectFieldDecl with a name.
@@ -3969,7 +3965,8 @@ static bool InjectAnonymousStructOrUnionMembers(Sema &SemaRef, Scope *S,
         cast<NamedDecl>(D)->getDeclName()) {
       ValueDecl *VD = cast<ValueDecl>(D);
       if (CheckAnonMemberRedeclaration(SemaRef, S, Owner, VD->getDeclName(),
-                                       VD->getLocation(), diagKind)) {
+                                       VD->getLocation(),
+                                       AnonRecord->isUnion())) {
         // C++ [class.union]p2:
         //   The names of the members of an anonymous union shall be
         //   distinct from the names of any other entity in the
@@ -4163,7 +4160,7 @@ Decl *Sema::BuildAnonymousStructOrUnion(Scope *S, DeclSpec &DS,
         assert(FD->getAccess() != AS_none);
         if (FD->getAccess() != AS_public) {
           Diag(FD->getLocation(), diag::err_anonymous_record_nonpublic_member)
-            << (int)Record->isUnion() << (int)(FD->getAccess() == AS_protected);
+            << Record->isUnion() << (FD->getAccess() == AS_protected);
           Invalid = true;
         }
 
@@ -4187,11 +4184,11 @@ Decl *Sema::BuildAnonymousStructOrUnion(Scope *S, DeclSpec &DS,
           // Visual C++ allows type definition in anonymous struct or union.
           if (getLangOpts().MicrosoftExt)
             Diag(MemRecord->getLocation(), diag::ext_anonymous_record_with_type)
-              << (int)Record->isUnion();
+              << Record->isUnion();
           else {
             // This is a nested type declaration.
             Diag(MemRecord->getLocation(), diag::err_anonymous_record_with_type)
-              << (int)Record->isUnion();
+              << Record->isUnion();
             Invalid = true;
           }
         } else {
@@ -4200,7 +4197,7 @@ Decl *Sema::BuildAnonymousStructOrUnion(Scope *S, DeclSpec &DS,
           // not part of standard C++.
           Diag(MemRecord->getLocation(),
                diag::ext_anonymous_record_with_anonymous_type)
-            << (int)Record->isUnion();
+            << Record->isUnion();
         }
       } else if (isa<AccessSpecDecl>(Mem)) {
         // Any access specifier is fine.
@@ -4221,10 +4218,9 @@ Decl *Sema::BuildAnonymousStructOrUnion(Scope *S, DeclSpec &DS,
         if (getLangOpts().MicrosoftExt &&
             DK == diag::err_anonymous_record_with_type)
           Diag(Mem->getLocation(), diag::ext_anonymous_record_with_type)
-            << (int)Record->isUnion();
+            << Record->isUnion();
         else {
-          Diag(Mem->getLocation(), DK)
-              << (int)Record->isUnion();
+          Diag(Mem->getLocation(), DK) << Record->isUnion();
           Invalid = true;
         }
       }
@@ -4241,7 +4237,7 @@ Decl *Sema::BuildAnonymousStructOrUnion(Scope *S, DeclSpec &DS,
 
   if (!Record->isUnion() && !Owner->isRecord()) {
     Diag(Record->getLocation(), diag::err_anonymous_struct_not_member)
-      << (int)getLangOpts().CPlusPlus;
+      << getLangOpts().CPlusPlus;
     Invalid = true;
   }
 
@@ -6083,9 +6079,20 @@ Sema::ActOnVariableDeclarator(Scope *S, Declarator &D, DeclContext *DC,
       }
     } else if (SC == SC_Register) {
       // Global Named register
-      if (!Context.getTargetInfo().isValidGCCRegisterName(Label) &&
-          DeclAttrsMatchCUDAMode(getLangOpts(), NewVD))
-        Diag(E->getExprLoc(), diag::err_asm_unknown_register_name) << Label;
+      if (DeclAttrsMatchCUDAMode(getLangOpts(), NewVD)) {
+        const auto &TI = Context.getTargetInfo();
+        bool HasSizeMismatch;
+
+        if (!TI.isValidGCCRegisterName(Label))
+          Diag(E->getExprLoc(), diag::err_asm_unknown_register_name) << Label;
+        else if (!TI.validateGlobalRegisterVariable(Label,
+                                                    Context.getTypeSize(R),
+                                                    HasSizeMismatch))
+          Diag(E->getExprLoc(), diag::err_asm_invalid_global_var_reg) << Label;
+        else if (HasSizeMismatch)
+          Diag(E->getExprLoc(), diag::err_asm_register_size_mismatch) << Label;
+      }
+
       if (!R->isIntegralType(Context) && !R->isPointerType()) {
         Diag(D.getLocStart(), diag::err_asm_bad_register_type);
         NewVD->setInvalidDecl(true);
@@ -13161,7 +13168,7 @@ bool Sema::CheckNontrivialField(FieldDecl *FD) {
         Diag(FD->getLocation(), getLangOpts().CPlusPlus11 ?
                diag::warn_cxx98_compat_nontrivial_union_or_anon_struct_member :
                diag::err_illegal_union_or_anon_struct_member)
-          << (int)FD->getParent()->isUnion() << FD->getDeclName() << member;
+          << FD->getParent()->isUnion() << FD->getDeclName() << member;
         DiagnoseNontrivial(RDecl, member);
         return !getLangOpts().CPlusPlus11;
       }
@@ -14504,8 +14511,8 @@ Decl *Sema::ActOnFileScopeAsmDecl(Expr *expr,
 }
 
 static void checkModuleImportContext(Sema &S, Module *M,
-                                     SourceLocation ImportLoc,
-                                     DeclContext *DC) {
+                                     SourceLocation ImportLoc, DeclContext *DC,
+                                     bool FromInclude = false) {
   SourceLocation ExternCLoc;
 
   if (auto *LSD = dyn_cast<LinkageSpecDecl>(DC)) {
@@ -14524,7 +14531,9 @@ static void checkModuleImportContext(Sema &S, Module *M,
     DC = DC->getParent();
 
   if (!isa<TranslationUnitDecl>(DC)) {
-    S.Diag(ImportLoc, diag::err_module_import_not_at_top_level_fatal)
+    S.Diag(ImportLoc, (FromInclude && S.isModuleVisible(M))
+                          ? diag::ext_module_import_not_at_top_level_noop
+                          : diag::err_module_import_not_at_top_level_fatal)
         << M->getFullModuleName() << DC;
     S.Diag(cast<Decl>(DC)->getLocStart(),
            diag::note_module_import_not_at_top_level) << DC;
@@ -14583,7 +14592,7 @@ DeclResult Sema::ActOnModuleImport(SourceLocation AtLoc,
 }
 
 void Sema::ActOnModuleInclude(SourceLocation DirectiveLoc, Module *Mod) {
-  checkModuleImportContext(*this, Mod, DirectiveLoc, CurContext);
+  checkModuleImportContext(*this, Mod, DirectiveLoc, CurContext, true);
 
   // Determine whether we're in the #include buffer for a module. The #includes
   // in that buffer do not qualify as module imports; they're just an
