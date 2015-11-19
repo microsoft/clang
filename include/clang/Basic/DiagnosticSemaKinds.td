@@ -2713,8 +2713,7 @@ def warn_impcast_floating_point_to_bool : Warning<
     InGroup<ImplicitConversionFloatingPointToBool>;
 def ext_ms_impcast_fn_obj : ExtWarn<
   "implicit conversion between pointer-to-function and pointer-to-object is a "
-  "Microsoft extension">,
-  InGroup<MicrosoftCast>, DefaultError, SFINAEFailure;
+  "Microsoft extension">, InGroup<MicrosoftCast>;
 
 def warn_impcast_pointer_to_bool : Warning<
     "address of%select{| function| array}0 '%1' will always evaluate to "
@@ -5580,8 +5579,7 @@ def ext_cast_fn_obj : Extension<
   "cast between pointer-to-function and pointer-to-object is an extension">;
 def ext_ms_cast_fn_obj : ExtWarn<
   "static_cast between pointer-to-function and pointer-to-object is a "
-  "Microsoft extension">,
-  InGroup<MicrosoftCast>, DefaultError, SFINAEFailure;
+  "Microsoft extension">, InGroup<MicrosoftCast>;
 def warn_cxx98_compat_cast_fn_obj : Warning<
   "cast between pointer-to-function and pointer-to-object is incompatible with C++98">,
   InGroup<CXX98CompatPedantic>, DefaultIgnore;
@@ -7973,14 +7971,14 @@ def ext_coroutine_without_co_await_co_yield : ExtWarn<
 def err_implied_std_coroutine_traits_not_found : Error<
   "you need to include <coroutine> before defining a coroutine">;
 def err_malformed_std_coroutine_traits : Error<
-  "std::coroutine_traits must be a class template">;
+  "'std::coroutine_traits' must be a class template">;
 def err_implied_std_coroutine_traits_promise_type_not_found : Error<
-  "this function cannot be a coroutine: %0 has no member named 'promise_type'">;
+  "this function cannot be a coroutine: %q0 has no member named 'promise_type'">;
 def err_implied_std_coroutine_traits_promise_type_not_class : Error<
   "this function cannot be a coroutine: %0 is not a class">;
 def err_coroutine_traits_missing_specialization : Error<
   "this function cannot be a coroutine: missing definition of "
-  "specialization %0">;
+  "specialization %q0">;
 }
 
 let CategoryName = "Documentation Issue" in {
