@@ -2823,6 +2823,10 @@ def err_mode_not_primitive : Error<
   "mode attribute only supported for integer and floating-point types">;
 def err_mode_wrong_type : Error<
   "type of machine mode does not match type of base type">;
+def warn_vector_mode_deprecated : Warning<
+  "specifying vector types with the 'mode' attribute is deprecated; "
+  "use the 'vector_size' attribute instead">,
+  InGroup<DeprecatedAttributes>;
 def err_complex_mode_vector_type : Error<
   "type of machine mode does not support base vector types">;
 def err_attr_wrong_decl : Error<
@@ -7956,6 +7960,8 @@ def note_declared_coroutine_here : Note<
   "'%select{co_await|co_yield|co_return}0' here">;
 def err_coroutine_objc_method : Error<
   "Objective-C methods as coroutines are not yet supported">;
+def err_coroutine_unevaluated_context : Error<
+  "'%0' cannot be used in an unevaluated context">;
 def err_coroutine_outside_function : Error<
   "'%0' cannot be used outside a function">;
 def err_coroutine_ctor_dtor : Error<
