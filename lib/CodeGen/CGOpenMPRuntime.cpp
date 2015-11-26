@@ -2317,7 +2317,7 @@ void CGOpenMPRuntime::emitTaskCall(
                                      CGF.Builder.getInt32(/*C=*/0))
           : CGF.Builder.getInt32(Final.getInt() ? FinalFlag : 0);
   TaskFlags = CGF.Builder.CreateOr(TaskFlags, CGF.Builder.getInt32(Flags));
-  auto *SharedsSize = getTypeSize(CGF, SharedsTy);
+  auto *SharedsSize = CGM.getSize(C.getTypeSizeInChars(SharedsTy));
   llvm::Value *AllocArgs[] = {emitUpdateLocation(CGF, Loc),
                               getThreadID(CGF, Loc), TaskFlags,
                               KmpTaskTWithPrivatesTySize, SharedsSize,
@@ -2437,7 +2437,7 @@ void CGOpenMPRuntime::emitTaskCall(
   unsigned NumDependencies = Dependences.size();
   if (NumDependencies) {
     // Dependence kind for RTL.
-    enum RTLDependenceKindTy { DepIn = 1, DepOut = 2, DepInOut = 3 };
+    enum RTLDependenceKindTy { DepIn = 0x01, DepInOut = 0x3 };
     enum RTLDependInfoFieldsTy { BaseAddr, Len, Flags };
     RecordDecl *KmpDependInfoRD;
     QualType FlagsTy =
@@ -2496,9 +2496,8 @@ void CGOpenMPRuntime::emitTaskCall(
       case OMPC_DEPEND_in:
         DepKind = DepIn;
         break;
+      // Out and InOut dependencies must use the same code.
       case OMPC_DEPEND_out:
-        DepKind = DepOut;
-        break;
       case OMPC_DEPEND_inout:
         DepKind = DepInOut;
         break;

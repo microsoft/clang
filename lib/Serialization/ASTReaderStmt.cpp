@@ -1662,6 +1662,13 @@ void ASTStmtReader::VisitMSPropertyRefExpr(MSPropertyRefExpr *E) {
   E->TheDecl = ReadDeclAs<MSPropertyDecl>(Record, Idx);
 }
 
+void ASTStmtReader::VisitMSPropertySubscriptExpr(MSPropertySubscriptExpr *E) {
+  VisitExpr(E);
+  E->setBase(Reader.ReadSubExpr());
+  E->setIdx(Reader.ReadSubExpr());
+  E->setRBracketLoc(ReadSourceLocation(Record, Idx));
+}
+
 void ASTStmtReader::VisitCXXUuidofExpr(CXXUuidofExpr *E) {
   VisitExpr(E);
   E->setSourceRange(ReadSourceRange(Record, Idx));
@@ -1842,6 +1849,9 @@ OMPClause *OMPClauseReader::readClause() {
     break;
   case OMPC_map:
     C = OMPMapClause::CreateEmpty(Context, Record[Idx++]);
+    break;
+  case OMPC_num_teams:
+    C = new (Context) OMPNumTeamsClause();
     break;
   }
   Visit(C);
@@ -2165,6 +2175,11 @@ void OMPClauseReader::VisitOMPMapClause(OMPMapClause *C) {
     Vars.push_back(Reader->Reader.ReadSubExpr());
   }
   C->setVarRefs(Vars);
+}
+
+void OMPClauseReader::VisitOMPNumTeamsClause(OMPNumTeamsClause *C) {
+  C->setNumTeams(Reader->Reader.ReadSubExpr());
+  C->setLParenLoc(Reader->ReadSourceLocation(Record, Idx));
 }
 
 //===----------------------------------------------------------------------===//
@@ -3077,6 +3092,9 @@ Stmt *ASTReader::ReadStmtFromStream(ModuleFile &F) {
       break;
     case EXPR_CXX_PROPERTY_REF_EXPR:
       S = new (Context) MSPropertyRefExpr(Empty);
+      break;
+    case EXPR_CXX_PROPERTY_SUBSCRIPT_EXPR:
+      S = new (Context) MSPropertySubscriptExpr(Empty);
       break;
     case EXPR_CXX_UUIDOF_TYPE:
       S = new (Context) CXXUuidofExpr(Empty, false);

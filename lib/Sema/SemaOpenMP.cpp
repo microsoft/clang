@@ -3359,13 +3359,22 @@ CheckOpenMPLoop(OpenMPDirectiveKind DKind, Expr *CollapseLoopCountExpr,
     // Found 'collapse' clause - calculate collapse number.
     llvm::APSInt Result;
     if (CollapseLoopCountExpr->EvaluateAsInt(Result, SemaRef.getASTContext()))
-      NestedLoopCount += Result.getLimitedValue() - 1;
+      NestedLoopCount = Result.getLimitedValue();
   }
   if (OrderedLoopCountExpr) {
     // Found 'ordered' clause - calculate collapse number.
     llvm::APSInt Result;
-    if (OrderedLoopCountExpr->EvaluateAsInt(Result, SemaRef.getASTContext()))
-      NestedLoopCount += Result.getLimitedValue() - 1;
+    if (OrderedLoopCountExpr->EvaluateAsInt(Result, SemaRef.getASTContext())) {
+      if (Result.getLimitedValue() < NestedLoopCount) {
+        SemaRef.Diag(OrderedLoopCountExpr->getExprLoc(),
+                     diag::err_omp_wrong_ordered_loop_count)
+            << OrderedLoopCountExpr->getSourceRange();
+        SemaRef.Diag(CollapseLoopCountExpr->getExprLoc(),
+                     diag::note_collapse_loop_count)
+            << CollapseLoopCountExpr->getSourceRange();
+      }
+      NestedLoopCount = Result.getLimitedValue();
+    }
   }
   // This is helper routine for loop directives (e.g., 'for', 'simd',
   // 'for simd', etc.).
@@ -5085,6 +5094,9 @@ OMPClause *Sema::ActOnOpenMPSingleExprClause(OpenMPClauseKind Kind, Expr *Expr,
   case OMPC_device:
     Res = ActOnOpenMPDeviceClause(Expr, StartLoc, LParenLoc, EndLoc);
     break;
+  case OMPC_num_teams:
+    Res = ActOnOpenMPNumTeamsClause(Expr, StartLoc, LParenLoc, EndLoc);
+    break;
   case OMPC_if:
   case OMPC_default:
   case OMPC_proc_bind:
@@ -5253,13 +5265,10 @@ ExprResult Sema::VerifyPositiveIntegerConstantInClause(Expr *E,
         << E->getSourceRange();
     return ExprError();
   }
-  if (CKind == OMPC_collapse) {
-    DSAStack->setCollapseNumber(DSAStack->getCollapseNumber() - 1 +
-                                Result.getExtValue());
-  } else if (CKind == OMPC_ordered) {
-    DSAStack->setCollapseNumber(DSAStack->getCollapseNumber() - 1 +
-                                Result.getExtValue());
-  }
+  if (CKind == OMPC_collapse)
+    DSAStack->setCollapseNumber(Result.getExtValue());
+  else if (CKind == OMPC_ordered)
+    DSAStack->setCollapseNumber(Result.getExtValue());
   return ICE;
 }
 
@@ -5375,6 +5384,7 @@ OMPClause *Sema::ActOnOpenMPSimpleClause(
   case OMPC_threads:
   case OMPC_simd:
   case OMPC_map:
+  case OMPC_num_teams:
   case OMPC_unknown:
     llvm_unreachable("Clause is not allowed.");
   }
@@ -5505,6 +5515,7 @@ OMPClause *Sema::ActOnOpenMPSingleExprWithArgClause(
   case OMPC_threads:
   case OMPC_simd:
   case OMPC_map:
+  case OMPC_num_teams:
   case OMPC_unknown:
     llvm_unreachable("Clause is not allowed.");
   }
@@ -5637,6 +5648,7 @@ OMPClause *Sema::ActOnOpenMPClause(OpenMPClauseKind Kind,
   case OMPC_depend:
   case OMPC_device:
   case OMPC_map:
+  case OMPC_num_teams:
   case OMPC_unknown:
     llvm_unreachable("Clause is not allowed.");
   }
@@ -5766,6 +5778,7 @@ OMPClause *Sema::ActOnOpenMPVarListClause(
   case OMPC_device:
   case OMPC_threads:
   case OMPC_simd:
+  case OMPC_num_teams:
   case OMPC_unknown:
     llvm_unreachable("Clause is not allowed.");
   }
@@ -7639,4 +7652,30 @@ OMPClause *Sema::ActOnOpenMPMapClause(
 
   return OMPMapClause::Create(Context, StartLoc, LParenLoc, EndLoc, Vars,
                               MapTypeModifier, MapType, MapLoc);
+}
+
+OMPClause *Sema::ActOnOpenMPNumTeamsClause(Expr *NumTeams, 
+                                           SourceLocation StartLoc,
+                                           SourceLocation LParenLoc,
+                                           SourceLocation EndLoc) {
+  Expr *ValExpr = NumTeams;
+  if (!ValExpr->isTypeDependent() && !ValExpr->isValueDependent() &&
+      !ValExpr->isInstantiationDependent()) {
+    SourceLocation Loc = ValExpr->getExprLoc();
+    ExprResult Value = PerformOpenMPImplicitIntegerConversion(Loc, ValExpr);
+    if (Value.isInvalid())
+      return nullptr;
+
+    // OpenMP [teams Constrcut, Restrictions]
+    // The num_teams expression must evaluate to a positive integer value.
+    llvm::APSInt Result;
+    if (Value.get()->isIntegerConstantExpr(Result, Context) && 
+        Result.isSigned() && !Result.isStrictlyPositive()) {
+      Diag(Loc, diag::err_omp_negative_expression_in_clause)
+          << "num_teams" << ValExpr->getSourceRange();
+      return nullptr;
+    }
+  }
+
+  return new (Context) OMPNumTeamsClause(ValExpr, StartLoc, LParenLoc, EndLoc);
 }

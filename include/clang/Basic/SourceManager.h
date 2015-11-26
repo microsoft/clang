@@ -122,7 +122,7 @@ namespace SrcMgr {
     /// \brief The number of lines in this ContentCache.
     ///
     /// This is only valid if SourceLineCache is non-null.
-    unsigned NumLines : 31;
+    unsigned NumLines;
 
     /// \brief Indicates whether the buffer itself was provided to override
     /// the actual file contents.
@@ -135,12 +135,17 @@ namespace SrcMgr {
     /// file considered as a system one.
     unsigned IsSystemFile : 1;
 
+    /// \brief True if this file may be transient, that is, if it might not
+    /// exist at some later point in time when this content entry is used,
+    /// after serialization and deserialization.
+    unsigned IsTransient : 1;
+
     ContentCache(const FileEntry *Ent = nullptr) : ContentCache(Ent, Ent) {}
 
     ContentCache(const FileEntry *Ent, const FileEntry *contentEnt)
       : Buffer(nullptr, false), OrigEntry(Ent), ContentsEntry(contentEnt),
         SourceLineCache(nullptr), NumLines(0), BufferOverridden(false),
-        IsSystemFile(false) {}
+        IsSystemFile(false), IsTransient(false) {}
     
     ~ContentCache();
     
@@ -149,7 +154,7 @@ namespace SrcMgr {
     /// is not transferred, so this is a logical error.
     ContentCache(const ContentCache &RHS)
       : Buffer(nullptr, false), SourceLineCache(nullptr),
-        BufferOverridden(false), IsSystemFile(false) {
+        BufferOverridden(false), IsSystemFile(false), IsTransient(false) {
       OrigEntry = RHS.OrigEntry;
       ContentsEntry = RHS.ContentsEntry;
 
@@ -566,6 +571,11 @@ class SourceManager : public RefCountedBase<SourceManager> {
   /// (likely to change while trying to use them). Defaults to false.
   bool UserFilesAreVolatile;
 
+  /// \brief True if all files read during this compilation should be treated
+  /// as transient (may not be present in later compilations using a module
+  /// file created from this compilation). Defaults to false.
+  bool FilesAreTransient;
+
   struct OverriddenFilesInfoTy {
     /// \brief Files that have been overridden with the contents from another
     /// file.
@@ -857,12 +867,14 @@ public:
   /// This should be called before parsing has begun.
   void disableFileContentsOverride(const FileEntry *File);
 
-  /// \brief Request that the contents of the given source file are written
-  /// to a created module file if they are used in this compilation. This
-  /// removes the requirement that the file still exist when the module is used
-  /// (but does not make the file visible to header search and the like when
-  /// the module is used).
-  void embedFileContentsInModule(const FileEntry *SourceFile);
+  /// \brief Specify that a file is transient.
+  void setFileIsTransient(const FileEntry *SourceFile);
+
+  /// \brief Specify that all files that are read during this compilation are
+  /// transient.
+  void setAllFilesAreTransient(bool Transient) {
+    FilesAreTransient = Transient;
+  }
 
   //===--------------------------------------------------------------------===//
   // FileID manipulation methods.

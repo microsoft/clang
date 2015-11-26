@@ -277,6 +277,17 @@ bool GenerateModuleAction::BeginSourceFileAction(CompilerInstance &CI,
     return false;
   }
   
+  // Set up embedding for any specified files. Do this before we load any
+  // source files, including the primary module map for the compilation.
+  for (const auto &F : CI.getFrontendOpts().ModulesEmbedFiles) {
+    if (const auto *FE = CI.getFileManager().getFile(F, /*openFile*/true))
+      CI.getSourceManager().setFileIsTransient(FE);
+    else
+      CI.getDiagnostics().Report(diag::err_modules_embed_file_not_found) << F;
+  }
+  if (CI.getFrontendOpts().ModulesEmbedAllFiles)
+    CI.getSourceManager().setAllFilesAreTransient(true);
+
   // Parse the module map file.
   HeaderSearch &HS = CI.getPreprocessor().getHeaderSearchInfo();
   if (HS.loadModuleMapFile(ModuleMap, IsSystem))
@@ -290,14 +301,6 @@ bool GenerateModuleAction::BeginSourceFileAction(CompilerInstance &CI,
     // default. Then it would be fairly trivial to just "compile" a module
     // map with a single module (the common case).
     return false;
-  }
-
-  // Set up embedding for any specified files.
-  for (const auto &F : CI.getFrontendOpts().ModulesEmbedFiles) {
-    if (const auto *FE = CI.getFileManager().getFile(F, /*openFile*/true))
-      CI.getSourceManager().embedFileContentsInModule(FE);
-    else
-      CI.getDiagnostics().Report(diag::err_modules_embed_file_not_found) << F;
   }
 
   // If we're being run from the command-line, the module build stack will not
