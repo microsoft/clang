@@ -697,7 +697,6 @@ void MicrosoftCXXNameMangler::mangleUnqualifiedName(const NamedDecl *ND,
     // Function templates aren't considered for name back referencing.  This
     // makes sense since function templates aren't likely to occur multiple
     // times in a symbol.
-    // FIXME: Test alias template mangling with MSVC 2013.
     if (!isa<ClassTemplateDecl>(TD)) {
       mangleTemplateInstantiationName(TD, *TemplateArgs);
       Out << '@';
@@ -1226,12 +1225,13 @@ void MicrosoftCXXNameMangler::mangleTemplateArg(const TemplateDecl *TD,
     QualType T = TA.getNullPtrType();
     if (const MemberPointerType *MPT = T->getAs<MemberPointerType>()) {
       const CXXRecordDecl *RD = MPT->getMostRecentCXXRecordDecl();
-      if (MPT->isMemberFunctionPointerType() && isa<ClassTemplateDecl>(TD)) {
+      if (MPT->isMemberFunctionPointerType() &&
+          !isa<FunctionTemplateDecl>(TD)) {
         mangleMemberFunctionPointer(RD, nullptr);
         return;
       }
       if (MPT->isMemberDataPointer()) {
-        if (isa<ClassTemplateDecl>(TD)) {
+        if (!isa<FunctionTemplateDecl>(TD)) {
           mangleMemberDataPointer(RD, nullptr);
           return;
         }
@@ -1841,8 +1841,20 @@ void MicrosoftCXXNameMangler::mangleFunctionType(const FunctionType *T,
     Out << 'X';
   } else {
     // Happens for function pointer type arguments for example.
-    for (const QualType &Arg : Proto->param_types())
-      mangleArgumentType(Arg, Range);
+    for (unsigned I = 0, E = Proto->getNumParams(); I != E; ++I) {
+      mangleArgumentType(Proto->getParamType(I), Range);
+      // Mangle each pass_object_size parameter as if it's a paramater of enum
+      // type passed directly after the parameter with the pass_object_size
+      // attribute. The aforementioned enum's name is __pass_object_size, and we
+      // pretend it resides in a top-level namespace called __clang.
+      //
+      // FIXME: Is there a defined extension notation for the MS ABI, or is it
+      // necessary to just cross our fingers and hope this type+namespace
+      // combination doesn't conflict with anything?
+      if (D)
+        if (auto *P = D->getParamDecl(I)->getAttr<PassObjectSizeAttr>())
+          Out << "W4__pass_object_size" << P->getType() << "@__clang@@";
+    }
     // <builtin-type>      ::= Z  # ellipsis
     if (Proto->isVariadic())
       Out << 'Z';

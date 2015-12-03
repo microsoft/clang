@@ -1830,8 +1830,11 @@ llvm::Constant *CodeGenModule::GetAddrOfFunction(GlobalDecl GD,
                                                  bool DontDefer,
                                                  bool IsForDefinition) {
   // If there was no specific requested type, just convert it now.
-  if (!Ty)
-    Ty = getTypes().ConvertType(cast<ValueDecl>(GD.getDecl())->getType());
+  if (!Ty) {
+    const auto *FD = cast<FunctionDecl>(GD.getDecl());
+    auto CanonTy = Context.getCanonicalType(FD->getType());
+    Ty = getTypes().ConvertFunctionType(CanonTy, FD);
+  }
 
   StringRef MangledName = getMangledName(GD);
   return GetOrCreateLLVMFunction(MangledName, Ty, GD, ForVTable, DontDefer,
@@ -1986,7 +1989,7 @@ CodeGenModule::GetOrCreateLLVMGlobal(StringRef MangledName,
 
     if (D->getTLSKind()) {
       if (D->getTLSKind() == VarDecl::TLS_Dynamic)
-        CXXThreadLocals.push_back(std::make_pair(D, GV));
+        CXXThreadLocals.push_back(D);
       setTLSMode(GV, *D);
     }
 
@@ -2379,7 +2382,7 @@ void CodeGenModule::EmitGlobalVarDefinition(const VarDecl *D,
 
   if (D->getTLSKind() && !GV->isThreadLocal()) {
     if (D->getTLSKind() == VarDecl::TLS_Dynamic)
-      CXXThreadLocals.push_back(std::make_pair(D, GV));
+      CXXThreadLocals.push_back(D);
     setTLSMode(GV, *D);
   }
 

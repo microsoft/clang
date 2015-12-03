@@ -469,9 +469,11 @@ TEST_F(LibclangReparseTest, ReparseWithModule) {
 }
 
 TEST_F(LibclangReparseTest, clang_parseTranslationUnit2FullArgv) {
-  std::string EmptyFiles[] = {"lib/gcc/arm-linux-gnueabi/4.6.1/crtbegin.o",
+  // Provide a fake GCC 99.9.9 standard library that always overrides any local
+  // GCC installation.
+  std::string EmptyFiles[] = {"lib/gcc/arm-linux-gnueabi/99.9.9/crtbegin.o",
                               "include/arm-linux-gnueabi/.keep",
-                              "include/c++/4.6.1/vector"};
+                              "include/c++/99.9.9/vector"};
 
   for (auto &Name : EmptyFiles)
     WriteFile(Name, "\n");
@@ -482,7 +484,8 @@ TEST_F(LibclangReparseTest, clang_parseTranslationUnit2FullArgv) {
   std::string Clang = "bin/clang";
   WriteFile(Clang, "");
 
-  const char *Argv[] = {Clang.c_str(), "-target", "arm-linux-gnueabi"};
+  const char *Argv[] = {Clang.c_str(), "-target", "arm-linux-gnueabi",
+                        "--gcc-toolchain="};
 
   EXPECT_EQ(CXError_Success,
             clang_parseTranslationUnit2FullArgv(Index, Filename.c_str(), Argv,

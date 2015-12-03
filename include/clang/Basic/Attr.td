@@ -1012,6 +1012,15 @@ def ReturnsNonNull : InheritableAttr {
   let Documentation = [ReturnsNonNullDocs];
 }
 
+// pass_object_size(N) indicates that the parameter should have
+// __builtin_object_size with Type=N evaluated on the parameter at the callsite.
+def PassObjectSize : InheritableParamAttr {
+  let Spellings = [GNU<"pass_object_size">];
+  let Args = [IntArgument<"Type">];
+  let Subjects = SubjectList<[ParmVar]>;
+  let Documentation = [PassObjectSizeDocs];
+}
+
 // Nullability type attributes.
 def TypeNonNull : TypeAttr {
   let Spellings = [Keyword<"_Nonnull">];
@@ -1087,8 +1096,8 @@ def ObjCBridgeRelated : InheritableAttr {
   let Spellings = [GNU<"objc_bridge_related">];
   let Subjects = SubjectList<[Record], ErrorDiag>;
   let Args = [IdentifierArgument<"RelatedClass">,
-          IdentifierArgument<"ClassMethod">,
-          IdentifierArgument<"InstanceMethod">];
+          IdentifierArgument<"ClassMethod", 1>,
+          IdentifierArgument<"InstanceMethod", 1>];
   let HasCustomParsing = 1;
   let Documentation = [Undocumented];
 }
