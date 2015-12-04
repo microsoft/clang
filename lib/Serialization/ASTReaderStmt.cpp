@@ -134,7 +134,7 @@ void ASTStmtReader::VisitCompoundStmt(CompoundStmt *S) {
   unsigned NumStmts = Record[Idx++];
   while (NumStmts--)
     Stmts.push_back(Reader.ReadSubStmt());
-  S->setStmts(Reader.getContext(), Stmts.data(), Stmts.size());
+  S->setStmts(Reader.getContext(), Stmts);
   S->LBraceLoc = ReadSourceLocation(Record, Idx);
   S->RBraceLoc = ReadSourceLocation(Record, Idx);
 }
@@ -2424,6 +2424,10 @@ void ASTStmtReader::VisitOMPTaskLoopDirective(OMPTaskLoopDirective *D) {
   VisitOMPLoopDirective(D);
 }
 
+void ASTStmtReader::VisitOMPTaskLoopSimdDirective(OMPTaskLoopSimdDirective *D) {
+  VisitOMPLoopDirective(D);
+}
+
 //===----------------------------------------------------------------------===//
 // ASTReader Implementation
 //===----------------------------------------------------------------------===//
@@ -3051,6 +3055,14 @@ Stmt *ASTReader::ReadStmtFromStream(ModuleFile &F) {
       unsigned CollapsedNum = Record[ASTStmtReader::NumStmtFields + 1];
       S = OMPTaskLoopDirective::CreateEmpty(Context, NumClauses, CollapsedNum,
                                             Empty);
+      break;
+    }
+
+    case STMT_OMP_TASKLOOP_SIMD_DIRECTIVE: {
+      unsigned NumClauses = Record[ASTStmtReader::NumStmtFields];
+      unsigned CollapsedNum = Record[ASTStmtReader::NumStmtFields + 1];
+      S = OMPTaskLoopSimdDirective::CreateEmpty(Context, NumClauses,
+                                                CollapsedNum, Empty);
       break;
     }
 
