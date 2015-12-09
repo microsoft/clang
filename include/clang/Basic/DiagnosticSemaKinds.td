@@ -2727,7 +2727,7 @@ def warn_impcast_pointer_to_bool : Warning<
     "'true'">,
     InGroup<PointerBoolConversion>;
 def warn_cast_nonnull_to_bool : Warning<
-    "nonnull parameter '%0' will evaluate to "
+    "nonnull %select{function call|parameter}0 '%1' will evaluate to "
     "'true' on first encounter">,
     InGroup<PointerBoolConversion>;
 def warn_this_bool_conversion : Warning<
@@ -2742,9 +2742,10 @@ def warn_null_pointer_compare : Warning<
     "comparison of %select{address of|function|array}0 '%1' %select{not |}2"
     "equal to a null pointer is always %select{true|false}2">,
     InGroup<TautologicalPointerCompare>;
-def warn_nonnull_parameter_compare : Warning<
-    "comparison of nonnull parameter '%0' %select{not |}1"
-    "equal to a null pointer is %select{true|false}1 on first encounter">,
+def warn_nonnull_expr_compare : Warning<
+    "comparison of nonnull %select{function call|parameter}0 '%1' "
+    "%select{not |}2equal to a null pointer is '%select{true|false}2' on first "
+    "encounter">,
     InGroup<TautologicalPointerCompare>;
 def warn_this_null_compare : Warning<
   "'this' pointer cannot be null in well-defined C++ code; comparison may be "
@@ -7920,6 +7921,10 @@ def err_omp_wrong_ordered_loop_count : Error<
   "the parameter of the 'ordered' clause must be greater than or equal to the parameter of the 'collapse' clause">;
 def note_collapse_loop_count : Note<
   "parameter of the 'collapse' clause">;
+def err_omp_grainsize_num_tasks_mutually_exclusive : Error<
+  "'%0' and '%1' clause are mutually exclusive and may not appear on the same directive">;
+def note_omp_previous_grainsize_num_tasks : Note<
+  "'%0' clause is specified here">;
 } // end of OpenMP category
 
 let CategoryName = "Related Result Type Issue" in {
