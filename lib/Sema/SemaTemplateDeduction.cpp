@@ -3228,7 +3228,7 @@ DeduceFromInitializerList(Sema &S, TemplateParameterList *TemplateParams,
   const bool IsDependentSizedArray =
       !IsConstSizedArray && AdjustedParamType->isDependentSizedArrayType();
 
-  QualType ElTy;  // The type of the std::initializer_list or the array element.
+  QualType ElTy;  // The element type of the std::initializer_list or the array.
 
   const bool IsSTDList = !IsConstSizedArray && !IsDependentSizedArray &&
                          S.isStdInitializerList(AdjustedParamType, &ElTy);
@@ -3246,8 +3246,8 @@ DeduceFromInitializerList(Sema &S, TemplateParameterList *TemplateParams,
   // Deduction only needs to be done for dependent types.
   if (ElTy->isDependentType()) {
     for (Expr *E : ILE->inits()) {
-      if (Result = DeduceTemplateArgumentByListElement(S, TemplateParams, ElTy,
-                                                       E, Info, Deduced, TDF))
+      if ((Result = DeduceTemplateArgumentByListElement(S, TemplateParams, ElTy,
+                                                        E, Info, Deduced, TDF)))
         return true;
     }
   }
