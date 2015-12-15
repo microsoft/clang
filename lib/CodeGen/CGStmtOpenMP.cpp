@@ -2045,6 +2045,11 @@ void CodeGenFunction::EmitOMPFlushDirective(const OMPFlushDirective &S) {
   }(), S.getLocStart());
 }
 
+void CodeGenFunction::EmitOMPDistributeDirective(
+    const OMPDistributeDirective &S) {
+  llvm_unreachable("CodeGen for 'omp distribute' is not supported yet.");
+}
+
 static llvm::Function *emitOutlinedOrderedFunction(CodeGenModule &CGM,
                                                    const CapturedStmt *S) {
   CodeGenFunction CGF(CGM, /*suppressNewContext=*/true);
@@ -2484,6 +2489,7 @@ static void EmitOMPAtomicExpr(CodeGenFunction &CGF, OpenMPClauseKind Kind,
   case OMPC_grainsize:
   case OMPC_nogroup:
   case OMPC_num_tasks:
+  case OMPC_hint:
     llvm_unreachable("Clause is not allowed in 'omp atomic'.");
   }
 }
@@ -2514,7 +2520,8 @@ void CodeGenFunction::EmitOMPAtomicDirective(const OMPAtomicDirective &S) {
   }
 
   LexicalScope Scope(*this, S.getSourceRange());
-  auto &&CodeGen = [&S, Kind, IsSeqCst](CodeGenFunction &CGF) {
+  auto &&CodeGen = [&S, Kind, IsSeqCst, CS](CodeGenFunction &CGF) {
+    CGF.EmitStopPoint(CS);
     EmitOMPAtomicExpr(CGF, Kind, IsSeqCst, S.isPostfixUpdate(), S.getX(),
                       S.getV(), S.getExpr(), S.getUpdateExpr(),
                       S.isXLHSInRHSPart(), S.getLocStart());
