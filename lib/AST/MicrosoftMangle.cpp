@@ -224,6 +224,9 @@ class MicrosoftCXXNameMangler {
   typedef llvm::DenseMap<void *, unsigned> ArgBackRefMap;
   ArgBackRefMap TypeBackReferences;
 
+  typedef std::set<int> PassObjectSizeArgsSet;
+  PassObjectSizeArgsSet PassObjectSizeArgs;
+
   ASTContext &getASTContext() const { return Context.getASTContext(); }
 
   // FIXME: If we add support for __ptr32/64 qualifiers, then we should push
@@ -293,6 +296,7 @@ private:
   void mangleObjCMethodName(const ObjCMethodDecl *MD);
 
   void mangleArgumentType(QualType T, SourceRange Range);
+  void manglePassObjectSizeArg(const PassObjectSizeAttr *POSA);
 
   // Declare manglers for every type class.
 #define ABSTRACT_TYPE(CLASS, PARENT)
@@ -395,14 +399,8 @@ void MicrosoftCXXNameMangler::mangle(const NamedDecl *D, StringRef Prefix) {
     mangleFunctionEncoding(FD, Context.shouldMangleDeclName(FD));
   else if (const VarDecl *VD = dyn_cast<VarDecl>(D))
     mangleVariableEncoding(VD);
-  else {
-    // TODO: Fields? Can MSVC even mangle them?
-    // Issue a diagnostic for now.
-    DiagnosticsEngine &Diags = Context.getDiags();
-    unsigned DiagID = Diags.getCustomDiagID(
-        DiagnosticsEngine::Error, "cannot mangle this declaration yet");
-    Diags.Report(D->getLocation(), DiagID) << D->getSourceRange();
-  }
+  else
+    llvm_unreachable("Tried to mangle unexpected NamedDecl!");
 }
 
 void MicrosoftCXXNameMangler::mangleFunctionEncoding(const FunctionDecl *FD,
@@ -700,7 +698,7 @@ void MicrosoftCXXNameMangler::mangleUnqualifiedName(const NamedDecl *ND,
     // Function templates aren't considered for name back referencing.  This
     // makes sense since function templates aren't likely to occur multiple
     // times in a symbol.
-    if (!isa<ClassTemplateDecl>(TD)) {
+    if (isa<FunctionTemplateDecl>(TD)) {
       mangleTemplateInstantiationName(TD, *TemplateArgs);
       Out << '@';
       return;
@@ -1089,8 +1087,10 @@ void MicrosoftCXXNameMangler::mangleTemplateInstantiationName(
   // Templates have their own context for back references.
   ArgBackRefMap OuterArgsContext;
   BackRefVec OuterTemplateContext;
+  PassObjectSizeArgsSet OuterPassObjectSizeArgs;
   NameBackReferences.swap(OuterTemplateContext);
   TypeBackReferences.swap(OuterArgsContext);
+  PassObjectSizeArgs.swap(OuterPassObjectSizeArgs);
 
   mangleUnscopedTemplateName(TD);
   mangleTemplateArgs(TD, TemplateArgs);
@@ -1098,6 +1098,7 @@ void MicrosoftCXXNameMangler::mangleTemplateInstantiationName(
   // Restore the previous back reference contexts.
   NameBackReferences.swap(OuterTemplateContext);
   TypeBackReferences.swap(OuterArgsContext);
+  PassObjectSizeArgs.swap(OuterPassObjectSizeArgs);
 }
 
 void
@@ -1475,6 +1476,27 @@ void MicrosoftCXXNameMangler::mangleArgumentType(QualType T,
     // and only 10 back references slots are available:
     bool LongerThanOneChar = (Out.tell() - OutSizeBefore > 1);
     if (LongerThanOneChar && TypeBackReferences.size() < 10) {
+      size_t Size = TypeBackReferences.size();
+      TypeBackReferences[TypePtr] = Size;
+    }
+  } else {
+    Out << Found->second;
+  }
+}
+
+void MicrosoftCXXNameMangler::manglePassObjectSizeArg(
+    const PassObjectSizeAttr *POSA) {
+  int Type = POSA->getType();
+
+  auto Iter = PassObjectSizeArgs.insert(Type).first;
+  void *TypePtr = (void *)&*Iter;
+  ArgBackRefMap::iterator Found = TypeBackReferences.find(TypePtr);
+
+  if (Found == TypeBackReferences.end()) {
+    mangleArtificalTagType(TTK_Enum, "__pass_object_size" + llvm::utostr(Type),
+                           {"__clang"});
+
+    if (TypeBackReferences.size() < 10) {
       size_t Size = TypeBackReferences.size();
       TypeBackReferences[TypePtr] = Size;
     }
@@ -1885,10 +1907,8 @@ void MicrosoftCXXNameMangler::mangleFunctionType(const FunctionType *T,
       // necessary to just cross our fingers and hope this type+namespace
       // combination doesn't conflict with anything?
       if (D)
-        if (auto *P = D->getParamDecl(I)->getAttr<PassObjectSizeAttr>())
-          mangleArtificalTagType(TTK_Enum, "__pass_object_size" +
-                                               llvm::utostr(P->getType()),
-                                 {"__clang"});
+        if (const auto *P = D->getParamDecl(I)->getAttr<PassObjectSizeAttr>())
+          manglePassObjectSizeArg(P);
     }
     // <builtin-type>      ::= Z  # ellipsis
     if (Proto->isVariadic())
@@ -2213,11 +2233,16 @@ void MicrosoftCXXNameMangler::mangleType(const RValueReferenceType *T,
 
 void MicrosoftCXXNameMangler::mangleType(const ComplexType *T, Qualifiers,
                                          SourceRange Range) {
-  DiagnosticsEngine &Diags = Context.getDiags();
-  unsigned DiagID = Diags.getCustomDiagID(DiagnosticsEngine::Error,
-    "cannot mangle this complex number type yet");
-  Diags.Report(Range.getBegin(), DiagID)
-    << Range;
+  QualType ElementType = T->getElementType();
+
+  llvm::SmallString<64> TemplateMangling;
+  llvm::raw_svector_ostream Stream(TemplateMangling);
+  MicrosoftCXXNameMangler Extra(Context, Stream);
+  Stream << "?$";
+  Extra.mangleSourceName("_Complex");
+  Extra.mangleType(ElementType, Range, QMM_Escape);
+
+  mangleArtificalTagType(TTK_Struct, TemplateMangling, {"__clang"});
 }
 
 void MicrosoftCXXNameMangler::mangleType(const VectorType *T, Qualifiers Quals,
@@ -2761,12 +2786,12 @@ void MicrosoftMangleContextImpl::mangleCXXDtor(const CXXDestructorDecl *D,
   mangler.mangle(D);
 }
 
-void MicrosoftMangleContextImpl::mangleReferenceTemporary(const VarDecl *VD,
-                                                          unsigned,
-                                                          raw_ostream &) {
-  unsigned DiagID = getDiags().getCustomDiagID(DiagnosticsEngine::Error,
-    "cannot mangle this reference temporary yet");
-  getDiags().Report(VD->getLocation(), DiagID);
+void MicrosoftMangleContextImpl::mangleReferenceTemporary(
+    const VarDecl *VD, unsigned ManglingNumber, raw_ostream &Out) {
+  MicrosoftCXXNameMangler Mangler(*this, Out);
+
+  Mangler.getStream() << "\01?$RT" << ManglingNumber << '@';
+  Mangler.mangle(VD, "");
 }
 
 void MicrosoftMangleContextImpl::mangleThreadSafeStaticGuardVariable(
