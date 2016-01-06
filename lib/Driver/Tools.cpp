@@ -938,8 +938,8 @@ static void getARMTargetFeatures(const ToolChain &TC,
   if (Args.hasArg(options::OPT_ffixed_r9))
     Features.push_back("+reserve-r9");
 
-  // The kext and FreeBSD linkers don't know how to deal with movw/movt.
-  if (KernelOrKext || Triple.isOSFreeBSD())
+  // The kext linker doesn't know how to deal with movw/movt.
+  if (KernelOrKext || Args.hasArg(options::OPT_mno_movt))
     Features.push_back("+no-movt");
 }
 
@@ -2107,7 +2107,7 @@ static bool DecodeAArch64Mcpu(const Driver &D, StringRef Mcpu, StringRef &CPU,
   std::pair<StringRef, StringRef> Split = Mcpu.split("+");
   CPU = Split.first;
   if (CPU == "cyclone" || CPU == "cortex-a53" || CPU == "cortex-a57" ||
-      CPU == "cortex-a72" || CPU == "cortex-a35") {
+      CPU == "cortex-a72" || CPU == "cortex-a35" || CPU == "exynos-m1") {
     Features.push_back("+neon");
     Features.push_back("+crc");
     Features.push_back("+crypto");
@@ -6179,6 +6179,11 @@ void gcc::Compiler::RenderExtraToolArgs(const JobAction &JA,
   case types::TY_LTO_BC:
     CmdArgs.push_back("-c");
     break;
+  // We assume we've got an "integrated" assembler in that gcc will produce an
+  // object file itself.
+  case types::TY_Object:
+    CmdArgs.push_back("-c");
+    break;
   case types::TY_PP_Asm:
     CmdArgs.push_back("-S");
     break;
@@ -9472,6 +9477,8 @@ void visualstudio::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     // or -L. Render it, even if MSVC doesn't understand it.
     A.renderAsInput(Args, CmdArgs);
   }
+
+  TC.addProfileRTLibs(Args, CmdArgs);
 
   // We need to special case some linker paths.  In the case of lld, we need to
   // translate 'lld' into 'lld-link', and in the case of the regular msvc
