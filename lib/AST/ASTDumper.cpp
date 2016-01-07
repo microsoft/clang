@@ -24,6 +24,7 @@
 #include "clang/Basic/Builtins.h"
 #include "clang/Basic/Module.h"
 #include "clang/Basic/SourceManager.h"
+#include "clang/Sema/LocInfoType.h"
 #include "llvm/Support/raw_ostream.h"
 using namespace clang;
 using namespace clang::comments;
@@ -653,6 +654,15 @@ void ASTDumper::dumpTypeAsChild(const Type *T) {
     if (!T) {
       ColorScope Color(*this, NullColor);
       OS << "<<<NULL>>>";
+      return;
+    }
+    if (const LocInfoType *LIT = llvm::dyn_cast<LocInfoType>(T)) {
+      {
+        ColorScope Color(*this, TypeColor);
+        OS << "LocInfo Type";
+      }
+      dumpPointer(T);
+      dumpTypeAsChild(LIT->getTypeSourceInfo()->getType());
       return;
     }
 
@@ -1385,20 +1395,23 @@ void ASTDumper::VisitTemplateTemplateParmDecl(
 
 void ASTDumper::VisitUsingDecl(const UsingDecl *D) {
   OS << ' ';
-  D->getQualifier()->print(OS, D->getASTContext().getPrintingPolicy());
+  if (D->getQualifier())
+    D->getQualifier()->print(OS, D->getASTContext().getPrintingPolicy());
   OS << D->getNameAsString();
 }
 
 void ASTDumper::VisitUnresolvedUsingTypenameDecl(
     const UnresolvedUsingTypenameDecl *D) {
   OS << ' ';
-  D->getQualifier()->print(OS, D->getASTContext().getPrintingPolicy());
+  if (D->getQualifier())
+    D->getQualifier()->print(OS, D->getASTContext().getPrintingPolicy());
   OS << D->getNameAsString();
 }
 
 void ASTDumper::VisitUnresolvedUsingValueDecl(const UnresolvedUsingValueDecl *D) {
   OS << ' ';
-  D->getQualifier()->print(OS, D->getASTContext().getPrintingPolicy());
+  if (D->getQualifier())
+    D->getQualifier()->print(OS, D->getASTContext().getPrintingPolicy());
   OS << D->getNameAsString();
   dumpType(D->getType());
 }

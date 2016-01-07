@@ -183,22 +183,31 @@ StringRef CGDebugInfo::getFunctionName(const FunctionDecl *FD) {
   IdentifierInfo *FII = FD->getIdentifier();
   FunctionTemplateSpecializationInfo *Info =
       FD->getTemplateSpecializationInfo();
-  if (!Info && FII)
+
+  if (!Info && FII && !CGM.getCodeGenOpts().EmitCodeView)
     return FII->getName();
 
   // Otherwise construct human readable name for debug info.
   SmallString<128> NS;
   llvm::raw_svector_ostream OS(NS);
-  FD->printName(OS);
+  PrintingPolicy Policy(CGM.getLangOpts());
 
-  // Add any template specialization args.
-  if (Info) {
-    const TemplateArgumentList *TArgs = Info->TemplateArguments;
-    const TemplateArgument *Args = TArgs->data();
-    unsigned NumArgs = TArgs->size();
-    PrintingPolicy Policy(CGM.getLangOpts());
-    TemplateSpecializationType::PrintTemplateArgumentList(OS, Args, NumArgs,
-                                                          Policy);
+  if (CGM.getCodeGenOpts().EmitCodeView) {
+    // Print a fully qualified name like MSVC would.
+    Policy.MSVCFormatting = true;
+    FD->printQualifiedName(OS, Policy);
+  } else {
+    // Print the unqualified name with some template arguments. This is what
+    // DWARF-based debuggers expect.
+    FD->printName(OS);
+    // Add any template specialization args.
+    if (Info) {
+      const TemplateArgumentList *TArgs = Info->TemplateArguments;
+      const TemplateArgument *Args = TArgs->data();
+      unsigned NumArgs = TArgs->size();
+      TemplateSpecializationType::PrintTemplateArgumentList(OS, Args, NumArgs,
+                                                            Policy);
+    }
   }
 
   // Copy this name on the side and use its reference.
@@ -1791,7 +1800,7 @@ llvm::DIType *CGDebugInfo::CreateTypeDefinition(const ObjCInterfaceType *Ty,
   }
 
   // Create entries for all of the properties.
-  for (const auto *PD : ID->properties()) {
+  auto AddProperty = [&](const ObjCPropertyDecl *PD) {
     SourceLocation Loc = PD->getLocation();
     llvm::DIFile *PUnit = getOrCreateFile(Loc);
     unsigned PLine = getLineNumber(Loc);
@@ -1805,6 +1814,21 @@ llvm::DIType *CGDebugInfo::CreateTypeDefinition(const ObjCInterfaceType *Ty,
                                          : getSelectorName(PD->getSetterName()),
         PD->getPropertyAttributes(), getOrCreateType(PD->getType(), PUnit));
     EltTys.push_back(PropertyNode);
+  };
+  {
+    llvm::SmallPtrSet<const IdentifierInfo*, 16> PropertySet;
+    for (const ObjCCategoryDecl *ClassExt : ID->known_extensions())
+      for (auto *PD : ClassExt->properties()) {
+        PropertySet.insert(PD->getIdentifier());
+        AddProperty(PD);
+      }
+    for (const auto *PD : ID->properties()) {
+      // Don't emit duplicate metadata for properties that were already in a
+      // class extension.
+      if (!PropertySet.insert(PD->getIdentifier()).second)
+        continue;
+      AddProperty(PD);
+    }
   }
 
   const ASTRecordLayout &RL = CGM.getContext().getASTObjCInterfaceLayout(ID);
@@ -3393,10 +3417,14 @@ llvm::DIScope *CGDebugInfo::getCurrentContextDescriptor(const Decl *D) {
 void CGDebugInfo::EmitUsingDirective(const UsingDirectiveDecl &UD) {
   if (CGM.getCodeGenOpts().getDebugInfo() < CodeGenOptions::LimitedDebugInfo)
     return;
-  DBuilder.createImportedModule(
-      getCurrentContextDescriptor(cast<Decl>(UD.getDeclContext())),
-      getOrCreateNameSpace(UD.getNominatedNamespace()),
-      getLineNumber(UD.getLocation()));
+  const NamespaceDecl *NSDecl = UD.getNominatedNamespace();
+  if (!NSDecl->isAnonymousNamespace() || 
+      CGM.getCodeGenOpts().DebugExplicitImport) { 
+    DBuilder.createImportedModule(
+        getCurrentContextDescriptor(cast<Decl>(UD.getDeclContext())),
+        getOrCreateNameSpace(NSDecl),
+        getLineNumber(UD.getLocation()));
+  }
 }
 
 void CGDebugInfo::EmitUsingDecl(const UsingDecl &UD) {
@@ -3415,11 +3443,13 @@ void CGDebugInfo::EmitUsingDecl(const UsingDecl &UD) {
 }
 
 void CGDebugInfo::EmitImportDecl(const ImportDecl &ID) {
-  auto Info = ExternalASTSource::ASTSourceDescriptor(*ID.getImportedModule());
-  DBuilder.createImportedDeclaration(
-      getCurrentContextDescriptor(cast<Decl>(ID.getDeclContext())),
-      getOrCreateModuleRef(Info, DebugTypeExtRefs),
-      getLineNumber(ID.getLocation()));
+  if (Module *M = ID.getImportedModule()) {
+    auto Info = ExternalASTSource::ASTSourceDescriptor(*M);
+    DBuilder.createImportedDeclaration(
+        getCurrentContextDescriptor(cast<Decl>(ID.getDeclContext())),
+        getOrCreateModuleRef(Info, DebugTypeExtRefs),
+        getLineNumber(ID.getLocation()));
+  }
 }
 
 llvm::DIImportedEntity *

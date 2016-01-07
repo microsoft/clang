@@ -2337,8 +2337,8 @@ private:
 
   void DiagnoseUnexpectedNamespace(NamedDecl *Context);
 
-  Decl *ParseNamespace(unsigned Context, SourceLocation &DeclEnd,
-                       SourceLocation InlineLoc = SourceLocation());
+  DeclGroupPtrTy ParseNamespace(unsigned Context, SourceLocation &DeclEnd,
+                                SourceLocation InlineLoc = SourceLocation());
   void ParseInnerNamespace(std::vector<SourceLocation>& IdentLoc,
                            std::vector<IdentifierInfo*>& Ident,
                            std::vector<SourceLocation>& NamespaceLoc,
@@ -2478,7 +2478,9 @@ private:
   ///
   /// \param Kind Kind of current clause.
   ///
-  OMPClause *ParseOpenMPVarListClause(OpenMPClauseKind Kind);
+  OMPClause *ParseOpenMPVarListClause(OpenMPDirectiveKind DKind,
+                                      OpenMPClauseKind Kind);
+
 public:
   bool ParseUnqualifiedId(CXXScopeSpec &SS, bool EnteringContext,
                           bool AllowDestructorName,

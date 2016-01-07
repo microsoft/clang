@@ -80,8 +80,8 @@ TEST_F(FormatTestJS, UnderstandsJavaScriptOperators) {
                "  q();",
                getGoogleJSStyleWithColumns(20));
   verifyFormat("var x = aaaaaaaaaa ?\n"
-               "            bbbbbb :\n"
-               "            ccc;",
+               "    bbbbbb :\n"
+               "    ccc;",
                getGoogleJSStyleWithColumns(20));
 
   verifyFormat("var b = a.map((x) => x + 1);");
@@ -113,6 +113,11 @@ TEST_F(FormatTestJS, ReservedWords) {
                "};");
   verifyFormat("var struct = 2;");
   verifyFormat("var union = 2;");
+}
+
+TEST_F(FormatTestJS, CppKeywords) {
+  // Make sure we don't mess stuff up because of C++ keywords.
+  verifyFormat("return operator && (aa);");
 }
 
 TEST_F(FormatTestJS, ES6DestructuringAssignment) {
@@ -305,8 +310,21 @@ TEST_F(FormatTestJS, ArrayLiterals) {
                "      ccccccccccccccccccccccccccc\n"
                "    ],\n"
                "    aaaa);");
+  verifyFormat("var aaaa = aaaaa ||  // wrap\n"
+               "    [];");
 
   verifyFormat("someFunction([], {a: a});");
+}
+
+TEST_F(FormatTestJS, ColumnLayoutForArrayLiterals) {
+  verifyFormat("var array = [\n"
+               "  a, a, a, a, a, a, a, a, a, a, a, a, a, a, a,\n"
+               "  a, a, a, a, a, a, a, a, a, a, a, a, a, a, a,\n"
+               "];");
+  verifyFormat("var array = someFunction([\n"
+               "  a, a, a, a, a, a, a, a, a, a, a, a, a, a, a,\n"
+               "  a, a, a, a, a, a, a, a, a, a, a, a, a, a, a,\n"
+               "]);");
 }
 
 TEST_F(FormatTestJS, FunctionLiterals) {
@@ -530,11 +548,11 @@ TEST_F(FormatTestJS, ArrowFunctions) {
                "};");
   verifyFormat("var a = a.aaaaaaa(\n"
                "    (a: a) => aaaaaaaaaaaaaaaaaaaaaaaaa(bbbbbbbbb) &&\n"
-               "              aaaaaaaaaaaaaaaaaaaaaaaaa(bbbbbbb));");
+               "        aaaaaaaaaaaaaaaaaaaaaaaaa(bbbbbbb));");
   verifyFormat("var a = a.aaaaaaa(\n"
                "    (a: a) => aaaaaaaaaaaaaaaaaaaaa(bbbbbbbbb) ?\n"
-               "                  aaaaaaaaaaaaaaaaaaaaa(bbbbbbb) :\n"
-               "                  aaaaaaaaaaaaaaaaaaaaa(bbbbbbb));");
+               "        aaaaaaaaaaaaaaaaaaaaa(bbbbbbb) :\n"
+               "        aaaaaaaaaaaaaaaaaaaaa(bbbbbbb));");
 
   // FIXME: This is bad, we should be wrapping before "() => {".
   verifyFormat("someFunction(() => {\n"
@@ -589,7 +607,7 @@ TEST_F(FormatTestJS, TryCatch) {
 
 TEST_F(FormatTestJS, StringLiteralConcatenation) {
   verifyFormat("var literal = 'hello ' +\n"
-               "              'world';");
+               "    'world';");
 }
 
 TEST_F(FormatTestJS, RegexLiteralClassification) {
@@ -746,12 +764,18 @@ TEST_F(FormatTestJS, ClassDeclarations) {
 TEST_F(FormatTestJS, InterfaceDeclarations) {
   verifyFormat("interface I {\n"
                "  x: string;\n"
+               "  enum: string[];\n"
                "}\n"
                "var y;");
   // Ensure that state is reset after parsing the interface.
   verifyFormat("interface a {}\n"
                "export function b() {}\n"
                "var x;");
+
+  // Arrays of object type literals.
+  verifyFormat("interface I {\n"
+               "  o: {}[];\n"
+               "}");
 }
 
 TEST_F(FormatTestJS, EnumDeclarations) {
@@ -841,6 +865,12 @@ TEST_F(FormatTestJS, Modules) {
                "  // adsdasd\n"
                "  BAZ\n"
                "}");
+  verifyFormat("export default [\n"
+               "  aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,\n"
+               "  bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n"
+               "];");
+  verifyFormat("export default [];");
+  verifyFormat("export default () => {};");
 }
 
 TEST_F(FormatTestJS, TemplateStrings) {
@@ -859,7 +889,7 @@ TEST_F(FormatTestJS, TemplateStrings) {
                getGoogleJSStyleWithColumns(35)); // Barely fits.
   EXPECT_EQ("var x = `hello\n"
             "  ${world}` >=\n"
-            "        some();",
+            "    some();",
             format("var x =\n"
                    "    `hello\n"
                    "  ${world}` >= some();",
@@ -884,7 +914,7 @@ TEST_F(FormatTestJS, TemplateStrings) {
   // are first token in line.
   verifyFormat(
       "var a = aaaaaaaaaaaaaaaaaaaaaaaaaaaa ||\n"
-      "        `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`;");
+      "    `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`;");
 
   // Two template strings.
   verifyFormat("var x = `hello` == `hello`;");
@@ -938,6 +968,14 @@ TEST_F(FormatTestJS, TypeArguments) {
                "    aaaaaaaaaaaaaaaa: aaaaaaaaaaaaaaaaaaa,\n"
                "    aaaaaaaaaaaaaaaa: aaaaaaaaaaaaaaaaaaa):\n"
                "    aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa {}");
+}
+
+TEST_F(FormatTestJS, UserDefinedTypeGuards) {
+  verifyFormat(
+      "function foo(check: Object):\n"
+      "    check is {foo: string, bar: string, baz: string, foobar: string} {\n"
+      "  return 'bar' in check;\n"
+      "}\n");
 }
 
 TEST_F(FormatTestJS, OptionalTypes) {

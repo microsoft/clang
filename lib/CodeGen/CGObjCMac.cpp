@@ -2640,6 +2640,8 @@ llvm::Constant *CGObjCCommonMac::BuildByrefLayout(CodeGen::CodeGenModule &CGM,
   if (const RecordType *record = T->getAs<RecordType>()) {
     BuildRCBlockVarRecordLayout(record, fieldOffset, hasUnion, true /*ByrefLayout */);
     llvm::Constant *Result = getBitmapBlockLayout(true);
+    if (isa<llvm::ConstantInt>(Result))
+      Result = llvm::ConstantExpr::getIntToPtr(Result, CGM.Int8PtrTy);
     return Result;
   }
   llvm::Constant *nullPtr = llvm::Constant::getNullValue(CGM.Int8PtrTy);
@@ -2908,15 +2910,26 @@ llvm::Constant *CGObjCCommonMac::EmitPropertyList(Twine Name,
                                        const ObjCCommonTypesHelper &ObjCTypes) {
   SmallVector<llvm::Constant *, 16> Properties;
   llvm::SmallPtrSet<const IdentifierInfo*, 16> PropertySet;
+
+  auto AddProperty = [&](const ObjCPropertyDecl *PD) {
+    llvm::Constant *Prop[] = {GetPropertyName(PD->getIdentifier()),
+                              GetPropertyTypeString(PD, Container)};
+    Properties.push_back(llvm::ConstantStruct::get(ObjCTypes.PropertyTy, Prop));
+  };
+  if (const ObjCInterfaceDecl *OID = dyn_cast<ObjCInterfaceDecl>(OCD))
+    for (const ObjCCategoryDecl *ClassExt : OID->known_extensions())
+      for (auto *PD : ClassExt->properties()) {
+        PropertySet.insert(PD->getIdentifier());
+        AddProperty(PD);
+      }
   for (const auto *PD : OCD->properties()) {
-    PropertySet.insert(PD->getIdentifier());
-    llvm::Constant *Prop[] = {
-      GetPropertyName(PD->getIdentifier()),
-      GetPropertyTypeString(PD, Container)
-    };
-    Properties.push_back(llvm::ConstantStruct::get(ObjCTypes.PropertyTy,
-                                                   Prop));
+    // Don't emit duplicate metadata for properties that were already in a
+    // class extension.
+    if (!PropertySet.insert(PD->getIdentifier()).second)
+      continue;
+    AddProperty(PD);
   }
+
   if (const ObjCInterfaceDecl *OID = dyn_cast<ObjCInterfaceDecl>(OCD)) {
     for (const auto *P : OID->all_referenced_protocols())
       PushProtocolProperties(PropertySet, Properties, Container, P, ObjCTypes);
@@ -4757,11 +4770,7 @@ llvm::Constant *IvarLayoutBuilder::buildBitmap(CGObjCCommonMac &CGObjC,
     // This isn't a stable sort, but our algorithm should handle it fine.
     llvm::array_pod_sort(IvarsInfo.begin(), IvarsInfo.end());
   } else {
-#ifndef NDEBUG
-    for (unsigned i = 1; i != IvarsInfo.size(); ++i) {
-      assert(IvarsInfo[i - 1].Offset <= IvarsInfo[i].Offset);
-    }
-#endif
+    assert(std::is_sorted(IvarsInfo.begin(), IvarsInfo.end()));
   }
   assert(IvarsInfo.back().Offset < InstanceEnd);
 

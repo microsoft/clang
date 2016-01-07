@@ -32,24 +32,21 @@ using namespace sema;
 using llvm::makeArrayRef;
 
 ExprResult Sema::ParseObjCStringLiteral(SourceLocation *AtLocs,
-                                        Expr **strings,
-                                        unsigned NumStrings) {
-  StringLiteral **Strings = reinterpret_cast<StringLiteral**>(strings);
-
+                                        ArrayRef<Expr *> Strings) {
   // Most ObjC strings are formed out of a single piece.  However, we *can*
   // have strings formed out of multiple @ strings with multiple pptokens in
   // each one, e.g. @"foo" "bar" @"baz" "qux"   which need to be turned into one
   // StringLiteral for ObjCStringLiteral to hold onto.
-  StringLiteral *S = Strings[0];
+  StringLiteral *S = cast<StringLiteral>(Strings[0]);
 
   // If we have a multi-part string, merge it all together.
-  if (NumStrings != 1) {
+  if (Strings.size() != 1) {
     // Concatenate objc strings.
     SmallString<128> StrBuf;
     SmallVector<SourceLocation, 8> StrLocs;
 
-    for (unsigned i = 0; i != NumStrings; ++i) {
-      S = Strings[i];
+    for (Expr *E : Strings) {
+      S = cast<StringLiteral>(E);
 
       // ObjC strings can't be wide or UTF.
       if (!S->isAscii()) {
@@ -759,9 +756,9 @@ ExprResult Sema::BuildObjCSubscriptExpression(SourceLocation RB, Expr *BaseExpr,
   BaseExpr = Result.get();
 
   // Build the pseudo-object expression.
-  return ObjCSubscriptRefExpr::Create(Context, BaseExpr, IndexExpr,
-                                      Context.PseudoObjectTy, getterMethod,
-                                      setterMethod, RB);
+  return new (Context) ObjCSubscriptRefExpr(
+      BaseExpr, IndexExpr, Context.PseudoObjectTy, VK_LValue, OK_ObjCSubscript,
+      getterMethod, setterMethod, RB);
 }
 
 ExprResult Sema::BuildObjCArrayLiteral(SourceRange SR, MultiExprArg Elements) {
@@ -868,9 +865,8 @@ ExprResult Sema::BuildObjCArrayLiteral(SourceRange SR, MultiExprArg Elements) {
                                     ArrayWithObjectsMethod, SR));
 }
 
-ExprResult Sema::BuildObjCDictionaryLiteral(SourceRange SR, 
-                                            ObjCDictionaryElement *Elements,
-                                            unsigned NumElements) {
+ExprResult Sema::BuildObjCDictionaryLiteral(SourceRange SR,
+                              MutableArrayRef<ObjCDictionaryElement> Elements) {
   SourceLocation Loc = SR.getBegin();
 
   if (!NSDictionaryDecl) {
@@ -1007,31 +1003,31 @@ ExprResult Sema::BuildObjCDictionaryLiteral(SourceRange SR,
   // Check that each of the keys and values provided is valid in a collection 
   // literal, performing conversions as necessary.
   bool HasPackExpansions = false;
-  for (unsigned I = 0, N = NumElements; I != N; ++I) {
+  for (ObjCDictionaryElement &Element : Elements) {
     // Check the key.
-    ExprResult Key = CheckObjCCollectionLiteralElement(*this, Elements[I].Key, 
+    ExprResult Key = CheckObjCCollectionLiteralElement(*this, Element.Key,
                                                        KeyT);
     if (Key.isInvalid())
       return ExprError();
     
     // Check the value.
     ExprResult Value
-      = CheckObjCCollectionLiteralElement(*this, Elements[I].Value, ValueT);
+      = CheckObjCCollectionLiteralElement(*this, Element.Value, ValueT);
     if (Value.isInvalid())
       return ExprError();
     
-    Elements[I].Key = Key.get();
-    Elements[I].Value = Value.get();
+    Element.Key = Key.get();
+    Element.Value = Value.get();
     
-    if (Elements[I].EllipsisLoc.isInvalid())
+    if (Element.EllipsisLoc.isInvalid())
       continue;
     
-    if (!Elements[I].Key->containsUnexpandedParameterPack() &&
-        !Elements[I].Value->containsUnexpandedParameterPack()) {
-      Diag(Elements[I].EllipsisLoc, 
+    if (!Element.Key->containsUnexpandedParameterPack() &&
+        !Element.Value->containsUnexpandedParameterPack()) {
+      Diag(Element.EllipsisLoc,
            diag::err_pack_expansion_without_parameter_packs)
-        << SourceRange(Elements[I].Key->getLocStart(),
-                       Elements[I].Value->getLocEnd());
+        << SourceRange(Element.Key->getLocStart(),
+                       Element.Value->getLocEnd());
       return ExprError();
     }
     
@@ -1043,7 +1039,7 @@ ExprResult Sema::BuildObjCDictionaryLiteral(SourceRange SR,
     = Context.getObjCObjectPointerType(
                                 Context.getObjCInterfaceType(NSDictionaryDecl));
   return MaybeBindToTemporary(ObjCDictionaryLiteral::Create(
-      Context, makeArrayRef(Elements, NumElements), HasPackExpansions, Ty,
+      Context, Elements, HasPackExpansions, Ty,
       DictionaryWithObjectsMethod, SR));
 }
 
@@ -2726,6 +2722,8 @@ ExprResult Sema::BuildInstanceMessage(Expr *Receiver,
 
         // Try to complete the type. Under ARC, this is a hard error from which
         // we don't try to recover.
+        // FIXME: In the non-ARC case, this will still be a hard error if the
+        // definition is found in a module that's not visible.
         const ObjCInterfaceDecl *forwardClass = nullptr;
         if (RequireCompleteType(Loc, OCIType->getPointeeType(),
               getLangOpts().ObjCAutoRefCount

@@ -19,6 +19,7 @@
 #include "clang/AST/Comment.h"
 #include "clang/AST/CommentCommandTraits.h"
 #include "clang/AST/DeclCXX.h"
+#include "clang/AST/DeclContextInternals.h"
 #include "clang/AST/DeclObjC.h"
 #include "clang/AST/DeclTemplate.h"
 #include "clang/AST/Expr.h"
@@ -660,8 +661,7 @@ ASTContext::getCanonicalTemplateTemplateParmDecl(
                                        nullptr,
                          TemplateParameterList::Create(*this, SourceLocation(),
                                                        SourceLocation(),
-                                                       CanonParams.data(),
-                                                       CanonParams.size(),
+                                                       CanonParams,
                                                        SourceLocation()));
 
   // Get the new insert position for the node we care about.
@@ -761,10 +761,8 @@ ASTContext::~ASTContext() {
   ReleaseDeclContextMaps();
 
   // Call all of the deallocation functions on all of their targets.
-  for (DeallocationMap::const_iterator I = Deallocations.begin(),
-           E = Deallocations.end(); I != E; ++I)
-    for (unsigned J = 0, N = I->second.size(); J != N; ++J)
-      (I->first)((I->second)[J]);
+  for (auto &Pair : Deallocations)
+    (Pair.first)(Pair.second);
 
   // ASTRecordLayout objects in ASTRecordLayouts must always be destroyed
   // because they can contain DenseMaps.
@@ -813,7 +811,7 @@ void ASTContext::ReleaseParentMapEntries() {
 }
 
 void ASTContext::AddDeallocation(void (*Callback)(void*), void *Data) {
-  Deallocations[Callback].push_back(Data);
+  Deallocations.push_back({Callback, Data});
 }
 
 void
@@ -2063,6 +2061,17 @@ void ASTContext::setObjCImplementation(ObjCCategoryDecl *CatD,
                            ObjCCategoryImplDecl *ImplD) {
   assert(CatD && ImplD && "Passed null params");
   ObjCImpls[CatD] = ImplD;
+}
+
+const ObjCMethodDecl *
+ASTContext::getObjCMethodRedeclaration(const ObjCMethodDecl *MD) const {
+  return ObjCMethodRedecls.lookup(MD);
+}
+
+void ASTContext::setObjCMethodRedeclaration(const ObjCMethodDecl *MD,
+                                            const ObjCMethodDecl *Redecl) {
+  assert(!getObjCMethodRedeclaration(MD) && "MD already has a redeclaration");
+  ObjCMethodRedecls[MD] = Redecl;
 }
 
 const ObjCInterfaceDecl *ASTContext::getObjContainingInterface(
@@ -3649,14 +3658,13 @@ static int CmpProtocolNames(ObjCProtocolDecl *const *LHS,
   return DeclarationName::compare((*LHS)->getDeclName(), (*RHS)->getDeclName());
 }
 
-static bool areSortedAndUniqued(ObjCProtocolDecl * const *Protocols,
-                                unsigned NumProtocols) {
-  if (NumProtocols == 0) return true;
+static bool areSortedAndUniqued(ArrayRef<ObjCProtocolDecl *> Protocols) {
+  if (Protocols.empty()) return true;
 
   if (Protocols[0]->getCanonicalDecl() != Protocols[0])
     return false;
   
-  for (unsigned i = 1; i != NumProtocols; ++i)
+  for (unsigned i = 1; i != Protocols.size(); ++i)
     if (CmpProtocolNames(&Protocols[i - 1], &Protocols[i]) >= 0 ||
         Protocols[i]->getCanonicalDecl() != Protocols[i])
       return false;
@@ -3721,8 +3729,7 @@ QualType ASTContext::getObjCObjectType(
                                           [&](QualType type) {
                                             return type.isCanonical();
                                           });
-  bool protocolsSorted = areSortedAndUniqued(protocols.data(),
-                                             protocols.size());
+  bool protocolsSorted = areSortedAndUniqued(protocols);
   if (!typeArgsAreCanonical || !protocolsSorted || !baseType.isCanonical()) {
     // Determine the canonical type arguments.
     ArrayRef<QualType> canonTypeArgs;
@@ -7806,6 +7813,10 @@ bool ASTContext::FunctionTypesMatchOnNSConsumedAttrs(
         return false;
     }
   return true;
+}
+
+void ASTContext::ResetObjCLayout(const ObjCContainerDecl *CD) {
+  ObjCLayouts[CD] = nullptr;
 }
 
 /// mergeObjCGCQualifiers - This routine merges ObjC's GC attribute of 'LHS' and

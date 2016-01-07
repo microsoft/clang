@@ -327,18 +327,16 @@ bool Sema::DiagnoseUseOfDecl(NamedDecl *D, SourceLocation Loc,
   if (getLangOpts().CPlusPlus && isa<FunctionDecl>(D)) {
     // If there were any diagnostics suppressed by template argument deduction,
     // emit them now.
-    SuppressedDiagnosticsMap::iterator
-      Pos = SuppressedDiagnostics.find(D->getCanonicalDecl());
+    auto Pos = SuppressedDiagnostics.find(D->getCanonicalDecl());
     if (Pos != SuppressedDiagnostics.end()) {
-      SmallVectorImpl<PartialDiagnosticAt> &Suppressed = Pos->second;
-      for (unsigned I = 0, N = Suppressed.size(); I != N; ++I)
-        Diag(Suppressed[I].first, Suppressed[I].second);
+      for (const PartialDiagnosticAt &Suppressed : Pos->second)
+        Diag(Suppressed.first, Suppressed.second);
 
       // Clear out the list of suppressed diagnostics, so that we don't emit
       // them again for this specialization. However, we don't obsolete this
       // entry from the table, because we want to avoid ever emitting these
       // diagnostics again.
-      Suppressed.clear();
+      Pos->second.clear();
     }
 
     // C++ [basic.start.main]p3:
@@ -686,9 +684,10 @@ ExprResult Sema::DefaultLvalueConversion(Expr *E) {
   if (T.hasQualifiers())
     T = T.getUnqualifiedType();
 
+  // Under the MS ABI, lock down the inheritance model now.
   if (T->isMemberPointerType() &&
       Context.getTargetInfo().getCXXABI().isMicrosoft())
-    RequireCompleteType(E->getExprLoc(), T, 0);
+    (void)isCompleteType(E->getExprLoc(), T);
 
   UpdateMarkingForLValueToRValue(E);
   
@@ -1461,12 +1460,11 @@ Sema::CreateGenericSelectionExpr(SourceLocation KeyLoc,
     Diag(ControllingExpr->getLocStart(), diag::err_generic_sel_multi_match)
       << ControllingExpr->getSourceRange() << ControllingExpr->getType()
       << (unsigned) CompatIndices.size();
-    for (SmallVectorImpl<unsigned>::iterator I = CompatIndices.begin(),
-         E = CompatIndices.end(); I != E; ++I) {
-      Diag(Types[*I]->getTypeLoc().getBeginLoc(),
+    for (unsigned I : CompatIndices) {
+      Diag(Types[I]->getTypeLoc().getBeginLoc(),
            diag::note_compat_assoc)
-        << Types[*I]->getTypeLoc().getSourceRange()
-        << Types[*I]->getType();
+        << Types[I]->getTypeLoc().getSourceRange()
+        << Types[I]->getType();
     }
     return ExprError();
   }
@@ -1549,8 +1547,8 @@ Sema::ActOnStringLiteral(ArrayRef<Token> StringToks, Scope *UDLScope) {
     return ExprError();
 
   SmallVector<SourceLocation, 4> StringTokLocs;
-  for (unsigned i = 0; i != StringToks.size(); ++i)
-    StringTokLocs.push_back(StringToks[i].getLocation());
+  for (const Token &Tok : StringToks)
+    StringTokLocs.push_back(Tok.getLocation());
 
   QualType CharTy = Context.CharTy;
   StringLiteral::StringKind Kind = StringLiteral::Ascii;
@@ -1778,10 +1776,9 @@ static void emitEmptyLookupTypoDiagnostic(
   std::string CorrectedStr = TC.getAsString(SemaRef.getLangOpts());
   bool DroppedSpecifier =
       TC.WillReplaceSpecifier() && Typo.getAsString() == CorrectedStr;
-  unsigned NoteID =
-      (TC.getCorrectionDecl() && isa<ImplicitParamDecl>(TC.getCorrectionDecl()))
-          ? diag::note_implicit_param_decl
-          : diag::note_previous_decl;
+  unsigned NoteID = TC.getCorrectionDeclAs<ImplicitParamDecl>()
+                        ? diag::note_implicit_param_decl
+                        : diag::note_previous_decl;
   if (!Ctx)
     SemaRef.diagnoseTypo(TC, SemaRef.PDiag(DiagnosticSuggestID) << Typo,
                          SemaRef.PDiag(NoteID));
@@ -1849,8 +1846,8 @@ Sema::DiagnoseEmptyLookup(Scope *S, CXXScopeSpec &SS, LookupResult &R,
         }
 
         // Do we really want to note all of these?
-        for (LookupResult::iterator I = R.begin(), E = R.end(); I != E; ++I)
-          Diag((*I)->getLocation(), diag::note_dependent_var_use);
+        for (NamedDecl *D : R)
+          Diag(D->getLocation(), diag::note_dependent_var_use);
 
         // Return true if we are inside a default argument instantiation
         // and the found name refers to an instance member function, otherwise
@@ -1905,28 +1902,26 @@ Sema::DiagnoseEmptyLookup(Scope *S, CXXScopeSpec &SS, LookupResult &R,
 
     bool AcceptableWithRecovery = false;
     bool AcceptableWithoutRecovery = false;
-    NamedDecl *ND = Corrected.getCorrectionDecl();
+    NamedDecl *ND = Corrected.getFoundDecl();
     if (ND) {
       if (Corrected.isOverloaded()) {
         OverloadCandidateSet OCS(R.getNameLoc(),
                                  OverloadCandidateSet::CSK_Normal);
         OverloadCandidateSet::iterator Best;
-        for (TypoCorrection::decl_iterator CD = Corrected.begin(),
-                                        CDEnd = Corrected.end();
-             CD != CDEnd; ++CD) {
+        for (NamedDecl *CD : Corrected) {
           if (FunctionTemplateDecl *FTD =
-                   dyn_cast<FunctionTemplateDecl>(*CD))
+                   dyn_cast<FunctionTemplateDecl>(CD))
             AddTemplateOverloadCandidate(
                 FTD, DeclAccessPair::make(FTD, AS_none), ExplicitTemplateArgs,
                 Args, OCS);
-          else if (FunctionDecl *FD = dyn_cast<FunctionDecl>(*CD))
+          else if (FunctionDecl *FD = dyn_cast<FunctionDecl>(CD))
             if (!ExplicitTemplateArgs || ExplicitTemplateArgs->size() == 0)
               AddOverloadCandidate(FD, DeclAccessPair::make(FD, AS_none),
                                    Args, OCS);
         }
         switch (OCS.BestViableFunction(*this, R.getNameLoc(), Best)) {
         case OR_Success:
-          ND = Best->Function;
+          ND = Best->FoundDecl;
           Corrected.setCorrectionDecl(ND);
           break;
         default:
@@ -1948,15 +1943,16 @@ Sema::DiagnoseEmptyLookup(Scope *S, CXXScopeSpec &SS, LookupResult &R,
         R.setNamingClass(Record);
       }
 
-      AcceptableWithRecovery =
-          isa<ValueDecl>(ND) || isa<FunctionTemplateDecl>(ND);
+      auto *UnderlyingND = ND->getUnderlyingDecl();
+      AcceptableWithRecovery = isa<ValueDecl>(UnderlyingND) ||
+                               isa<FunctionTemplateDecl>(UnderlyingND);
       // FIXME: If we ended up with a typo for a type name or
       // Objective-C class name, we're in trouble because the parser
       // is in the wrong place to recover. Suggest the typo
       // correction, but don't make it a fix-it since we're not going
       // to recover well anyway.
       AcceptableWithoutRecovery =
-          isa<TypeDecl>(ND) || isa<ObjCInterfaceDecl>(ND);
+          isa<TypeDecl>(UnderlyingND) || isa<ObjCInterfaceDecl>(UnderlyingND);
     } else {
       // FIXME: We found a keyword. Suggest it, but don't provide a fix-it
       // because we aren't able to recover.
@@ -1964,8 +1960,7 @@ Sema::DiagnoseEmptyLookup(Scope *S, CXXScopeSpec &SS, LookupResult &R,
     }
 
     if (AcceptableWithRecovery || AcceptableWithoutRecovery) {
-      unsigned NoteID = (Corrected.getCorrectionDecl() &&
-                         isa<ImplicitParamDecl>(Corrected.getCorrectionDecl()))
+      unsigned NoteID = Corrected.getCorrectionDeclAs<ImplicitParamDecl>()
                             ? diag::note_implicit_param_decl
                             : diag::note_previous_decl;
       if (SS.isEmpty())
@@ -2595,7 +2590,7 @@ Sema::PerformObjectMemberConversion(Expr *From,
     // In C++98, the qualifier type doesn't actually have to be a base
     // type of the object type, in which case we just ignore it.
     // Otherwise build the appropriate casts.
-    if (IsDerivedFrom(FromRecordType, QRecordType)) {
+    if (IsDerivedFrom(FromLoc, FromRecordType, QRecordType)) {
       CXXCastPath BasePath;
       if (CheckDerivedToBaseConversion(FromRecordType, QRecordType,
                                        FromLoc, FromRange, &BasePath))
@@ -2631,7 +2626,7 @@ Sema::PerformObjectMemberConversion(Expr *From,
     // We only need to do this if the naming-class to declaring-class
     // conversion is non-trivial.
     if (!Context.hasSameUnqualifiedType(FromRecordType, URecordType)) {
-      assert(IsDerivedFrom(FromRecordType, URecordType));
+      assert(IsDerivedFrom(FromLoc, FromRecordType, URecordType));
       CXXCastPath BasePath;
       if (CheckDerivedToBaseConversion(FromRecordType, URecordType,
                                        FromLoc, FromRange, &BasePath))
@@ -2678,9 +2673,7 @@ bool Sema::UseArgumentDependentLookup(const CXXScopeSpec &SS,
 
   // Turn off ADL when we find certain kinds of declarations during
   // normal lookup:
-  for (LookupResult::iterator I = R.begin(), E = R.end(); I != E; ++I) {
-    NamedDecl *D = *I;
-
+  for (NamedDecl *D : R) {
     // C++0x [basic.lookup.argdep]p3:
     //     -- a declaration of a class member
     // Since using decls preserve this property, we check this on the
@@ -4320,10 +4313,16 @@ ExprResult Sema::BuildCXXDefaultArgExpr(SourceLocation CallLoc,
     if (Result.isInvalid())
       return ExprError();
 
-    Expr *Arg = Result.getAs<Expr>();
-    CheckCompletedExpr(Arg, Param->getOuterLocStart());
-    // Build the default argument expression.
-    return CXXDefaultArgExpr::Create(Context, CallLoc, Param, Arg);
+    Result = ActOnFinishFullExpr(Result.getAs<Expr>(),
+                                 Param->getOuterLocStart());
+    if (Result.isInvalid())
+      return ExprError();
+
+    // Remember the instantiated default argument.
+    Param->setDefaultArg(Result.getAs<Expr>());
+    if (ASTMutationListener *L = getASTMutationListener()) {
+      L->DefaultArgumentInstantiated(Param);
+    }
   }
 
   // If the default expression creates temporaries, we need to
@@ -4408,29 +4407,27 @@ static TypoCorrection TryTypoCorrectionForCall(Sema &S, Expr *Fn,
           llvm::make_unique<FunctionCallCCC>(S, FuncName.getAsIdentifierInfo(),
                                              Args.size(), ME),
           Sema::CTK_ErrorRecovery)) {
-    if (NamedDecl *ND = Corrected.getCorrectionDecl()) {
+    if (NamedDecl *ND = Corrected.getFoundDecl()) {
       if (Corrected.isOverloaded()) {
         OverloadCandidateSet OCS(NameLoc, OverloadCandidateSet::CSK_Normal);
         OverloadCandidateSet::iterator Best;
-        for (TypoCorrection::decl_iterator CD = Corrected.begin(),
-                                           CDEnd = Corrected.end();
-             CD != CDEnd; ++CD) {
-          if (FunctionDecl *FD = dyn_cast<FunctionDecl>(*CD))
+        for (NamedDecl *CD : Corrected) {
+          if (FunctionDecl *FD = dyn_cast<FunctionDecl>(CD))
             S.AddOverloadCandidate(FD, DeclAccessPair::make(FD, AS_none), Args,
                                    OCS);
         }
         switch (OCS.BestViableFunction(S, NameLoc, Best)) {
         case OR_Success:
-          ND = Best->Function;
+          ND = Best->FoundDecl;
           Corrected.setCorrectionDecl(ND);
           break;
         default:
           break;
         }
       }
-      if (isa<ValueDecl>(ND) || isa<FunctionTemplateDecl>(ND)) {
+      ND = ND->getUnderlyingDecl();
+      if (isa<ValueDecl>(ND) || isa<FunctionTemplateDecl>(ND))
         return Corrected;
-      }
     }
   }
   return TypoCorrection();
@@ -4566,7 +4563,7 @@ bool Sema::GatherArgumentsForCall(SourceLocation CallLoc, FunctionDecl *FDecl,
                                   bool IsListInitialization) {
   unsigned NumParams = Proto->getNumParams();
   bool Invalid = false;
-  unsigned ArgIx = 0;
+  size_t ArgIx = 0;
   // Continue to check argument types (even if we have too few/many args).
   for (unsigned i = FirstParam; i < NumParams; i++) {
     QualType ProtoArgType = Proto->getParamType(i);
@@ -4636,26 +4633,25 @@ bool Sema::GatherArgumentsForCall(SourceLocation CallLoc, FunctionDecl *FDecl,
     // return __unknown_anytype aren't *really* variadic.
     if (Proto->getReturnType() == Context.UnknownAnyTy && FDecl &&
         FDecl->isExternC()) {
-      for (unsigned i = ArgIx, e = Args.size(); i != e; ++i) {
+      for (Expr *A : Args.slice(ArgIx)) {
         QualType paramType; // ignored
-        ExprResult arg = checkUnknownAnyArg(CallLoc, Args[i], paramType);
+        ExprResult arg = checkUnknownAnyArg(CallLoc, A, paramType);
         Invalid |= arg.isInvalid();
         AllArgs.push_back(arg.get());
       }
 
     // Otherwise do argument promotion, (C99 6.5.2.2p7).
     } else {
-      for (unsigned i = ArgIx, e = Args.size(); i != e; ++i) {
-        ExprResult Arg = DefaultVariadicArgumentPromotion(Args[i], CallType,
-                                                          FDecl);
+      for (Expr *A : Args.slice(ArgIx)) {
+        ExprResult Arg = DefaultVariadicArgumentPromotion(A, CallType, FDecl);
         Invalid |= Arg.isInvalid();
         AllArgs.push_back(Arg.get());
       }
     }
 
     // Check for array bounds violations.
-    for (unsigned i = ArgIx, e = Args.size(); i != e; ++i)
-      CheckArrayAccess(Args[i]);
+    for (Expr *A : Args.slice(ArgIx))
+      CheckArrayAccess(A);
   }
   return Invalid;
 }
@@ -4782,7 +4778,7 @@ static bool checkArgsForPlaceholders(Sema &S, MultiExprArg args) {
 }
 
 /// If a builtin function has a pointer argument with no explicit address
-/// space, than it should be able to accept a pointer to any address
+/// space, then it should be able to accept a pointer to any address
 /// space as input.  In order to do this, we need to replace the
 /// standard builtin declaration with one that uses the same address space
 /// as the call.
@@ -4937,14 +4933,12 @@ Sema::ActOnCallExpr(Scope *S, Expr *Fn, SourceLocation LParenLoc,
     // We aren't supposed to apply this logic for if there's an '&' involved.
     if (!find.HasFormOfMemberPointer) {
       OverloadExpr *ovl = find.Expression;
-      if (isa<UnresolvedLookupExpr>(ovl)) {
-        UnresolvedLookupExpr *ULE = cast<UnresolvedLookupExpr>(ovl);
+      if (UnresolvedLookupExpr *ULE = dyn_cast<UnresolvedLookupExpr>(ovl))
         return BuildOverloadedCallExpr(S, Fn, ULE, LParenLoc, ArgExprs,
-                                       RParenLoc, ExecConfig);
-      } else {
-        return BuildCallToMemberFunction(S, Fn, LParenLoc, ArgExprs,
-                                         RParenLoc);
-      }
+                                       RParenLoc, ExecConfig,
+                                       /*AllowTypoCorrection=*/true,
+                                       find.IsAddressOfOperand);
+      return BuildCallToMemberFunction(S, Fn, LParenLoc, ArgExprs, RParenLoc);
     }
   }
 
@@ -4957,17 +4951,21 @@ Sema::ActOnCallExpr(Scope *S, Expr *Fn, SourceLocation LParenLoc,
 
   Expr *NakedFn = Fn->IgnoreParens();
 
+  bool CallingNDeclIndirectly = false;
   NamedDecl *NDecl = nullptr;
-  if (UnaryOperator *UnOp = dyn_cast<UnaryOperator>(NakedFn))
-    if (UnOp->getOpcode() == UO_AddrOf)
+  if (UnaryOperator *UnOp = dyn_cast<UnaryOperator>(NakedFn)) {
+    if (UnOp->getOpcode() == UO_AddrOf) {
+      CallingNDeclIndirectly = true;
       NakedFn = UnOp->getSubExpr()->IgnoreParens();
+    }
+  }
 
   if (isa<DeclRefExpr>(NakedFn)) {
     NDecl = cast<DeclRefExpr>(NakedFn)->getDecl();
 
     FunctionDecl *FDecl = dyn_cast<FunctionDecl>(NDecl);
     if (FDecl && FDecl->getBuiltinID()) {
-      // Rewrite the function decl for this builtin by replacing paramaters
+      // Rewrite the function decl for this builtin by replacing parameters
       // with no explicit address space with the address space of the arguments
       // in ArgExprs.
       if ((FDecl = rewriteBuiltinFunctionDecl(this, Context, FDecl, ArgExprs))) {
@@ -4982,6 +4980,11 @@ Sema::ActOnCallExpr(Scope *S, Expr *Fn, SourceLocation LParenLoc,
     NDecl = cast<MemberExpr>(NakedFn)->getMemberDecl();
 
   if (FunctionDecl *FD = dyn_cast_or_null<FunctionDecl>(NDecl)) {
+    if (CallingNDeclIndirectly &&
+        !checkAddressOfFunctionIsAvailable(FD, /*Complain=*/true,
+                                           Fn->getLocStart()))
+      return ExprError();
+
     if (FD->hasAttr<EnableIfAttr>()) {
       if (const EnableIfAttr *Attr = CheckEnableIf(FD, ArgExprs, true)) {
         Diag(Fn->getLocStart(),
@@ -6523,7 +6526,9 @@ static void SuggestParentheses(Sema &Self, SourceLocation Loc,
 }
 
 static bool IsArithmeticOp(BinaryOperatorKind Opc) {
-  return Opc >= BO_Mul && Opc <= BO_Shr;
+  return BinaryOperator::isAdditiveOp(Opc) ||
+         BinaryOperator::isMultiplicativeOp(Opc) ||
+         BinaryOperator::isShiftOp(Opc);
 }
 
 /// IsArithmeticBinaryExpr - Returns true if E is an arithmetic binary
@@ -6569,10 +6574,6 @@ static bool IsArithmeticBinaryExpr(Expr *E, BinaryOperatorKind *Opcode,
   return false;
 }
 
-static bool IsLogicOp(BinaryOperatorKind Opc) {
-  return (Opc >= BO_LT && Opc <= BO_NE) || (Opc >= BO_LAnd && Opc <= BO_LOr);
-}
-
 /// ExprLooksBoolean - Returns true if E looks boolean, i.e. it has boolean type
 /// or is a logical expression such as (x==y) which has int type, but is
 /// commonly interpreted as boolean.
@@ -6582,7 +6583,7 @@ static bool ExprLooksBoolean(Expr *E) {
   if (E->getType()->isBooleanType())
     return true;
   if (BinaryOperator *OP = dyn_cast<BinaryOperator>(E))
-    return IsLogicOp(OP->getOpcode());
+    return OP->isComparisonOp() || OP->isLogicalOp();
   if (UnaryOperator *OP = dyn_cast<UnaryOperator>(E))
     return OP->getOpcode() == UO_LNot;
   if (E->getType()->isPointerType())
@@ -7921,9 +7922,10 @@ static void diagnosePointerIncompatibility(Sema &S, SourceLocation Loc,
     << RHSExpr->getSourceRange();
 }
 
-QualType Sema::CheckAdditionOperands( // C99 6.5.6
-    ExprResult &LHS, ExprResult &RHS, SourceLocation Loc, unsigned Opc,
-    QualType* CompLHSTy) {
+// C99 6.5.6
+QualType Sema::CheckAdditionOperands(ExprResult &LHS, ExprResult &RHS,
+                                     SourceLocation Loc, BinaryOperatorKind Opc,
+                                     QualType* CompLHSTy) {
   checkArithmeticNull(*this, LHS, RHS, Loc, /*isCompare=*/false);
 
   if (LHS.get()->getType()->isVectorType() ||
@@ -8099,7 +8101,7 @@ static bool isScopedEnumerationType(QualType T) {
 }
 
 static void DiagnoseBadShiftValues(Sema& S, ExprResult &LHS, ExprResult &RHS,
-                                   SourceLocation Loc, unsigned Opc,
+                                   SourceLocation Loc, BinaryOperatorKind Opc,
                                    QualType LHSType) {
   // OpenCL 6.3j: shift values are effectively % word size of LHS (more defined),
   // so skip remaining warnings as we don't want to modify values within Sema.
@@ -8242,7 +8244,7 @@ static QualType checkOpenCLVectorShift(Sema &S,
 
 // C99 6.5.7
 QualType Sema::CheckShiftOperands(ExprResult &LHS, ExprResult &RHS,
-                                  SourceLocation Loc, unsigned Opc,
+                                  SourceLocation Loc, BinaryOperatorKind Opc,
                                   bool IsCompAssign) {
   checkArithmeticNull(*this, LHS, RHS, Loc, /*isCompare=*/false);
 
@@ -8561,7 +8563,7 @@ static void diagnoseObjCLiteralComparison(Sema &S, SourceLocation Loc,
 static void diagnoseLogicalNotOnLHSofComparison(Sema &S, ExprResult &LHS,
                                                 ExprResult &RHS,
                                                 SourceLocation Loc,
-                                                unsigned OpaqueOpc) {
+                                                BinaryOperatorKind Opc) {
   // Check that left hand side is !something.
   UnaryOperator *UO = dyn_cast<UnaryOperator>(LHS.get()->IgnoreImpCasts());
   if (!UO || UO->getOpcode() != UO_LNot) return;
@@ -8616,11 +8618,9 @@ static ValueDecl *getCompareDecl(Expr *E) {
 
 // C99 6.5.8, C++ [expr.rel]
 QualType Sema::CheckCompareOperands(ExprResult &LHS, ExprResult &RHS,
-                                    SourceLocation Loc, unsigned OpaqueOpc,
+                                    SourceLocation Loc, BinaryOperatorKind Opc,
                                     bool IsRelational) {
   checkArithmeticNull(*this, LHS, RHS, Loc, /*isCompare=*/true);
-
-  BinaryOperatorKind Opc = (BinaryOperatorKind) OpaqueOpc;
 
   // Handle vector comparisons separately.
   if (LHS.get()->getType()->isVectorType() ||
@@ -8634,7 +8634,7 @@ QualType Sema::CheckCompareOperands(ExprResult &LHS, ExprResult &RHS,
   Expr *RHSStripped = RHS.get()->IgnoreParenImpCasts();
 
   checkEnumComparison(*this, Loc, LHS.get(), RHS.get());
-  diagnoseLogicalNotOnLHSofComparison(*this, LHS, RHS, Loc, OpaqueOpc);
+  diagnoseLogicalNotOnLHSofComparison(*this, LHS, RHS, Loc, Opc);
 
   if (!LHSType->hasFloatingRepresentation() &&
       !(LHSType->isBlockPointerType() && IsRelational) &&
@@ -8807,7 +8807,8 @@ QualType Sema::CheckCompareOperands(ExprResult &LHS, ExprResult &RHS,
       diagnoseDistinctPointerComparison(*this, Loc, LHS, RHS, /*isError*/false);
     }
     if (LCanPointeeTy != RCanPointeeTy) {
-      if (getLangOpts().OpenCL) {
+      // Treat NULL constant as a special case in OpenCL.
+      if (getLangOpts().OpenCL && !LHSIsNull && !RHSIsNull) {
         const PointerType *LHSPtr = LHSType->getAs<PointerType>();
         if (!LHSPtr->isAddressSpaceOverlapping(*RHSType->getAs<PointerType>())) {
           Diag(Loc,
@@ -9122,9 +9123,10 @@ inline QualType Sema::CheckBitwiseOperands(
   return InvalidOperands(Loc, LHS, RHS);
 }
 
-inline QualType Sema::CheckLogicalOperands( // C99 6.5.[13,14]
-  ExprResult &LHS, ExprResult &RHS, SourceLocation Loc, unsigned Opc) {
-  
+// C99 6.5.[13,14]
+inline QualType Sema::CheckLogicalOperands(ExprResult &LHS, ExprResult &RHS,
+                                           SourceLocation Loc,
+                                           BinaryOperatorKind Opc) {
   // Check vector operands differently.
   if (LHS.get()->getType()->isVectorType() || RHS.get()->getType()->isVectorType())
     return CheckVectorLogicalOperands(LHS, RHS, Loc);
@@ -9948,8 +9950,9 @@ QualType Sema::CheckAddressOfOperand(ExprResult &OrigOp, SourceLocation OpLoc) {
 
     QualType MPTy = Context.getMemberPointerType(
         op->getType(), Context.getTypeDeclType(MD->getParent()).getTypePtr());
+    // Under the MS ABI, lock down the inheritance model now.
     if (Context.getTargetInfo().getCXXABI().isMicrosoft())
-      RequireCompleteType(OpLoc, MPTy, 0);
+      (void)isCompleteType(OpLoc, MPTy);
     return MPTy;
   } else if (lval != Expr::LV_Valid && lval != Expr::LV_IncompleteVoidType) {
     // C99 6.5.3.2p1
@@ -10004,8 +10007,9 @@ QualType Sema::CheckAddressOfOperand(ExprResult &OrigOp, SourceLocation OpLoc) {
           QualType MPTy = Context.getMemberPointerType(
               op->getType(),
               Context.getTypeDeclType(cast<RecordDecl>(Ctx)).getTypePtr());
+          // Under the MS ABI, lock down the inheritance model now.
           if (Context.getTargetInfo().getCXXABI().isMicrosoft())
-            RequireCompleteType(OpLoc, MPTy, 0);
+            (void)isCompleteType(OpLoc, MPTy);
           return MPTy;
         }
       }
@@ -10410,7 +10414,7 @@ ExprResult Sema::CreateBuiltinBinOp(SourceLocation OpLoc,
     break;
   case BO_AndAssign:
   case BO_OrAssign: // fallthrough
-	  DiagnoseSelfAssignment(*this, LHS.get(), RHS.get(), OpLoc);
+    DiagnoseSelfAssignment(*this, LHS.get(), RHS.get(), OpLoc);
   case BO_XorAssign:
     CompResultTy = CheckBitwiseOperands(LHS, RHS, OpLoc, true);
     CompLHSTy = CompResultTy;
@@ -10473,17 +10477,17 @@ static void DiagnoseBitwisePrecedence(Sema &Self, BinaryOperatorKind Opc,
   BinaryOperator *LHSBO = dyn_cast<BinaryOperator>(LHSExpr);
   BinaryOperator *RHSBO = dyn_cast<BinaryOperator>(RHSExpr);
 
-  // Check that one of the sides is a comparison operator.
+  // Check that one of the sides is a comparison operator and the other isn't.
   bool isLeftComp = LHSBO && LHSBO->isComparisonOp();
   bool isRightComp = RHSBO && RHSBO->isComparisonOp();
-  if (!isLeftComp && !isRightComp)
+  if (isLeftComp == isRightComp)
     return;
 
   // Bitwise operations are sometimes used as eager logical ops.
   // Don't diagnose this.
   bool isLeftBitwise = LHSBO && LHSBO->isBitwiseOp();
   bool isRightBitwise = RHSBO && RHSBO->isBitwiseOp();
-  if ((isLeftComp || isLeftBitwise) && (isRightComp || isRightBitwise))
+  if (isLeftBitwise || isRightBitwise)
     return;
 
   SourceRange DiagRange = isLeftComp ? SourceRange(LHSExpr->getLocStart(),
@@ -10503,21 +10507,6 @@ static void DiagnoseBitwisePrecedence(Sema &Self, BinaryOperatorKind Opc,
     Self.PDiag(diag::note_precedence_bitwise_first)
       << BinaryOperator::getOpcodeStr(Opc),
     ParensRange);
-}
-
-/// \brief It accepts a '&' expr that is inside a '|' one.
-/// Emit a diagnostic together with a fixit hint that wraps the '&' expression
-/// in parentheses.
-static void
-EmitDiagnosticForBitwiseAndInBitwiseOr(Sema &Self, SourceLocation OpLoc,
-                                       BinaryOperator *Bop) {
-  assert(Bop->getOpcode() == BO_And);
-  Self.Diag(Bop->getOperatorLoc(), diag::warn_bitwise_and_in_bitwise_or)
-      << Bop->getSourceRange() << OpLoc;
-  SuggestParentheses(Self, Bop->getOperatorLoc(),
-    Self.PDiag(diag::note_precedence_silence)
-      << Bop->getOpcodeStr(),
-    Bop->getSourceRange());
 }
 
 /// \brief It accepts a '&&' expr that is inside a '||' one.
@@ -10588,12 +10577,21 @@ static void DiagnoseLogicalAndInLogicalOrRHS(Sema &S, SourceLocation OpLoc,
   }
 }
 
-/// \brief Look for '&' in the left or right hand of a '|' expr.
-static void DiagnoseBitwiseAndInBitwiseOr(Sema &S, SourceLocation OpLoc,
-                                             Expr *OrArg) {
-  if (BinaryOperator *Bop = dyn_cast<BinaryOperator>(OrArg)) {
-    if (Bop->getOpcode() == BO_And)
-      return EmitDiagnosticForBitwiseAndInBitwiseOr(S, OpLoc, Bop);
+/// \brief Look for bitwise op in the left or right hand of a bitwise op with
+/// lower precedence and emit a diagnostic together with a fixit hint that wraps
+/// the '&' expression in parentheses.
+static void DiagnoseBitwiseOpInBitwiseOp(Sema &S, BinaryOperatorKind Opc,
+                                         SourceLocation OpLoc, Expr *SubExpr) {
+  if (BinaryOperator *Bop = dyn_cast<BinaryOperator>(SubExpr)) {
+    if (Bop->isBitwiseOp() && Bop->getOpcode() < Opc) {
+      S.Diag(Bop->getOperatorLoc(), diag::warn_bitwise_op_in_bitwise_op)
+        << Bop->getOpcodeStr() << BinaryOperator::getOpcodeStr(Opc)
+        << Bop->getSourceRange() << OpLoc;
+      SuggestParentheses(S, Bop->getOperatorLoc(),
+        S.PDiag(diag::note_precedence_silence)
+          << Bop->getOpcodeStr(),
+        Bop->getSourceRange());
+    }
   }
 }
 
@@ -10648,9 +10646,10 @@ static void DiagnoseBinOpPrecedence(Sema &Self, BinaryOperatorKind Opc,
     DiagnoseBitwisePrecedence(Self, Opc, OpLoc, LHSExpr, RHSExpr);
 
   // Diagnose "arg1 & arg2 | arg3"
-  if (Opc == BO_Or && !OpLoc.isMacroID()/* Don't warn in macros. */) {
-    DiagnoseBitwiseAndInBitwiseOr(Self, OpLoc, LHSExpr);
-    DiagnoseBitwiseAndInBitwiseOr(Self, OpLoc, RHSExpr);
+  if ((Opc == BO_Or || Opc == BO_Xor) &&
+      !OpLoc.isMacroID()/* Don't warn in macros. */) {
+    DiagnoseBitwiseOpInBitwiseOp(Self, Opc, OpLoc, LHSExpr);
+    DiagnoseBitwiseOpInBitwiseOp(Self, Opc, OpLoc, RHSExpr);
   }
 
   // Warn about arg1 || arg2 && arg3, as GCC 4.3+ does.
@@ -10986,10 +10985,8 @@ static bool isQualifiedMemberAccess(Expr *E) {
     if (!ULE->getQualifier())
       return false;
     
-    for (UnresolvedLookupExpr::decls_iterator D = ULE->decls_begin(),
-                                           DEnd = ULE->decls_end();
-         D != DEnd; ++D) {
-      if (CXXMethodDecl *Method = dyn_cast<CXXMethodDecl>(*D)) {
+    for (NamedDecl *D : ULE->decls()) {
+      if (CXXMethodDecl *Method = dyn_cast<CXXMethodDecl>(D)) {
         if (Method->isInstance())
           return true;
       } else {
@@ -11209,7 +11206,6 @@ ExprResult Sema::BuildBuiltinOffsetOf(SourceLocation BuiltinLoc,
   
   bool DidWarnAboutNonPOD = false;
   QualType CurrentType = ArgTy;
-  typedef OffsetOfExpr::OffsetOfNode OffsetOfNode;
   SmallVector<OffsetOfNode, 4> Comps;
   SmallVector<Expr*, 4> Exprs;
   for (const OffsetOfComponent &OC : Components) {
@@ -11319,7 +11315,8 @@ ExprResult Sema::BuildBuiltinOffsetOf(SourceLocation BuiltinLoc,
     // If the member was found in a base class, introduce OffsetOfNodes for
     // the base class indirections.
     CXXBasePaths Paths;
-    if (IsDerivedFrom(CurrentType, Context.getTypeDeclType(Parent), Paths)) {
+    if (IsDerivedFrom(OC.LocStart, CurrentType, Context.getTypeDeclType(Parent),
+                      Paths)) {
       if (Paths.getDetectedVirtual()) {
         Diag(OC.LocEnd, diag::err_offsetof_field_of_virtual_base)
           << MemberDecl->getDeclName()
@@ -11328,9 +11325,8 @@ ExprResult Sema::BuildBuiltinOffsetOf(SourceLocation BuiltinLoc,
       }
 
       CXXBasePath &Path = Paths.front();
-      for (CXXBasePath::iterator B = Path.begin(), BEnd = Path.end();
-           B != BEnd; ++B)
-        Comps.push_back(OffsetOfNode(B->Base));
+      for (const CXXBasePathElement &B : Path)
+        Comps.push_back(OffsetOfNode(B.Base));
     }
 
     if (IndirectMemberDecl) {
@@ -11598,8 +11594,7 @@ ExprResult Sema::ActOnBlockStmtExpr(SourceLocation CaretLoc,
   // Set the captured variables on the block.
   // FIXME: Share capture structure between BlockDecl and CapturingScopeInfo!
   SmallVector<BlockDecl::Capture, 4> Captures;
-  for (unsigned i = 0, e = BSI->Captures.size(); i != e; i++) {
-    CapturingScopeInfo::Capture &Cap = BSI->Captures[i];
+  for (CapturingScopeInfo::Capture &Cap : BSI->Captures) {
     if (Cap.isThisCapture())
       continue;
     BlockDecl::Capture NewCap(Cap.getVariable(), Cap.isBlockCapture(),
@@ -12039,9 +12034,8 @@ bool Sema::DiagnoseAssignmentResult(AssignConvertType ConvTy,
   // If we can fix the conversion, suggest the FixIts.
   assert(ConvHints.isNull() || Hint.isNull());
   if (!ConvHints.isNull()) {
-    for (std::vector<FixItHint>::iterator HI = ConvHints.Hints.begin(),
-         HE = ConvHints.Hints.end(); HI != HE; ++HI)
-      FDiag << *HI;
+    for (FixItHint &H : ConvHints.Hints)
+      FDiag << H;
   } else {
     FDiag << Hint;
   }
@@ -12216,16 +12210,16 @@ Sema::VerifyIntegerConstantExpression(Expr *E, llvm::APSInt *Result,
   if (!Folded || !AllowFold) {
     if (!Diagnoser.Suppress) {
       Diagnoser.diagnoseNotICE(*this, DiagLoc, E->getSourceRange());
-      for (unsigned I = 0, N = Notes.size(); I != N; ++I)
-        Diag(Notes[I].first, Notes[I].second);
+      for (const PartialDiagnosticAt &Note : Notes)
+        Diag(Note.first, Note.second);
     }
 
     return ExprError();
   }
 
   Diagnoser.diagnoseFold(*this, DiagLoc, E->getSourceRange());
-  for (unsigned I = 0, N = Notes.size(); I != N; ++I)
-    Diag(Notes[I].first, Notes[I].second);
+  for (const PartialDiagnosticAt &Note : Notes)
+    Diag(Note.first, Note.second);
 
   if (Result)
     *Result = EvalResult.Val.getInt();
@@ -13415,15 +13409,13 @@ ExprResult Sema::ActOnConstantExpression(ExprResult Res) {
 }
 
 void Sema::CleanupVarDeclMarking() {
-  for (llvm::SmallPtrSetIterator<Expr*> i = MaybeODRUseExprs.begin(),
-                                        e = MaybeODRUseExprs.end();
-       i != e; ++i) {
+  for (Expr *E : MaybeODRUseExprs) {
     VarDecl *Var;
     SourceLocation Loc;
-    if (DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(*i)) {
+    if (DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(E)) {
       Var = cast<VarDecl>(DRE->getDecl());
       Loc = DRE->getLocation();
-    } else if (MemberExpr *ME = dyn_cast<MemberExpr>(*i)) {
+    } else if (MemberExpr *ME = dyn_cast<MemberExpr>(E)) {
       Var = cast<VarDecl>(ME->getMemberDecl());
       Loc = ME->getMemberLoc();
     } else {
@@ -13480,7 +13472,7 @@ static void DoMarkVarDeclReferenced(Sema &SemaRef, SourceLocation Loc,
     }
 
     if (!isTemplateInstantiation(TSK))
-    	return;
+      return;
 
     // Instantiate, but do not mark as odr-used, variable templates.
     MarkODRUsed = false;

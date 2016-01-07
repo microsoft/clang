@@ -82,6 +82,8 @@ private:
                         llvm::opt::ArgStringList &CmdArgs) const;
   void AddHexagonTargetArgs(const llvm::opt::ArgList &Args,
                             llvm::opt::ArgStringList &CmdArgs) const;
+  void AddWebAssemblyTargetArgs(const llvm::opt::ArgList &Args,
+                                llvm::opt::ArgStringList &CmdArgs) const;
 
   enum RewriteKind { RK_None, RK_Fragile, RK_NonFragile };
 
@@ -149,6 +151,10 @@ public:
   Common(const char *Name, const char *ShortName, const ToolChain &TC)
       : GnuTool(Name, ShortName, TC) {}
 
+  // A gcc tool has an "integrated" assembler that it will call to produce an
+  // object. Let it use that assembler so that we don't have to deal with
+  // assembly syntax incompatibilities.
+  bool hasIntegratedAssembler() const override { return true; }
   void ConstructJob(Compilation &C, const JobAction &JA,
                     const InputInfo &Output, const InputInfoList &Inputs,
                     const llvm::opt::ArgList &TCArgs,
@@ -244,6 +250,21 @@ public:
 };
 
 } // end namespace amdgpu
+
+namespace wasm {
+
+class LLVM_LIBRARY_VISIBILITY Linker : public GnuTool {
+public:
+  explicit Linker(const ToolChain &TC);
+  bool isLinkJob() const override;
+  bool hasIntegratedCPP() const override;
+  void ConstructJob(Compilation &C, const JobAction &JA,
+                    const InputInfo &Output, const InputInfoList &Inputs,
+                    const llvm::opt::ArgList &TCArgs,
+                    const char *LinkingOutput) const override;
+};
+
+} // end namespace wasm
 
 namespace arm {
 std::string getARMTargetCPU(StringRef CPU, StringRef Arch,
@@ -741,6 +762,16 @@ enum class FloatABI {
 
 FloatABI getARMFloatABI(const ToolChain &TC, const llvm::opt::ArgList &Args);
 } // end namespace arm
+
+namespace ppc {
+enum class FloatABI {
+  Invalid,
+  Soft,
+  Hard,
+};
+
+FloatABI getPPCFloatABI(const Driver &D, const llvm::opt::ArgList &Args);
+} // end namespace ppc
 
 namespace XCore {
 // For XCore, we do not need to instantiate tools for PreProcess, PreCompile and

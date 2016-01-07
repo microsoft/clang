@@ -1180,8 +1180,7 @@ bool Sema::getFormatStringInfo(const FormatAttr *Format, bool IsCXXMember,
 /// Checks if a the given expression evaluates to null.
 ///
 /// \brief Returns true if the value evaluates to null.
-static bool CheckNonNullExpr(Sema &S,
-                             const Expr *Expr) {
+static bool CheckNonNullExpr(Sema &S, const Expr *Expr) {
   // If the expression has non-null type, it doesn't evaluate to null.
   if (auto nullability
         = Expr->IgnoreImplicit()->getType()->getNullability(S.Context)) {
@@ -1802,8 +1801,17 @@ ExprResult Sema::SemaAtomicOpsOverloaded(ExprResult TheCallResult,
           Ty = ByValType;
         else if (Form == Arithmetic)
           Ty = Context.getPointerDiffType();
-        else
-          Ty = Context.getPointerType(ValType.getUnqualifiedType());
+        else {
+          Expr *ValArg = TheCall->getArg(i);
+          unsigned AS = 0;
+          // Keep address space of non-atomic pointer type.
+          if (const PointerType *PtrTy =
+                  ValArg->getType()->getAs<PointerType>()) {
+            AS = PtrTy->getPointeeType().getAddressSpace();
+          }
+          Ty = Context.getPointerType(
+              Context.getAddrSpaceQualType(ValType.getUnqualifiedType(), AS));
+        }
         break;
       case 2:
         // The third argument to compare_exchange / GNU exchange is a
@@ -6975,7 +6983,7 @@ void DiagnoseFloatingLiteralImpCast(Sema &S, FloatingLiteral *FL, QualType T,
 
   SmallString<16> PrettyTargetValue;
   if (T->isSpecificBuiltinType(BuiltinType::Bool))
-    PrettyTargetValue = IntegerValue == 0 ? "false" : "true";
+    PrettyTargetValue = Value.isZero() ? "false" : "true";
   else
     IntegerValue.toString(PrettyTargetValue);
 
@@ -7297,20 +7305,24 @@ void CheckImplicitConversion(Sema &S, Expr *E, QualType T,
       }
     }
 
-    // If the target is bool, warn if expr is a function or method call.
-    if (Target->isSpecificBuiltinType(BuiltinType::Bool) &&
-        isa<CallExpr>(E)) {
+    // Detect the case where a call result is converted from floating-point to
+    // to bool, and the final argument to the call is converted from bool, to
+    // discover this typo:
+    //
+    //    bool b = fabs(x < 1.0);  // should be "bool b = fabs(x) < 1.0;"
+    //
+    // FIXME: This is an incredibly special case; is there some more general
+    // way to detect this class of misplaced-parentheses bug?
+    if (Target->isBooleanType() && isa<CallExpr>(E)) {
       // Check last argument of function call to see if it is an
       // implicit cast from a type matching the type the result
       // is being cast to.
       CallExpr *CEx = cast<CallExpr>(E);
-      unsigned NumArgs = CEx->getNumArgs();
-      if (NumArgs > 0) {
+      if (unsigned NumArgs = CEx->getNumArgs()) {
         Expr *LastA = CEx->getArg(NumArgs - 1);
         Expr *InnerE = LastA->IgnoreParenImpCasts();
-        const Type *InnerType =
-          S.Context.getCanonicalType(InnerE->getType()).getTypePtr();
-        if (isa<ImplicitCastExpr>(LastA) && (InnerType == Target)) {
+        if (isa<ImplicitCastExpr>(LastA) &&
+            InnerE->getType()->isBooleanType()) {
           // Warn on this floating-point to bool conversion
           DiagnoseImpCast(S, E, T, CC,
                           diag::warn_impcast_floating_point_to_bool);
@@ -7562,12 +7574,6 @@ void AnalyzeImplicitConversions(Sema &S, Expr *OrigE, SourceLocation CC) {
 
 } // end anonymous namespace
 
-enum {
-  AddressOf,
-  FunctionPointer,
-  ArrayPointer
-};
-
 // Helper function for Sema::DiagnoseAlwaysNonNullPointer.
 // Returns true when emitting a warning about taking the address of a reference.
 static bool CheckForReference(Sema &SemaRef, const Expr *E,
@@ -7666,6 +7672,26 @@ void Sema::DiagnoseAlwaysNonNullPointer(Expr *E,
     }
   }
 
+  auto ComplainAboutNonnullParamOrCall = [&](bool IsParam) {
+    std::string Str;
+    llvm::raw_string_ostream S(Str);
+    E->printPretty(S, nullptr, getPrintingPolicy());
+    unsigned DiagID = IsCompare ? diag::warn_nonnull_expr_compare
+                                : diag::warn_cast_nonnull_to_bool;
+    Diag(E->getExprLoc(), DiagID) << IsParam << S.str()
+      << E->getSourceRange() << Range << IsEqual;
+  };
+
+  // If we have a CallExpr that is tagged with returns_nonnull, we can complain.
+  if (auto *Call = dyn_cast<CallExpr>(E->IgnoreParenImpCasts())) {
+    if (auto *Callee = Call->getDirectCallee()) {
+      if (Callee->hasAttr<ReturnsNonNullAttr>()) {
+        ComplainAboutNonnullParamOrCall(false);
+        return;
+      }
+    }
+  }
+
   // Expect to find a single Decl.  Skip anything more complicated.
   ValueDecl *D = nullptr;
   if (DeclRefExpr *R = dyn_cast<DeclRefExpr>(E)) {
@@ -7677,40 +7703,38 @@ void Sema::DiagnoseAlwaysNonNullPointer(Expr *E,
   // Weak Decls can be null.
   if (!D || D->isWeak())
     return;
-  
+
   // Check for parameter decl with nonnull attribute
-  if (const ParmVarDecl* PV = dyn_cast<ParmVarDecl>(D)) {
-    if (getCurFunction() && !getCurFunction()->ModifiedNonNullParams.count(PV))
-      if (const FunctionDecl* FD = dyn_cast<FunctionDecl>(PV->getDeclContext())) {
-        unsigned NumArgs = FD->getNumParams();
-        llvm::SmallBitVector AttrNonNull(NumArgs);
+  if (const auto* PV = dyn_cast<ParmVarDecl>(D)) {
+    if (getCurFunction() &&
+        !getCurFunction()->ModifiedNonNullParams.count(PV)) {
+      if (PV->hasAttr<NonNullAttr>()) {
+        ComplainAboutNonnullParamOrCall(true);
+        return;
+      }
+
+      if (const auto *FD = dyn_cast<FunctionDecl>(PV->getDeclContext())) {
+        auto ParamIter = std::find(FD->param_begin(), FD->param_end(), PV);
+        assert(ParamIter != FD->param_end());
+        unsigned ParamNo = std::distance(FD->param_begin(), ParamIter);
+
         for (const auto *NonNull : FD->specific_attrs<NonNullAttr>()) {
           if (!NonNull->args_size()) {
-            AttrNonNull.set(0, NumArgs);
-            break;
+              ComplainAboutNonnullParamOrCall(true);
+              return;
           }
-          for (unsigned Val : NonNull->args()) {
-            if (Val >= NumArgs)
-              continue;
-            AttrNonNull.set(Val);
-          }
-        }
-        if (!AttrNonNull.empty())
-          for (unsigned i = 0; i < NumArgs; ++i)
-            if (FD->getParamDecl(i) == PV &&
-                (AttrNonNull[i] || PV->hasAttr<NonNullAttr>())) {
-              std::string Str;
-              llvm::raw_string_ostream S(Str);
-              E->printPretty(S, nullptr, getPrintingPolicy());
-              unsigned DiagID = IsCompare ? diag::warn_nonnull_parameter_compare
-                                          : diag::warn_cast_nonnull_to_bool;
-              Diag(E->getExprLoc(), DiagID) << S.str() << E->getSourceRange()
-                << Range << IsEqual;
+
+          for (unsigned ArgNo : NonNull->args()) {
+            if (ArgNo == ParamNo) {
+              ComplainAboutNonnullParamOrCall(true);
               return;
             }
+          }
+        }
       }
     }
-  
+  }
+
   QualType T = D->getType();
   const bool IsArray = T->isArrayType();
   const bool IsFunction = T->isFunctionType();
@@ -7731,7 +7755,11 @@ void Sema::DiagnoseAlwaysNonNullPointer(Expr *E,
 
   unsigned DiagID = IsCompare ? diag::warn_null_pointer_compare
                               : diag::warn_impcast_pointer_to_bool;
-  unsigned DiagType;
+  enum {
+    AddressOf,
+    FunctionPointer,
+    ArrayPointer
+  } DiagType;
   if (IsAddressOf)
     DiagType = AddressOf;
   else if (IsFunction)

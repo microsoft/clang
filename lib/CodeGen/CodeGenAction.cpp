@@ -26,10 +26,12 @@
 #include "llvm/IR/DebugInfo.h"
 #include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/IR/DiagnosticPrinter.h"
+#include "llvm/IR/FunctionInfo.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IRReader/IRReader.h"
 #include "llvm/Linker/Linker.h"
+#include "llvm/Object/FunctionIndexObjectFile.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/SourceMgr.h"
@@ -56,6 +58,10 @@ namespace clang {
     std::unique_ptr<llvm::Module> TheModule;
     SmallVector<std::pair<unsigned, std::unique_ptr<llvm::Module>>, 4>
         LinkModules;
+
+    // This is here so that the diagnostic printer knows the module a diagnostic
+    // refers to.
+    llvm::Module *CurLinkModule = nullptr;
 
   public:
     BackendConsumer(
@@ -161,18 +167,6 @@ namespace clang {
       assert(TheModule.get() == M &&
              "Unexpected module change during IR generation");
 
-      // Link LinkModule into this module if present, preserving its validity.
-      for (auto &I : LinkModules) {
-        unsigned LinkFlags = I.first;
-        llvm::Module *LinkModule = I.second.get();
-        if (Linker::linkModules(*M, *LinkModule,
-                                [=](const DiagnosticInfo &DI) {
-                                  linkerDiagnosticHandler(DI, LinkModule);
-                                },
-                                LinkFlags))
-          return;
-      }
-
       // Install an inline asm handler so that diagnostics get printed through
       // our diagnostics hooks.
       LLVMContext &Ctx = TheModule->getContext();
@@ -185,6 +179,14 @@ namespace clang {
           Ctx.getDiagnosticHandler();
       void *OldDiagnosticContext = Ctx.getDiagnosticContext();
       Ctx.setDiagnosticHandler(DiagnosticHandler, this);
+
+      // Link LinkModule into this module if present, preserving its validity.
+      for (auto &I : LinkModules) {
+        unsigned LinkFlags = I.first;
+        CurLinkModule = I.second.get();
+        if (Linker::linkModules(*M, std::move(I.second), LinkFlags))
+          return;
+      }
 
       EmitBackendOutput(Diags, CodeGenOpts, TargetOpts, LangOpts,
                         C.getTargetInfo().getDataLayoutString(),
@@ -232,9 +234,6 @@ namespace clang {
       SourceLocation Loc = SourceLocation::getFromRawEncoding(LocCookie);
       ((BackendConsumer*)Context)->InlineAsmDiagHandler2(SM, Loc);
     }
-
-    void linkerDiagnosticHandler(const llvm::DiagnosticInfo &DI,
-                                 const llvm::Module *LinkModule);
 
     static void DiagnosticHandler(const llvm::DiagnosticInfo &DI,
                                   void *Context) {
@@ -545,22 +544,6 @@ void BackendConsumer::OptimizationFailureHandler(
   EmitOptimizationMessage(D, diag::warn_fe_backend_optimization_failure);
 }
 
-void BackendConsumer::linkerDiagnosticHandler(const DiagnosticInfo &DI,
-                                              const llvm::Module *LinkModule) {
-  if (DI.getSeverity() != DS_Error)
-    return;
-
-  std::string MsgStorage;
-  {
-    raw_string_ostream Stream(MsgStorage);
-    DiagnosticPrinterRawOStream DP(Stream);
-    DI.print(DP);
-  }
-
-  Diags.Report(diag::err_fe_cannot_link_module)
-      << LinkModule->getModuleIdentifier() << MsgStorage;
-}
-
 /// \brief This function is invoked when the backend needs
 /// to report something to the user.
 void BackendConsumer::DiagnosticHandlerImpl(const DiagnosticInfo &DI) {
@@ -577,6 +560,13 @@ void BackendConsumer::DiagnosticHandlerImpl(const DiagnosticInfo &DI) {
     if (StackSizeDiagHandler(cast<DiagnosticInfoStackSize>(DI)))
       return;
     ComputeDiagID(Severity, backend_frame_larger_than, DiagID);
+    break;
+  case DK_Linker:
+    assert(CurLinkModule);
+    // FIXME: stop eating the warnings and notes.
+    if (Severity != DS_Error)
+      return;
+    DiagID = diag::err_fe_cannot_link_module;
     break;
   case llvm::DK_OptimizationRemark:
     // Optimization remarks are always handled completely by this
@@ -621,6 +611,12 @@ void BackendConsumer::DiagnosticHandlerImpl(const DiagnosticInfo &DI) {
     raw_string_ostream Stream(MsgStorage);
     DiagnosticPrinterRawOStream DP(Stream);
     DI.print(DP);
+  }
+
+  if (DiagID == diag::err_fe_cannot_link_module) {
+    Diags.Report(diag::err_fe_cannot_link_module)
+        << CurLinkModule->getModuleIdentifier() << MsgStorage;
+    return;
   }
 
   // Report the backend message using the usual diagnostic mechanism.
@@ -785,11 +781,43 @@ void CodeGenAction::ExecuteAction() {
       TheModule->setTargetTriple(TargetOpts.Triple);
     }
 
+    auto DiagHandler = [&](const DiagnosticInfo &DI) {
+      TheModule->getContext().diagnose(DI);
+    };
+
+    // If we are performing ThinLTO importing compilation (indicated by
+    // a non-empty index file option), then we need promote to global scope
+    // and rename any local values that are potentially exported to other
+    // modules. Do this early so that the rest of the compilation sees the
+    // promoted symbols.
+    std::unique_ptr<FunctionInfoIndex> Index;
+    if (!CI.getCodeGenOpts().ThinLTOIndexFile.empty()) {
+      ErrorOr<std::unique_ptr<FunctionInfoIndex>> IndexOrErr =
+          llvm::getFunctionIndexForFile(CI.getCodeGenOpts().ThinLTOIndexFile,
+                                        DiagHandler);
+      if (std::error_code EC = IndexOrErr.getError()) {
+        std::string Error = EC.message();
+        errs() << "Error loading index file '"
+               << CI.getCodeGenOpts().ThinLTOIndexFile << "': " << Error
+               << "\n";
+        return;
+      }
+      Index = std::move(IndexOrErr.get());
+      assert(Index);
+      // Currently this requires creating a new Module object.
+      std::unique_ptr<llvm::Module> RenamedModule =
+          renameModuleForThinLTO(std::move(TheModule), Index.get());
+      if (!RenamedModule)
+        return;
+
+      TheModule = std::move(RenamedModule);
+    }
+
     LLVMContext &Ctx = TheModule->getContext();
     Ctx.setInlineAsmDiagnosticHandler(BitcodeInlineAsmDiagHandler);
     EmitBackendOutput(CI.getDiagnostics(), CI.getCodeGenOpts(), TargetOpts,
                       CI.getLangOpts(), CI.getTarget().getDataLayoutString(),
-                      TheModule.get(), BA, OS);
+                      TheModule.get(), BA, OS, std::move(Index));
     return;
   }
 

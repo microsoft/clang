@@ -295,14 +295,15 @@ CompoundStmt::CompoundStmt(const ASTContext &C, ArrayRef<Stmt*> Stmts,
   std::copy(Stmts.begin(), Stmts.end(), Body);
 }
 
-void CompoundStmt::setStmts(const ASTContext &C, Stmt **Stmts,
-                            unsigned NumStmts) {
-  if (this->Body)
+void CompoundStmt::setStmts(const ASTContext &C, ArrayRef<Stmt *> Stmts) {
+  if (Body)
     C.Deallocate(Body);
-  this->CompoundStmtBits.NumStmts = NumStmts;
+  CompoundStmtBits.NumStmts = Stmts.size();
+  assert(CompoundStmtBits.NumStmts == Stmts.size() &&
+         "NumStmts doesn't fit in bits of CompoundStmtBits.NumStmts!");
 
-  Body = new (C) Stmt*[NumStmts];
-  memcpy(Body, Stmts, sizeof(Stmt *) * NumStmts);
+  Body = new (C) Stmt*[Stmts.size()];
+  std::copy(Stmts.begin(), Stmts.end(), Body);
 }
 
 const char *LabelStmt::getName() const {
@@ -730,30 +731,29 @@ void MSAsmStmt::initialize(const ASTContext &C, StringRef asmstr,
   assert(NumAsmToks == asmtoks.size());
   assert(NumClobbers == clobbers.size());
 
-  unsigned NumExprs = exprs.size();
-  assert(NumExprs == NumOutputs + NumInputs);
-  assert(NumExprs == constraints.size());
+  assert(exprs.size() == NumOutputs + NumInputs);
+  assert(exprs.size() == constraints.size());
 
   AsmStr = copyIntoContext(C, asmstr);
 
-  Exprs = new (C) Stmt*[NumExprs];
-  for (unsigned i = 0, e = NumExprs; i != e; ++i)
-    Exprs[i] = exprs[i];
+  Exprs = new (C) Stmt*[exprs.size()];
+  std::copy(exprs.begin(), exprs.end(), Exprs);
 
-  AsmToks = new (C) Token[NumAsmToks];
-  for (unsigned i = 0, e = NumAsmToks; i != e; ++i)
-    AsmToks[i] = asmtoks[i];
+  AsmToks = new (C) Token[asmtoks.size()];
+  std::copy(asmtoks.begin(), asmtoks.end(), AsmToks);
 
-  Constraints = new (C) StringRef[NumExprs];
-  for (unsigned i = 0, e = NumExprs; i != e; ++i) {
-    Constraints[i] = copyIntoContext(C, constraints[i]);
-  }
+  Constraints = new (C) StringRef[exprs.size()];
+  std::transform(constraints.begin(), constraints.end(), Constraints,
+                 [&](StringRef Constraint) {
+                   return copyIntoContext(C, Constraint);
+                 });
 
   Clobbers = new (C) StringRef[NumClobbers];
-  for (unsigned i = 0, e = NumClobbers; i != e; ++i) {
-    // FIXME: Avoid the allocation/copy if at all possible.
-    Clobbers[i] = copyIntoContext(C, clobbers[i]);
-  }
+  // FIXME: Avoid the allocation/copy if at all possible.
+  std::transform(clobbers.begin(), clobbers.end(), Clobbers,
+                 [&](StringRef Clobber) {
+                   return copyIntoContext(C, Clobber);
+                 });
 }
 
 IfStmt::IfStmt(const ASTContext &C, SourceLocation IL, VarDecl *var, Expr *cond,
@@ -972,6 +972,17 @@ CapturedStmt::Capture::Capture(SourceLocation Loc, VariableCaptureKind Kind,
   }
 }
 
+CapturedStmt::VariableCaptureKind
+CapturedStmt::Capture::getCaptureKind() const {
+  return VarAndKind.getInt();
+}
+
+VarDecl *CapturedStmt::Capture::getCapturedVar() const {
+  assert((capturesVariable() || capturesVariableByCopy()) &&
+         "No variable available for 'this' or VAT capture");
+  return VarAndKind.getPointer();
+}
+
 CapturedStmt::Capture *CapturedStmt::getStoredCaptures() const {
   unsigned Size = sizeof(CapturedStmt) + sizeof(Stmt *) * (NumCaptures + 1);
 
@@ -1058,6 +1069,29 @@ CapturedStmt *CapturedStmt::CreateDeserialized(const ASTContext &Context,
 Stmt::child_range CapturedStmt::children() {
   // Children are captured field initilizers.
   return child_range(getStoredStmts(), getStoredStmts() + NumCaptures);
+}
+
+CapturedDecl *CapturedStmt::getCapturedDecl() {
+  return CapDeclAndKind.getPointer();
+}
+const CapturedDecl *CapturedStmt::getCapturedDecl() const {
+  return CapDeclAndKind.getPointer();
+}
+
+/// \brief Set the outlined function declaration.
+void CapturedStmt::setCapturedDecl(CapturedDecl *D) {
+  assert(D && "null CapturedDecl");
+  CapDeclAndKind.setPointer(D);
+}
+
+/// \brief Retrieve the captured region kind.
+CapturedRegionKind CapturedStmt::getCapturedRegionKind() const {
+  return CapDeclAndKind.getInt();
+}
+
+/// \brief Set the captured region kind.
+void CapturedStmt::setCapturedRegionKind(CapturedRegionKind Kind) {
+  CapDeclAndKind.setInt(Kind);
 }
 
 bool CapturedStmt::capturesVariable(const VarDecl *Var) const {

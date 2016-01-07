@@ -1073,17 +1073,14 @@ static void handlePackedAttr(Sema &S, Decl *D, const AttributeList &Attr) {
     TD->addAttr(::new (S.Context) PackedAttr(Attr.getRange(), S.Context,
                                         Attr.getAttributeSpellingListIndex()));
   else if (FieldDecl *FD = dyn_cast<FieldDecl>(D)) {
-    // If the alignment is less than or equal to 8 bits, the packed attribute
-    // has no effect.
+    // Report warning about changed offset in the newer compiler versions.
     if (!FD->getType()->isDependentType() &&
-        !FD->getType()->isIncompleteType() &&
+        !FD->getType()->isIncompleteType() && FD->isBitField() &&
         S.Context.getTypeAlign(FD->getType()) <= 8)
-      S.Diag(Attr.getLoc(), diag::warn_attribute_ignored_for_field_of_type)
-        << Attr.getName() << FD->getType();
-    else
-      FD->addAttr(::new (S.Context)
-                  PackedAttr(Attr.getRange(), S.Context,
-                             Attr.getAttributeSpellingListIndex()));
+      S.Diag(Attr.getLoc(), diag::warn_attribute_packed_for_bitfield);
+
+    FD->addAttr(::new (S.Context) PackedAttr(
+        Attr.getRange(), S.Context, Attr.getAttributeSpellingListIndex()));
   } else
     S.Diag(Attr.getLoc(), diag::warn_attribute_ignored) << Attr.getName();
 }
@@ -5549,22 +5546,17 @@ NamedDecl * Sema::DeclClonePragmaWeak(NamedDecl *ND, IdentifierInfo *II,
   assert(isa<FunctionDecl>(ND) || isa<VarDecl>(ND));
   NamedDecl *NewD = nullptr;
   if (FunctionDecl *FD = dyn_cast<FunctionDecl>(ND)) {
+    FunctionDecl *NewFD;
+    // FIXME: Missing call to CheckFunctionDeclaration().
     // FIXME: Mangling?
     // FIXME: Is the qualifier info correct?
     // FIXME: Is the DeclContext correct?
-
-    LookupResult Previous(*this, II, Loc, LookupOrdinaryName);
-    LookupParsedName(Previous, TUScope, nullptr, true);
-
-    auto NewFD = FunctionDecl::Create(
-        FD->getASTContext(), FD->getDeclContext(), Loc, Loc,
-        DeclarationName(II), FD->getType(), FD->getTypeSourceInfo(), SC_None,
-        false /*isInlineSpecified*/, FD->hasPrototype(),
-        false /*isConstexprSpecified*/);
-
-    CheckFunctionDeclaration(TUScope, NewFD, Previous,
-                             false /*IsExplicitSpecialization*/);
-
+    NewFD = FunctionDecl::Create(FD->getASTContext(), FD->getDeclContext(),
+                                 Loc, Loc, DeclarationName(II),
+                                 FD->getType(), FD->getTypeSourceInfo(),
+                                 SC_None, false/*isInlineSpecified*/,
+                                 FD->hasPrototype(),
+                                 false/*isConstexprSpecified*/);
     NewD = NewFD;
 
     if (FD->getQualifier())

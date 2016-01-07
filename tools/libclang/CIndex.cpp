@@ -717,11 +717,8 @@ bool CursorVisitor::VisitClassTemplateSpecializationDecl(
           return true;
     }
   }
-  
-  if (ShouldVisitBody && VisitCXXRecordDecl(D))
-    return true;
-  
-  return false;
+
+  return ShouldVisitBody && VisitCXXRecordDecl(D);
 }
 
 bool CursorVisitor::VisitClassTemplatePartialSpecializationDecl(
@@ -946,11 +943,8 @@ bool CursorVisitor::VisitObjCMethodDecl(ObjCMethodDecl *ND) {
       return true;
   }
 
-  if (ND->isThisDeclarationADefinition() &&
-      Visit(MakeCXCursor(ND->getBody(), StmtParent, TU, RegionOfInterest)))
-    return true;
-
-  return false;
+  return ND->isThisDeclarationADefinition() &&
+         Visit(MakeCXCursor(ND->getBody(), StmtParent, TU, RegionOfInterest));
 }
 
 template <typename DeclIt>
@@ -1755,13 +1749,27 @@ DEF_JOB(StmtVisit, Stmt, StmtVisitKind)
 DEF_JOB(MemberExprParts, MemberExpr, MemberExprPartsKind)
 DEF_JOB(DeclRefExprParts, DeclRefExpr, DeclRefExprPartsKind)
 DEF_JOB(OverloadExprParts, OverloadExpr, OverloadExprPartsKind)
-DEF_JOB(ExplicitTemplateArgsVisit, ASTTemplateArgumentListInfo, 
-        ExplicitTemplateArgsVisitKind)
 DEF_JOB(SizeOfPackExprParts, SizeOfPackExpr, SizeOfPackExprPartsKind)
 DEF_JOB(LambdaExprParts, LambdaExpr, LambdaExprPartsKind)
 DEF_JOB(PostChildrenVisit, void, PostChildrenVisitKind)
 #undef DEF_JOB
 
+class ExplicitTemplateArgsVisit : public VisitorJob {
+public:
+  ExplicitTemplateArgsVisit(const TemplateArgumentLoc *Begin,
+                            const TemplateArgumentLoc *End, CXCursor parent)
+      : VisitorJob(parent, VisitorJob::ExplicitTemplateArgsVisitKind, Begin,
+                   End) {}
+  static bool classof(const VisitorJob *VJ) {
+    return VJ->getKind() == ExplicitTemplateArgsVisitKind;
+  }
+  const TemplateArgumentLoc *begin() const {
+    return static_cast<const TemplateArgumentLoc *>(data[0]);
+  }
+  const TemplateArgumentLoc *end() {
+    return static_cast<const TemplateArgumentLoc *>(data[1]);
+  }
+};
 class DeclVisit : public VisitorJob {
 public:
   DeclVisit(const Decl *D, CXCursor parent, bool isFirst) :
@@ -1943,11 +1951,14 @@ public:
   void VisitOMPTargetDataDirective(const OMPTargetDataDirective *D);
   void VisitOMPTeamsDirective(const OMPTeamsDirective *D);
   void VisitOMPTaskLoopDirective(const OMPTaskLoopDirective *D);
+  void VisitOMPTaskLoopSimdDirective(const OMPTaskLoopSimdDirective *D);
+  void VisitOMPDistributeDirective(const OMPDistributeDirective *D);
 
 private:
   void AddDeclarationNameInfo(const Stmt *S);
   void AddNestedNameSpecifierLoc(NestedNameSpecifierLoc Qualifier);
-  void AddExplicitTemplateArgs(const ASTTemplateArgumentListInfo *A);
+  void AddExplicitTemplateArgs(const TemplateArgumentLoc *A,
+                               unsigned NumTemplateArgs);
   void AddMemberRef(const FieldDecl *D, SourceLocation L);
   void AddStmt(const Stmt *S);
   void AddDecl(const Decl *D, bool isFirst = true);
@@ -1977,10 +1988,9 @@ void EnqueueVisitor::AddDecl(const Decl *D, bool isFirst) {
   if (D)
     WL.push_back(DeclVisit(D, Parent, isFirst));
 }
-void EnqueueVisitor::
-  AddExplicitTemplateArgs(const ASTTemplateArgumentListInfo *A) {
-  if (A)
-    WL.push_back(ExplicitTemplateArgsVisit(A, Parent));
+void EnqueueVisitor::AddExplicitTemplateArgs(const TemplateArgumentLoc *A,
+                                             unsigned NumTemplateArgs) {
+  WL.push_back(ExplicitTemplateArgsVisit(A, A + NumTemplateArgs, Parent));
 }
 void EnqueueVisitor::AddMemberRef(const FieldDecl *D, SourceLocation L) {
   if (D)
@@ -2072,6 +2082,8 @@ void OMPClauseEnqueue::VisitOMPThreadsClause(const OMPThreadsClause *) {}
 
 void OMPClauseEnqueue::VisitOMPSIMDClause(const OMPSIMDClause *) {}
 
+void OMPClauseEnqueue::VisitOMPNogroupClause(const OMPNogroupClause *) {}
+
 void OMPClauseEnqueue::VisitOMPDeviceClause(const OMPDeviceClause *C) {
   Visitor->AddStmt(C->getDevice());
 }
@@ -2086,6 +2098,18 @@ void OMPClauseEnqueue::VisitOMPThreadLimitClause(const OMPThreadLimitClause *C) 
 
 void OMPClauseEnqueue::VisitOMPPriorityClause(const OMPPriorityClause *C) {
   Visitor->AddStmt(C->getPriority());
+}
+
+void OMPClauseEnqueue::VisitOMPGrainsizeClause(const OMPGrainsizeClause *C) {
+  Visitor->AddStmt(C->getGrainsize());
+}
+
+void OMPClauseEnqueue::VisitOMPNumTasksClause(const OMPNumTasksClause *C) {
+  Visitor->AddStmt(C->getNumTasks());
+}
+
+void OMPClauseEnqueue::VisitOMPHintClause(const OMPHintClause *C) {
+  Visitor->AddStmt(C->getHint());
 }
 
 template<typename T>
@@ -2231,7 +2255,8 @@ VisitMSDependentExistsStmt(const MSDependentExistsStmt *S) {
 
 void EnqueueVisitor::
 VisitCXXDependentScopeMemberExpr(const CXXDependentScopeMemberExpr *E) {
-  AddExplicitTemplateArgs(E->getOptionalExplicitTemplateArgs());
+  if (E->hasExplicitTemplateArgs())
+    AddExplicitTemplateArgs(E->getTemplateArgs(), E->getNumTemplateArgs());
   AddDeclarationNameInfo(E);
   if (NestedNameSpecifierLoc QualifierLoc = E->getQualifierLoc())
     AddNestedNameSpecifierLoc(QualifierLoc);
@@ -2306,14 +2331,14 @@ void EnqueueVisitor::VisitCXXForRangeStmt(const CXXForRangeStmt *S) {
 }
 
 void EnqueueVisitor::VisitDeclRefExpr(const DeclRefExpr *DR) {
-  if (DR->hasExplicitTemplateArgs()) {
-    AddExplicitTemplateArgs(&DR->getExplicitTemplateArgs());
-  }
+  if (DR->hasExplicitTemplateArgs())
+    AddExplicitTemplateArgs(DR->getTemplateArgs(), DR->getNumTemplateArgs());
   WL.push_back(DeclRefExprParts(DR, Parent));
 }
 void EnqueueVisitor::VisitDependentScopeDeclRefExpr(
                                         const DependentScopeDeclRefExpr *E) {
-  AddExplicitTemplateArgs(E->getOptionalExplicitTemplateArgs());
+  if (E->hasExplicitTemplateArgs())
+    AddExplicitTemplateArgs(E->getTemplateArgs(), E->getNumTemplateArgs());
   AddDeclarationNameInfo(E);
   AddNestedNameSpecifierLoc(E->getQualifierLoc());
 }
@@ -2409,7 +2434,6 @@ void EnqueueVisitor::VisitObjCMessageExpr(const ObjCMessageExpr *M) {
 void EnqueueVisitor::VisitOffsetOfExpr(const OffsetOfExpr *E) {
   // Visit the components of the offsetof expression.
   for (unsigned N = E->getNumComponents(), I = N; I > 0; --I) {
-    typedef OffsetOfExpr::OffsetOfNode OffsetOfNode;
     const OffsetOfNode &Node = E->getComponent(I-1);
     switch (Node.getKind()) {
     case OffsetOfNode::Array:
@@ -2427,7 +2451,8 @@ void EnqueueVisitor::VisitOffsetOfExpr(const OffsetOfExpr *E) {
   AddTypeLoc(E->getTypeSourceInfo());
 }
 void EnqueueVisitor::VisitOverloadExpr(const OverloadExpr *E) {
-  AddExplicitTemplateArgs(E->getOptionalExplicitTemplateArgs());
+  if (E->hasExplicitTemplateArgs())
+    AddExplicitTemplateArgs(E->getTemplateArgs(), E->getNumTemplateArgs());
   WL.push_back(OverloadExprParts(E, Parent));
 }
 void EnqueueVisitor::VisitUnaryExprOrTypeTraitExpr(
@@ -2616,6 +2641,16 @@ void EnqueueVisitor::VisitOMPTaskLoopDirective(const OMPTaskLoopDirective *D) {
   VisitOMPLoopDirective(D);
 }
 
+void EnqueueVisitor::VisitOMPTaskLoopSimdDirective(
+    const OMPTaskLoopSimdDirective *D) {
+  VisitOMPLoopDirective(D);
+}
+
+void EnqueueVisitor::VisitOMPDistributeDirective(
+    const OMPDistributeDirective *D) {
+  VisitOMPLoopDirective(D);
+}
+
 void CursorVisitor::EnqueueWorkList(VisitorWorkList &WL, const Stmt *S) {
   EnqueueVisitor(WL, MakeCXCursor(S, StmtParent, TU,RegionOfInterest)).Visit(S);
 }
@@ -2651,12 +2686,9 @@ bool CursorVisitor::RunVisitorWorkList(VisitorWorkList &WL) {
         continue;
       }
       case VisitorJob::ExplicitTemplateArgsVisitKind: {
-        const ASTTemplateArgumentListInfo *ArgList =
-          cast<ExplicitTemplateArgsVisit>(&LI)->get();
-        for (const TemplateArgumentLoc *Arg = ArgList->getTemplateArgs(),
-               *ArgEnd = Arg + ArgList->NumTemplateArgs;
-               Arg != ArgEnd; ++Arg) {
-          if (VisitTemplateArgumentLoc(*Arg))
+        for (const TemplateArgumentLoc &Arg :
+             *cast<ExplicitTemplateArgsVisit>(&LI)) {
+          if (VisitTemplateArgumentLoc(Arg))
             return true;
         }
         continue;
@@ -2858,10 +2890,9 @@ bool CursorVisitor::Visit(const Stmt *S) {
 
 namespace {
 typedef SmallVector<SourceRange, 4> RefNamePieces;
-RefNamePieces
-buildPieces(unsigned NameFlags, bool IsMemberRefExpr,
-            const DeclarationNameInfo &NI, SourceRange QLoc,
-            const ASTTemplateArgumentListInfo *TemplateArgs = nullptr) {
+RefNamePieces buildPieces(unsigned NameFlags, bool IsMemberRefExpr,
+                          const DeclarationNameInfo &NI, SourceRange QLoc,
+                          const SourceRange *TemplateArgsLoc = nullptr) {
   const bool WantQualifier = NameFlags & CXNameRange_WantQualifier;
   const bool WantTemplateArgs = NameFlags & CXNameRange_WantTemplateArgs;
   const bool WantSinglePiece = NameFlags & CXNameRange_WantSinglePiece;
@@ -2875,11 +2906,10 @@ buildPieces(unsigned NameFlags, bool IsMemberRefExpr,
   
   if (Kind != DeclarationName::CXXOperatorName || IsMemberRefExpr)
     Pieces.push_back(NI.getLoc());
-  
-  if (WantTemplateArgs && TemplateArgs)
-    Pieces.push_back(SourceRange(TemplateArgs->LAngleLoc,
-                                 TemplateArgs->RAngleLoc));
-  
+
+  if (WantTemplateArgs && TemplateArgsLoc && TemplateArgsLoc->isValid())
+    Pieces.push_back(*TemplateArgsLoc);
+
   if (Kind == DeclarationName::CXXOperatorName) {
     Pieces.push_back(SourceLocation::getFromRawEncoding(
                        NI.getInfo().CXXOperatorName.BeginOpNameLoc));
@@ -3057,6 +3087,8 @@ clang_parseTranslationUnit_Impl(CXIndex CIdx, const char *source_filename,
     setThreadBackgroundPriority();
 
   bool PrecompilePreamble = options & CXTranslationUnit_PrecompiledPreamble;
+  bool CreatePreambleOnFirstParse =
+      options & CXTranslationUnit_CreatePreambleOnFirstParse;
   // FIXME: Add a flag for modules.
   TranslationUnitKind TUKind
     = (options & CXTranslationUnit_Incomplete)? TU_Prefix : TU_Complete;
@@ -3131,13 +3163,18 @@ clang_parseTranslationUnit_Impl(CXIndex CIdx, const char *source_filename,
   
   unsigned NumErrors = Diags->getClient()->getNumErrors();
   std::unique_ptr<ASTUnit> ErrUnit;
+  // Unless the user specified that they want the preamble on the first parse
+  // set it up to be created on the first reparse. This makes the first parse
+  // faster, trading for a slower (first) reparse.
+  unsigned PrecompilePreambleAfterNParses =
+      !PrecompilePreamble ? 0 : 2 - CreatePreambleOnFirstParse;
   std::unique_ptr<ASTUnit> Unit(ASTUnit::LoadFromCommandLine(
       Args->data(), Args->data() + Args->size(),
       CXXIdx->getPCHContainerOperations(), Diags,
       CXXIdx->getClangResourcesPath(), CXXIdx->getOnlyLocalDecls(),
       /*CaptureDiagnostics=*/true, *RemappedFiles.get(),
-      /*RemappedFilesKeepOriginalName=*/true, PrecompilePreamble, TUKind,
-      CacheCodeCompletionResults, IncludeBriefCommentsInCodeCompletion,
+      /*RemappedFilesKeepOriginalName=*/true, PrecompilePreambleAfterNParses,
+      TUKind, CacheCodeCompletionResults, IncludeBriefCommentsInCodeCompletion,
       /*AllowPCHWithCompilerErrors=*/true, SkipFunctionBodies,
       /*UserFilesAreVolatile=*/true, ForSerialization,
       CXXIdx->getPCHContainerOperations()->getRawReader().getFormat(),
@@ -4009,8 +4046,7 @@ CXStringSet *clang_Cursor_getCXXManglings(CXCursor C) {
     Manglings.emplace_back(getMangledStructor(M, DL, DD, Dtor_Base));
     if (Ctx.getTargetInfo().getCXXABI().isItaniumFamily()) {
       Manglings.emplace_back(getMangledStructor(M, DL, DD, Dtor_Complete));
-
-      if (!DD->isVirtual())
+      if (DD->isVirtual())
         Manglings.emplace_back(getMangledStructor(M, DL, DD, Dtor_Deleting));
     }
   }
@@ -4374,6 +4410,10 @@ CXString clang_getCursorKindSpelling(enum CXCursorKind Kind) {
     return cxstring::createRef("attribute(shared)");
   case CXCursor_VisibilityAttr:
     return cxstring::createRef("attribute(visibility)");
+  case CXCursor_DLLExport:
+    return cxstring::createRef("attribute(dllexport)");
+  case CXCursor_DLLImport:
+    return cxstring::createRef("attribute(dllimport)");
   case CXCursor_PreprocessingDirective:
     return cxstring::createRef("preprocessing directive");
   case CXCursor_MacroDefinition:
@@ -4474,6 +4514,10 @@ CXString clang_getCursorKindSpelling(enum CXCursorKind Kind) {
     return cxstring::createRef("OMPCancelDirective");
   case CXCursor_OMPTaskLoopDirective:
     return cxstring::createRef("OMPTaskLoopDirective");
+  case CXCursor_OMPTaskLoopSimdDirective:
+    return cxstring::createRef("OMPTaskLoopSimdDirective");
+  case CXCursor_OMPDistributeDirective:
+    return cxstring::createRef("OMPDistributeDirective");
   case CXCursor_OverloadCandidate:
       return cxstring::createRef("OverloadCandidate");
   case CXCursor_TypeAliasTemplateDecl:
@@ -5484,10 +5528,12 @@ CXSourceRange clang_getCursorReferenceNameRange(CXCursor C, unsigned NameFlags,
     break;
   
   case CXCursor_DeclRefExpr:
-    if (const DeclRefExpr *E = dyn_cast<DeclRefExpr>(getCursorExpr(C)))
-      Pieces = buildPieces(NameFlags, false, E->getNameInfo(), 
-                           E->getQualifierLoc().getSourceRange(),
-                           E->getOptionalExplicitTemplateArgs());
+    if (const DeclRefExpr *E = dyn_cast<DeclRefExpr>(getCursorExpr(C))) {
+      SourceRange TemplateArgLoc(E->getLAngleLoc(), E->getRAngleLoc());
+      Pieces =
+          buildPieces(NameFlags, false, E->getNameInfo(),
+                      E->getQualifierLoc().getSourceRange(), &TemplateArgLoc);
+    }
     break;
     
   case CXCursor_CallExpr:
@@ -6186,10 +6232,7 @@ static bool lexNext(Lexer &Lex, Token &Tok,
 
   ++NextIdx;
   Lex.LexFromRawLexer(Tok);
-  if (Tok.is(tok::eof))
-    return true;
-
-  return false;
+  return Tok.is(tok::eof);
 }
 
 static void annotatePreprocessorTokens(CXTranslationUnit TU,

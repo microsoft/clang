@@ -651,8 +651,18 @@ void OMPClausePrinter::VisitOMPProcBindClause(OMPProcBindClause *Node) {
 }
 
 void OMPClausePrinter::VisitOMPScheduleClause(OMPScheduleClause *Node) {
-  OS << "schedule("
-     << getOpenMPSimpleClauseTypeName(OMPC_schedule, Node->getScheduleKind());
+  OS << "schedule(";
+  if (Node->getFirstScheduleModifier() != OMPC_SCHEDULE_MODIFIER_unknown) {
+    OS << getOpenMPSimpleClauseTypeName(OMPC_schedule,
+                                        Node->getFirstScheduleModifier());
+    if (Node->getSecondScheduleModifier() != OMPC_SCHEDULE_MODIFIER_unknown) {
+      OS << ", ";
+      OS << getOpenMPSimpleClauseTypeName(OMPC_schedule,
+                                          Node->getSecondScheduleModifier());
+    }
+    OS << ": ";
+  }
+  OS << getOpenMPSimpleClauseTypeName(OMPC_schedule, Node->getScheduleKind());
   if (Node->getChunkSize()) {
     OS << ", ";
     Node->getChunkSize()->printPretty(OS, nullptr, Policy);
@@ -675,6 +685,10 @@ void OMPClausePrinter::VisitOMPNowaitClause(OMPNowaitClause *) {
 
 void OMPClausePrinter::VisitOMPUntiedClause(OMPUntiedClause *) {
   OS << "untied";
+}
+
+void OMPClausePrinter::VisitOMPNogroupClause(OMPNogroupClause *) {
+  OS << "nogroup";
 }
 
 void OMPClausePrinter::VisitOMPMergeableClause(OMPMergeableClause *) {
@@ -724,6 +738,24 @@ void OMPClausePrinter::VisitOMPThreadLimitClause(OMPThreadLimitClause *Node) {
 void OMPClausePrinter::VisitOMPPriorityClause(OMPPriorityClause *Node) {
   OS << "priority(";
   Node->getPriority()->printPretty(OS, nullptr, Policy, 0);
+  OS << ")";
+}
+
+void OMPClausePrinter::VisitOMPGrainsizeClause(OMPGrainsizeClause *Node) {
+  OS << "grainsize(";
+  Node->getGrainsize()->printPretty(OS, nullptr, Policy, 0);
+  OS << ")";
+}
+
+void OMPClausePrinter::VisitOMPNumTasksClause(OMPNumTasksClause *Node) {
+  OS << "num_tasks(";
+  Node->getNumTasks()->printPretty(OS, nullptr, Policy, 0);
+  OS << ")";
+}
+
+void OMPClausePrinter::VisitOMPHintClause(OMPHintClause *Node) {
+  OS << "hint(";
+  Node->getHint()->printPretty(OS, nullptr, Policy, 0);
   OS << ")";
 }
 
@@ -851,14 +883,14 @@ void OMPClausePrinter::VisitOMPFlushClause(OMPFlushClause *Node) {
 }
 
 void OMPClausePrinter::VisitOMPDependClause(OMPDependClause *Node) {
+  OS << "depend(";
+  OS << getOpenMPSimpleClauseTypeName(Node->getClauseKind(),
+                                      Node->getDependencyKind());
   if (!Node->varlist_empty()) {
-    OS << "depend(";
-    OS << getOpenMPSimpleClauseTypeName(Node->getClauseKind(),
-                                        Node->getDependencyKind())
-       << " :";
+    OS << " :";
     VisitOMPClauseList(Node, ' ');
-    OS << ")";
   }
+  OS << ")";
 }
 
 void OMPClausePrinter::VisitOMPMapClause(OMPMapClause *Node) {
@@ -948,6 +980,7 @@ void StmtPrinter::VisitOMPCriticalDirective(OMPCriticalDirective *Node) {
     Node->getDirectiveName().printName(OS);
     OS << ")";
   }
+  OS << " ";
   PrintOMPExecutableDirective(Node);
 }
 
@@ -1038,6 +1071,17 @@ void StmtPrinter::VisitOMPCancelDirective(OMPCancelDirective *Node) {
 
 void StmtPrinter::VisitOMPTaskLoopDirective(OMPTaskLoopDirective *Node) {
   Indent() << "#pragma omp taskloop ";
+  PrintOMPExecutableDirective(Node);
+}
+
+void StmtPrinter::VisitOMPTaskLoopSimdDirective(
+    OMPTaskLoopSimdDirective *Node) {
+  Indent() << "#pragma omp taskloop simd ";
+  PrintOMPExecutableDirective(Node);
+}
+
+void StmtPrinter::VisitOMPDistributeDirective(OMPDistributeDirective *Node) {
+  Indent() << "#pragma omp distribute ";
   PrintOMPExecutableDirective(Node);
 }
 
@@ -1261,8 +1305,8 @@ void StmtPrinter::VisitOffsetOfExpr(OffsetOfExpr *Node) {
   OS << ", ";
   bool PrintedSomething = false;
   for (unsigned i = 0, n = Node->getNumComponents(); i < n; ++i) {
-    OffsetOfExpr::OffsetOfNode ON = Node->getComponent(i);
-    if (ON.getKind() == OffsetOfExpr::OffsetOfNode::Array) {
+    OffsetOfNode ON = Node->getComponent(i);
+    if (ON.getKind() == OffsetOfNode::Array) {
       // Array node
       OS << "[";
       PrintExpr(Node->getIndexExpr(ON.getArrayExprIndex()));
@@ -1272,7 +1316,7 @@ void StmtPrinter::VisitOffsetOfExpr(OffsetOfExpr *Node) {
     }
 
     // Skip implicit base indirections.
-    if (ON.getKind() == OffsetOfExpr::OffsetOfNode::Base)
+    if (ON.getKind() == OffsetOfNode::Base)
       continue;
 
     // Field or identifier node.

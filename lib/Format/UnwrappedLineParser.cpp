@@ -321,7 +321,7 @@ void UnwrappedLineParser::calculateBraceTypes(bool ExpectClassBody) {
   SmallVector<FormatToken *, 8> LBraceStack;
   assert(Tok->Tok.is(tok::l_brace));
   do {
-    // Get next none-comment token.
+    // Get next non-comment token.
     FormatToken *NextTok;
     unsigned ReadTokens = 0;
     do {
@@ -357,7 +357,7 @@ void UnwrappedLineParser::calculateBraceTypes(bool ExpectClassBody) {
             ProbablyBracedList =
                 NextTok->isOneOf(tok::comma, tok::period, tok::colon,
                                  tok::r_paren, tok::r_square, tok::l_brace,
-                                 tok::l_paren, tok::ellipsis) ||
+                                 tok::l_square, tok::l_paren, tok::ellipsis) ||
                 (NextTok->is(tok::semi) &&
                  (!ExpectClassBody || LBraceStack.size() != 1)) ||
                 (NextTok->isBinaryOperator() && !NextIsObjCMethod);
@@ -403,6 +403,7 @@ void UnwrappedLineParser::parseBlock(bool MustBeDeclaration, bool AddLevel,
   assert(FormatTok->isOneOf(tok::l_brace, TT_MacroBlockBegin) &&
          "'{' or macro block token expected");
   const bool MacroBlock = FormatTok->is(TT_MacroBlockBegin);
+  FormatTok->BlockKind = BK_Block;
 
   unsigned InitialLevel = Line->Level;
   nextToken();
@@ -421,6 +422,7 @@ void UnwrappedLineParser::parseBlock(bool MustBeDeclaration, bool AddLevel,
   if (MacroBlock ? !FormatTok->is(TT_MacroBlockEnd)
                  : !FormatTok->is(tok::r_brace)) {
     Line->Level = InitialLevel;
+    FormatTok->BlockKind = BK_Block;
     return;
   }
 
@@ -648,7 +650,15 @@ static bool tokenCanStartNewLine(const clang::Token &Tok) {
 }
 
 void UnwrappedLineParser::parseStructuralElement() {
-  assert(!FormatTok->Tok.is(tok::l_brace));
+  assert(!FormatTok->is(tok::l_brace));
+  if (Style.Language == FormatStyle::LK_TableGen &&
+      FormatTok->is(tok::pp_include)) {
+    nextToken();
+    if (FormatTok->is(tok::string_literal))
+      nextToken();
+    addUnwrappedLine();
+    return;
+  }
   switch (FormatTok->Tok.getKind()) {
   case tok::at:
     nextToken();
@@ -808,7 +818,8 @@ void UnwrappedLineParser::parseStructuralElement() {
     case tok::kw_enum:
       // parseEnum falls through and does not yet add an unwrapped line as an
       // enum definition can start a structural element.
-      parseEnum();
+      if (!parseEnum())
+        break;
       // This only applies for C++.
       if (Style.Language != FormatStyle::LK_Cpp) {
         addUnwrappedLine();
@@ -1514,10 +1525,16 @@ void UnwrappedLineParser::parseAccessSpecifier() {
   addUnwrappedLine();
 }
 
-void UnwrappedLineParser::parseEnum() {
+bool UnwrappedLineParser::parseEnum() {
   // Won't be 'enum' for NS_ENUMs.
   if (FormatTok->Tok.is(tok::kw_enum))
     nextToken();
+
+  // In TypeScript, "enum" can also be used as property name, e.g. in interface
+  // declarations. An "enum" keyword followed by a colon would be a syntax
+  // error and thus assume it is just an identifier.
+  if (Style.Language == FormatStyle::LK_JavaScript && FormatTok->is(tok::colon))
+    return false;
 
   // Eat up enum class ...
   if (FormatTok->Tok.is(tok::kw_class) || FormatTok->Tok.is(tok::kw_struct))
@@ -1536,22 +1553,23 @@ void UnwrappedLineParser::parseEnum() {
       // return type. In Java, this can be "implements", etc.
       if (Style.Language == FormatStyle::LK_Cpp &&
           FormatTok->is(tok::identifier))
-        return;
+        return false;
     }
   }
 
   // Just a declaration or something is wrong.
   if (FormatTok->isNot(tok::l_brace))
-    return;
+    return true;
   FormatTok->BlockKind = BK_Block;
 
   if (Style.Language == FormatStyle::LK_Java) {
     // Java enums are different.
     parseJavaEnumBody();
-    return;
-  } else if (Style.Language == FormatStyle::LK_Proto) {
+    return true;
+  }
+  if (Style.Language == FormatStyle::LK_Proto) {
     parseBlock(/*MustBeDeclaration=*/true);
-    return;
+    return true;
   }
 
   // Parse enum body.
@@ -1561,6 +1579,7 @@ void UnwrappedLineParser::parseEnum() {
       nextToken();
     addUnwrappedLine();
   }
+  return true;
 
   // There is no addUnwrappedLine() here so that we fall through to parsing a
   // structural element afterwards. Thus, in "enum A {} n, m;",
