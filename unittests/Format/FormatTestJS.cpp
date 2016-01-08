@@ -288,6 +288,11 @@ TEST_F(FormatTestJS, ArrayLiterals) {
                "  bbbbbbbbbbbbbbbbbbbbbbbbbbb,\n"
                "  ccccccccccccccccccccccccccc\n"
                "];");
+  verifyFormat("return [\n"
+               "  aaaa().bbbbbbbb('A'),\n"
+               "  aaaa().bbbbbbbb('B'),\n"
+               "  aaaa().bbbbbbbb('C'),\n"
+               "];");
   verifyFormat("var someVariable = SomeFunction([\n"
                "  aaaaaaaaaaaaaaaaaaaaaaaaaaa,\n"
                "  bbbbbbbbbbbbbbbbbbbbbbbbbbb,\n"
@@ -750,6 +755,12 @@ TEST_F(FormatTestJS, ClassDeclarations) {
                "  aaaaaaaaaaaaaaaa(aaaaaaaaaaaaaaa: aaaaaaaaaaaaaaaaaaaa):\n"
                "      aaaaaaaaaaaaaaaaaaaaaa {}\n"
                "}");
+  verifyFormat("foo = class Name {\n"
+               "  constructor() {}\n"
+               "};");
+  verifyFormat("foo = class {\n"
+               "  constructor() {}\n"
+               "};");
 
   // ':' is not a type declaration here.
   verifyFormat("class X {\n"
@@ -812,6 +823,7 @@ TEST_F(FormatTestJS, MetadataAnnotations) {
 TEST_F(FormatTestJS, Modules) {
   verifyFormat("import SomeThing from 'some/module.js';");
   verifyFormat("import {X, Y} from 'some/module.js';");
+  verifyFormat("import a, {X, Y} from 'some/module.js';");
   verifyFormat("import {\n"
                "  VeryLongImportsAreAnnoying,\n"
                "  VeryLongImportsAreAnnoying,\n"
@@ -1016,6 +1028,16 @@ TEST_F(FormatTestJS, WrapAfterParen) {
                getGoogleJSStyleWithColumns(40));
   verifyFormat("while (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa &&\n"
                "       bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb) {\n}");
+}
+
+TEST_F(FormatTestJS, JSDocAnnotations) {
+  EXPECT_EQ("/**\n"
+            " * @export {this.is.a.long.path.to.a.Type}\n"
+            " */",
+            format("/**\n"
+                   " * @export {this.is.a.long.path.to.a.Type}\n"
+                   " */",
+                   getGoogleJSStyleWithColumns(20)));
 }
 
 } // end namespace tooling
