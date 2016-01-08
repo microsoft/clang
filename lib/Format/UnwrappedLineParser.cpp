@@ -841,6 +841,8 @@ void UnwrappedLineParser::parseStructuralElement() {
       // This does not apply for Java and JavaScript.
       if (Style.Language == FormatStyle::LK_Java ||
           Style.Language == FormatStyle::LK_JavaScript) {
+        if (FormatTok->is(tok::semi))
+          nextToken();
         addUnwrappedLine();
         return;
       }
@@ -1796,14 +1798,13 @@ void UnwrappedLineParser::parseJavaScriptEs6ImportExport() {
                          Keywords.kw_let, Keywords.kw_var))
     return; // Fall through to parsing the corresponding structure.
 
-  if (FormatTok->is(tok::l_brace)) {
-    FormatTok->BlockKind = BK_Block;
-    parseBracedList();
-  }
-
-  while (!eof() && FormatTok->isNot(tok::semi) &&
-         FormatTok->isNot(tok::l_brace)) {
-    nextToken();
+  while (!eof() && FormatTok->isNot(tok::semi)) {
+    if (FormatTok->is(tok::l_brace)) {
+      FormatTok->BlockKind = BK_Block;
+      parseBracedList();
+    } else {
+      nextToken();
+    }
   }
 }
 
