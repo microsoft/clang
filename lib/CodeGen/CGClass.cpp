@@ -26,6 +26,7 @@
 #include "clang/Frontend/CodeGenOptions.h"
 #include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/Metadata.h"
+#include "llvm/Transforms/Utils/SanitizerStats.h"
 
 using namespace clang;
 using namespace CodeGen;
@@ -94,7 +95,7 @@ CodeGenModule::getDynamicOffsetAlignment(CharUnits actualBaseAlign,
   // unless we someday add some sort of attribute to change the
   // assumed alignment of 'this'.  So our goal here is pretty much
   // just to allow the user to explicitly say that a pointer is
-  // under-aligned and then safely access its fields and v-tables.
+  // under-aligned and then safely access its fields and vtables.
   if (actualBaseAlign >= expectedBaseAlign) {
     return expectedTargetAlign;
   }
@@ -2551,6 +2552,24 @@ void CodeGenFunction::EmitVTablePtrCheck(const CXXRecordDecl *RD,
     return;
 
   SanitizerScope SanScope(this);
+  llvm::SanitizerStatKind SSK;
+  switch (TCK) {
+  case CFITCK_VCall:
+    SSK = llvm::SanStat_CFI_VCall;
+    break;
+  case CFITCK_NVCall:
+    SSK = llvm::SanStat_CFI_NVCall;
+    break;
+  case CFITCK_DerivedCast:
+    SSK = llvm::SanStat_CFI_DerivedCast;
+    break;
+  case CFITCK_UnrelatedCast:
+    SSK = llvm::SanStat_CFI_UnrelatedCast;
+    break;
+  case CFITCK_ICall:
+    llvm_unreachable("not expecting CFITCK_ICall");
+  }
+  EmitSanitizerStatReport(SSK);
 
   llvm::Metadata *MD =
       CGM.CreateMetadataIdentifierForType(QualType(RD->getTypeForDecl(), 0));
@@ -2560,13 +2579,6 @@ void CodeGenFunction::EmitVTablePtrCheck(const CXXRecordDecl *RD,
   llvm::Value *BitSetTest =
       Builder.CreateCall(CGM.getIntrinsic(llvm::Intrinsic::bitset_test),
                          {CastedVTable, BitSetName});
-
-  if (CGM.getCodeGenOpts().SanitizeCfiCrossDso) {
-    if (auto TypeId = CGM.CreateCfiIdForTypeMetadata(MD)) {
-      EmitCfiSlowPathCheck(BitSetTest, TypeId, CastedVTable);
-      return;
-    }
-  }
 
   SanitizerMask M;
   switch (TCK) {
@@ -2582,15 +2594,35 @@ void CodeGenFunction::EmitVTablePtrCheck(const CXXRecordDecl *RD,
   case CFITCK_UnrelatedCast:
     M = SanitizerKind::CFIUnrelatedCast;
     break;
+  case CFITCK_ICall:
+    llvm_unreachable("not expecting CFITCK_ICall");
   }
 
   llvm::Constant *StaticData[] = {
+      llvm::ConstantInt::get(Int8Ty, TCK),
       EmitCheckSourceLocation(Loc),
       EmitCheckTypeDescriptor(QualType(RD->getTypeForDecl(), 0)),
-      llvm::ConstantInt::get(Int8Ty, TCK),
   };
-  EmitCheck(std::make_pair(BitSetTest, M), "cfi_bad_type", StaticData,
-            CastedVTable);
+
+  auto TypeId = CGM.CreateCfiIdForTypeMetadata(MD);
+  if (CGM.getCodeGenOpts().SanitizeCfiCrossDso && TypeId) {
+    EmitCfiSlowPathCheck(M, BitSetTest, TypeId, CastedVTable, StaticData);
+    return;
+  }
+
+  if (CGM.getCodeGenOpts().SanitizeTrap.has(M)) {
+    EmitTrapCheck(BitSetTest);
+    return;
+  }
+
+  llvm::Value *AllVtables = llvm::MetadataAsValue::get(
+      CGM.getLLVMContext(),
+      llvm::MDString::get(CGM.getLLVMContext(), "all-vtables"));
+  llvm::Value *ValidVtable =
+      Builder.CreateCall(CGM.getIntrinsic(llvm::Intrinsic::bitset_test),
+                         {CastedVTable, AllVtables});
+  EmitCheck(std::make_pair(BitSetTest, M), "cfi_check_fail", StaticData,
+            {CastedVTable, ValidVtable});
 }
 
 // FIXME: Ideally Expr::IgnoreParenNoopCasts should do this, but it doesn't do

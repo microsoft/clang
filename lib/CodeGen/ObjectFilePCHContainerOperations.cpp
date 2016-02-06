@@ -19,8 +19,8 @@
 #include "clang/CodeGen/BackendUtil.h"
 #include "clang/Frontend/CodeGenOptions.h"
 #include "clang/Frontend/CompilerInstance.h"
-#include "clang/Lex/Preprocessor.h"
 #include "clang/Lex/HeaderSearch.h"
+#include "clang/Lex/Preprocessor.h"
 #include "clang/Serialization/ASTWriter.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Bitcode/BitstreamReader.h"
@@ -31,6 +31,7 @@
 #include "llvm/IR/Module.h"
 #include "llvm/Object/COFF.h"
 #include "llvm/Object/ObjectFile.h"
+#include "llvm/Support/Path.h"
 #include "llvm/Support/TargetRegistry.h"
 #include <memory>
 
@@ -42,6 +43,7 @@ namespace {
 class PCHContainerGenerator : public ASTConsumer {
   DiagnosticsEngine &Diags;
   const std::string MainFileName;
+  const std::string OutputFileName;
   ASTContext *Ctx;
   ModuleMap &MMap;
   const HeaderSearchOptions &HeaderSearchOpts;
@@ -59,10 +61,8 @@ class PCHContainerGenerator : public ASTConsumer {
   struct DebugTypeVisitor : public RecursiveASTVisitor<DebugTypeVisitor> {
     clang::CodeGen::CGDebugInfo &DI;
     ASTContext &Ctx;
-    bool SkipTagDecls;
-    DebugTypeVisitor(clang::CodeGen::CGDebugInfo &DI, ASTContext &Ctx,
-                     bool SkipTagDecls)
-        : DI(DI), Ctx(Ctx), SkipTagDecls(SkipTagDecls) {}
+    DebugTypeVisitor(clang::CodeGen::CGDebugInfo &DI, ASTContext &Ctx)
+        : DI(DI), Ctx(Ctx) {}
 
     /// Determine whether this type can be represented in DWARF.
     static bool CanRepresent(const Type *Ty) {
@@ -80,7 +80,8 @@ class PCHContainerGenerator : public ASTConsumer {
       // TagDecls may be deferred until after all decls have been merged and we
       // know the complete type. Pure forward declarations will be skipped, but
       // they don't need to be emitted into the module anyway.
-      if (SkipTagDecls && isa<TagDecl>(D))
+      if (auto *TD = dyn_cast<TagDecl>(D))
+        if (!TD->isCompleteDefinition())
           return true;
 
       QualType QualTy = Ctx.getTypeDeclType(D);
@@ -138,7 +139,8 @@ public:
                         const std::string &OutputFileName,
                         raw_pwrite_stream *OS,
                         std::shared_ptr<PCHBuffer> Buffer)
-      : Diags(CI.getDiagnostics()), Ctx(nullptr),
+      : Diags(CI.getDiagnostics()), MainFileName(MainFileName),
+        OutputFileName(OutputFileName), Ctx(nullptr),
         MMap(CI.getPreprocessor().getHeaderSearchInfo().getModuleMap()),
         HeaderSearchOpts(CI.getHeaderSearchOpts()),
         PreprocessorOpts(CI.getPreprocessorOpts()),
@@ -149,7 +151,7 @@ public:
     CodeGenOpts.CodeModel = "default";
     CodeGenOpts.ThreadModel = "single";
     CodeGenOpts.DebugTypeExtRefs = true;
-    CodeGenOpts.setDebugInfo(CodeGenOptions::FullDebugInfo);
+    CodeGenOpts.setDebugInfo(codegenoptions::FullDebugInfo);
   }
 
   ~PCHContainerGenerator() override = default;
@@ -163,7 +165,12 @@ public:
     M->setDataLayout(Ctx->getTargetInfo().getDataLayoutString());
     Builder.reset(new CodeGen::CodeGenModule(
         *Ctx, HeaderSearchOpts, PreprocessorOpts, CodeGenOpts, *M, Diags));
-    Builder->getModuleDebugInfo()->setModuleMap(MMap);
+
+    // Prepare CGDebugInfo to emit debug info for a clang module.
+    auto *DI = Builder->getModuleDebugInfo();
+    StringRef ModuleName = llvm::sys::path::filename(MainFileName);
+    DI->setPCHDescriptor({ModuleName, "", OutputFileName, ~1ULL});
+    DI->setModuleMap(MMap);
   }
 
   bool HandleTopLevelDecl(DeclGroupRef D) override {
@@ -173,7 +180,7 @@ public:
     // Collect debug info for all decls in this group.
     for (auto *I : D)
       if (!I->isFromASTFile()) {
-        DebugTypeVisitor DTV(*Builder->getModuleDebugInfo(), *Ctx, true);
+        DebugTypeVisitor DTV(*Builder->getModuleDebugInfo(), *Ctx);
         DTV.TraverseDecl(I);
       }
     return true;
@@ -190,7 +197,11 @@ public:
     if (D->isFromASTFile())
       return;
 
-    DebugTypeVisitor DTV(*Builder->getModuleDebugInfo(), *Ctx, false);
+    // Anonymous tag decls are deferred until we are building their declcontext.
+    if (D->getName().empty())
+      return;
+
+    DebugTypeVisitor DTV(*Builder->getModuleDebugInfo(), *Ctx);
     DTV.TraverseDecl(D);
     Builder->UpdateCompletedType(D);
   }
@@ -216,7 +227,11 @@ public:
 
     M->setTargetTriple(Ctx.getTargetInfo().getTriple().getTriple());
     M->setDataLayout(Ctx.getTargetInfo().getDataLayoutString());
-    Builder->getModuleDebugInfo()->setDwoId(Buffer->Signature);
+
+    // PCH files don't have a signature field in the control block,
+    // but LLVM detects DWO CUs by looking for a non-zero DWO id.
+    uint64_t Signature = Buffer->Signature ? Buffer->Signature : ~1ULL;
+    Builder->getModuleDebugInfo()->setDwoId(Signature);
 
     // Finalize the Builder.
     if (Builder)

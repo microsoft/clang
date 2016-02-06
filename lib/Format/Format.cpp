@@ -275,6 +275,9 @@ template <> struct MappingTraits<FormatStyle> {
                    Style.BreakBeforeTernaryOperators);
     IO.mapOptional("BreakConstructorInitializersBeforeComma",
                    Style.BreakConstructorInitializersBeforeComma);
+    IO.mapOptional("BreakAfterJavaFieldAnnotations",
+                   Style.BreakAfterJavaFieldAnnotations);
+    IO.mapOptional("BreakStringLiterals", Style.BreakStringLiterals);
     IO.mapOptional("ColumnLimit", Style.ColumnLimit);
     IO.mapOptional("CommentPragmas", Style.CommentPragmas);
     IO.mapOptional("ConstructorInitializerAllOnOneLineOrOnePerLine",
@@ -488,8 +491,9 @@ FormatStyle getLLVMStyle() {
   LLVMStyle.BreakBeforeBraces = FormatStyle::BS_Attach;
   LLVMStyle.BraceWrapping = {false, false, false, false, false, false,
                              false, false, false, false, false};
-  LLVMStyle.BreakConstructorInitializersBeforeComma = false;
   LLVMStyle.BreakAfterJavaFieldAnnotations = false;
+  LLVMStyle.BreakConstructorInitializersBeforeComma = false;
+  LLVMStyle.BreakStringLiterals = true;
   LLVMStyle.ColumnLimit = 80;
   LLVMStyle.CommentPragmas = "^ IWYU pragma:";
   LLVMStyle.ConstructorInitializerAllOnOneLineOrOnePerLine = false;
@@ -1239,6 +1243,8 @@ private:
           FormatTok->Type = TT_ImplicitStringLiteral;
           break;
         }
+        if (FormatTok->Type == TT_ImplicitStringLiteral)
+          break;
       }
 
       if (FormatTok->is(TT_ImplicitStringLiteral))
@@ -1902,8 +1908,9 @@ tooling::Replacements reformat(const FormatStyle &Style, StringRef Code,
       IntrusiveRefCntPtr<DiagnosticIDs>(new DiagnosticIDs),
       new DiagnosticOptions);
   SourceManager SourceMgr(Diagnostics, Files);
-  InMemoryFileSystem->addFile(FileName, 0,
-                              llvm::MemoryBuffer::getMemBuffer(Code, FileName));
+  InMemoryFileSystem->addFile(
+      FileName, 0, llvm::MemoryBuffer::getMemBuffer(
+                       Code, FileName, /*RequiresNullTerminator=*/false));
   FileID ID = SourceMgr.createFileID(Files.getFile(FileName), SourceLocation(),
                                      clang::SrcMgr::C_User);
   SourceLocation StartOfFile = SourceMgr.getLocForStartOfFile(ID);

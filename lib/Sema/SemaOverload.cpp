@@ -258,6 +258,7 @@ static const Expr *IgnoreNarrowingConversion(const Expr *Converted) {
     case CK_IntegralCast:
     case CK_IntegralToBoolean:
     case CK_IntegralToFloating:
+    case CK_BooleanToSignedIntegral:
     case CK_FloatingToIntegral:
     case CK_FloatingToBoolean:
     case CK_FloatingCast:
@@ -432,7 +433,7 @@ StandardConversionSequence::getNarrowingKind(ASTContext &Ctx,
 
 /// dump - Print this standard conversion sequence to standard
 /// error. Useful for debugging overloading issues.
-void StandardConversionSequence::dump() const {
+LLVM_DUMP_METHOD void StandardConversionSequence::dump() const {
   raw_ostream &OS = llvm::errs();
   bool PrintedSomething = false;
   if (First != ICK_Identity) {
@@ -2686,15 +2687,16 @@ bool Sema::FunctionParamTypesAreEqual(const FunctionProtoType *OldType,
 bool Sema::CheckPointerConversion(Expr *From, QualType ToType,
                                   CastKind &Kind,
                                   CXXCastPath& BasePath,
-                                  bool IgnoreBaseAccess) {
+                                  bool IgnoreBaseAccess,
+                                  bool Diagnose) {
   QualType FromType = From->getType();
   bool IsCStyleOrFunctionalCast = IgnoreBaseAccess;
 
   Kind = CK_BitCast;
 
-  if (!IsCStyleOrFunctionalCast && !FromType->isAnyPointerType() &&
+  if (Diagnose && !IsCStyleOrFunctionalCast && !FromType->isAnyPointerType() &&
       From->isNullPointerConstant(Context, Expr::NPC_ValueDependentIsNotNull) ==
-      Expr::NPCK_ZeroExpression) {
+          Expr::NPCK_ZeroExpression) {
     if (Context.hasSameUnqualifiedType(From->getType(), Context.BoolTy))
       DiagRuntimeBehavior(From->getExprLoc(), From,
                           PDiag(diag::warn_impcast_bool_to_null_pointer)
@@ -2712,18 +2714,24 @@ bool Sema::CheckPointerConversion(Expr *From, QualType ToType,
           !Context.hasSameUnqualifiedType(FromPointeeType, ToPointeeType)) {
         // We must have a derived-to-base conversion. Check an
         // ambiguous or inaccessible conversion.
-        if (CheckDerivedToBaseConversion(FromPointeeType, ToPointeeType,
-                                         From->getExprLoc(),
-                                         From->getSourceRange(), &BasePath,
-                                         IgnoreBaseAccess))
+        unsigned InaccessibleID = 0;
+        unsigned AmbigiousID = 0;
+        if (Diagnose) {
+          InaccessibleID = diag::err_upcast_to_inaccessible_base;
+          AmbigiousID = diag::err_ambiguous_derived_to_base_conv;
+        }
+        if (CheckDerivedToBaseConversion(
+                FromPointeeType, ToPointeeType, InaccessibleID, AmbigiousID,
+                From->getExprLoc(), From->getSourceRange(), DeclarationName(),
+                &BasePath, IgnoreBaseAccess))
           return true;
 
         // The conversion was successful.
         Kind = CK_DerivedToBase;
       }
 
-      if (!IsCStyleOrFunctionalCast && FromPointeeType->isFunctionType() &&
-          ToPointeeType->isVoidType()) {
+      if (Diagnose && !IsCStyleOrFunctionalCast &&
+          FromPointeeType->isFunctionType() && ToPointeeType->isVoidType()) {
         assert(getLangOpts().MSVCCompat &&
                "this should only be possible with MSVCCompat!");
         Diag(From->getExprLoc(), diag::ext_ms_impcast_fn_obj)
@@ -12228,6 +12236,17 @@ Sema::BuildCallToMemberFunction(Scope *S, Expr *MemExprE,
              << MD->getDeclName();
     }
   }
+
+  if (CXXDestructorDecl *DD =
+          dyn_cast<CXXDestructorDecl>(TheCall->getMethodDecl())) {
+    // a->A::f() doesn't go through the vtable, except in AppleKext mode.
+    bool CallCanBeVirtual = !cast<MemberExpr>(NakedMemExpr)->hasQualifier() ||
+                            getLangOpts().AppleKext;
+    CheckVirtualDtorCall(DD, MemExpr->getLocStart(), /*IsDelete=*/false,
+                         CallCanBeVirtual, /*WarnOnNonAbstractTypes=*/true,
+                         MemExpr->getMemberLoc());
+  }
+
   return MaybeBindToTemporary(TheCall);
 }
 

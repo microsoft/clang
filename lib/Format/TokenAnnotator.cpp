@@ -42,8 +42,21 @@ public:
 
 private:
   bool parseAngle() {
-    if (!CurrentToken)
+    if (!CurrentToken || !CurrentToken->Previous)
       return false;
+    if (NonTemplateLess.count(CurrentToken->Previous))
+      return false;
+
+    const FormatToken& Previous = *CurrentToken->Previous;
+    if (Previous.Previous) {
+      if (Previous.Previous->Tok.isLiteral())
+        return false;
+      if (Previous.Previous->is(tok::r_paren) && Contexts.size() > 1 &&
+          (!Previous.Previous->MatchingParen ||
+           !Previous.Previous->MatchingParen->is(TT_OverloadedOperatorLParen)))
+        return false;
+    }
+
     FormatToken *Left = CurrentToken->Previous;
     Left->ParentBracket = Contexts.back().ContextKind;
     ScopedContextCreator ContextCreator(*this, tok::less, 10);
@@ -119,7 +132,9 @@ private:
       }
     }
 
-    if (Left->Previous &&
+    if (Left->is(TT_OverloadedOperatorLParen)) {
+      Contexts.back().IsExpression = false;
+    } else if (Left->Previous &&
         (Left->Previous->isOneOf(tok::kw_static_assert, tok::kw_decltype,
                                  tok::kw_if, tok::kw_while, tok::l_paren,
                                  tok::comma) ||
@@ -132,9 +147,7 @@ private:
       // This is a parameter list of a lambda expression.
       Contexts.back().IsExpression = false;
     } else if (Line.InPPDirective &&
-               (!Left->Previous ||
-                !Left->Previous->isOneOf(tok::identifier,
-                                         TT_OverloadedOperator))) {
+               (!Left->Previous || !Left->Previous->is(tok::identifier))) {
       Contexts.back().IsExpression = true;
     } else if (Contexts[Contexts.size() - 2].CaretFound) {
       // This is the parameter list of an ObjC block.
@@ -550,11 +563,7 @@ private:
         return false;
       break;
     case tok::less:
-      if (!NonTemplateLess.count(Tok) &&
-          (!Tok->Previous ||
-           (!Tok->Previous->Tok.isLiteral() &&
-            !(Tok->Previous->is(tok::r_paren) && Contexts.size() > 1))) &&
-          parseAngle()) {
+      if (parseAngle()) {
         Tok->Type = TT_TemplateOpener;
       } else {
         Tok->Type = TT_BinaryOperator;
@@ -580,7 +589,8 @@ private:
         if (CurrentToken->isOneOf(tok::star, tok::amp))
           CurrentToken->Type = TT_PointerOrReference;
         consumeToken();
-        if (CurrentToken && CurrentToken->Previous->is(TT_BinaryOperator))
+        if (CurrentToken &&
+            CurrentToken->Previous->isOneOf(TT_BinaryOperator, tok::comma))
           CurrentToken->Previous->Type = TT_OverloadedOperator;
       }
       if (CurrentToken) {
@@ -886,8 +896,8 @@ private:
            Previous && Previous->isOneOf(tok::star, tok::amp);
            Previous = Previous->Previous)
         Previous->Type = TT_PointerOrReference;
-      if (Line.MustBeDeclaration)
-        Contexts.back().IsExpression = Contexts.front().InCtorInitializer;
+      if (Line.MustBeDeclaration && !Contexts.front().InCtorInitializer)
+        Contexts.back().IsExpression = false;
     } else if (Current.Previous &&
                Current.Previous->is(TT_CtorInitializerColon)) {
       Contexts.back().IsExpression = true;
@@ -1033,6 +1043,9 @@ private:
       return false;
 
     if (Tok.Previous->isOneOf(TT_LeadingJavaAnnotation, Keywords.kw_instanceof))
+      return false;
+    if (Style.Language == FormatStyle::LK_JavaScript &&
+        Tok.Previous->is(Keywords.kw_in))
       return false;
 
     // Skip "const" as it does not have an influence on whether this is a name.
@@ -1389,6 +1402,9 @@ private:
            Style.Language == FormatStyle::LK_JavaScript) &&
           Current->is(Keywords.kw_instanceof))
         return prec::Relational;
+      if (Style.Language == FormatStyle::LK_JavaScript &&
+          Current->is(Keywords.kw_in))
+        return prec::Relational;
       if (Current->is(TT_BinaryOperator) || Current->is(tok::comma))
         return Current->getPrecedence();
       if (Current->isOneOf(tok::period, tok::arrow))
@@ -1725,7 +1741,7 @@ unsigned TokenAnnotator::splitPenalty(const AnnotatedLine &Line,
     if (Right.is(Keywords.kw_function) && Left.isNot(tok::comma))
       return 100;
     if (Left.is(TT_JsTypeColon))
-      return 100;
+      return 35;
   }
 
   if (Left.is(tok::comma) || (Right.is(tok::identifier) && Right.Next &&
@@ -2070,14 +2086,14 @@ bool TokenAnnotator::spaceRequiredBefore(const AnnotatedLine &Line,
   if (Right.isOneOf(TT_TrailingReturnArrow, TT_LambdaArrow) ||
       Left.isOneOf(TT_TrailingReturnArrow, TT_LambdaArrow))
     return true;
+  if (Right.is(TT_OverloadedOperatorLParen))
+    return Style.SpaceBeforeParens == FormatStyle::SBPO_Always;
   if (Left.is(tok::comma))
     return true;
   if (Right.is(tok::comma))
     return false;
   if (Right.isOneOf(TT_CtorInitializerColon, TT_ObjCBlockLParen))
     return true;
-  if (Right.is(TT_OverloadedOperatorLParen))
-    return Style.SpaceBeforeParens == FormatStyle::SBPO_Always;
   if (Right.is(tok::colon)) {
     if (Line.First->isOneOf(tok::kw_case, tok::kw_default) ||
         !Right.getNextNonComment() || Right.getNextNonComment()->is(tok::semi))
@@ -2113,7 +2129,8 @@ bool TokenAnnotator::spaceRequiredBefore(const AnnotatedLine &Line,
   if (Right.is(tok::coloncolon) && Left.isNot(tok::l_brace))
     return (Left.is(TT_TemplateOpener) &&
             Style.Standard == FormatStyle::LS_Cpp03) ||
-           !(Left.isOneOf(tok::identifier, tok::l_paren, tok::r_paren) ||
+           !(Left.isOneOf(tok::identifier, tok::l_paren, tok::r_paren,
+                          tok::l_square) ||
              Left.isOneOf(TT_TemplateCloser, TT_TemplateOpener));
   if ((Left.is(TT_TemplateOpener)) != (Right.is(TT_TemplateCloser)))
     return Style.SpacesInAngles;
@@ -2267,12 +2284,18 @@ bool TokenAnnotator::canBreakBefore(const AnnotatedLine &Line,
                       Keywords.kw_implements))
       return true;
   } else if (Style.Language == FormatStyle::LK_JavaScript) {
+    if (Left.is(tok::kw_return))
+      return false; // Otherwise a semicolon is inserted.
     if (Left.is(TT_JsFatArrow) && Right.is(tok::l_brace))
       return false;
     if (Left.is(TT_JsTypeColon))
       return true;
     if (Right.NestingLevel == 0 && Right.is(Keywords.kw_is))
       return false;
+    if (Left.is(Keywords.kw_in))
+      return Style.BreakBeforeBinaryOperators == FormatStyle::BOS_None;
+    if (Right.is(Keywords.kw_in))
+      return Style.BreakBeforeBinaryOperators != FormatStyle::BOS_None;
   }
 
   if (Left.is(tok::at))

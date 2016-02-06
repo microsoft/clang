@@ -180,25 +180,8 @@ bool SanitizerArgs::needsUnwindTables() const {
   return Sanitizers.Mask & NeedsUnwindTables;
 }
 
-void SanitizerArgs::clear() {
-  Sanitizers.clear();
-  RecoverableSanitizers.clear();
-  TrapSanitizers.clear();
-  BlacklistFiles.clear();
-  ExtraDeps.clear();
-  CoverageFeatures = 0;
-  MsanTrackOrigins = 0;
-  MsanUseAfterDtor = false;
-  NeedPIE = false;
-  AsanFieldPadding = 0;
-  AsanSharedRuntime = false;
-  LinkCXXRuntimes = false;
-  CfiCrossDso = false;
-}
-
 SanitizerArgs::SanitizerArgs(const ToolChain &TC,
                              const llvm::opt::ArgList &Args) {
-  clear();
   SanitizerMask AllRemove = 0;  // During the loop below, the accumulated set of
                                 // sanitizers disabled by the current sanitizer
                                 // argument or any argument after it.
@@ -448,6 +431,9 @@ SanitizerArgs::SanitizerArgs(const ToolChain &TC,
     NeedPIE |= CfiCrossDso;
   }
 
+  Stats = Args.hasFlag(options::OPT_fsanitize_stats,
+                       options::OPT_fno_sanitize_stats, false);
+
   // Parse -f(no-)?sanitize-coverage flags if coverage is supported by the
   // enabled sanitizers.
   if (AllAddedKinds & SupportsCoverage) {
@@ -565,6 +551,20 @@ static std::string toString(const clang::SanitizerSet &Sanitizers) {
   return Res;
 }
 
+static void addIncludeLinkerOption(const ToolChain &TC,
+                                   const llvm::opt::ArgList &Args,
+                                   llvm::opt::ArgStringList &CmdArgs,
+                                   StringRef SymbolName) {
+  SmallString<64> LinkerOptionFlag;
+  LinkerOptionFlag = "--linker-option=/include:";
+  if (TC.getTriple().getArch() == llvm::Triple::x86) {
+    // Win32 mangles C function names with a '_' prefix.
+    LinkerOptionFlag += '_';
+  }
+  LinkerOptionFlag += SymbolName;
+  CmdArgs.push_back(Args.MakeArgString(LinkerOptionFlag));
+}
+
 void SanitizerArgs::addArgs(const ToolChain &TC, const llvm::opt::ArgList &Args,
                             llvm::opt::ArgStringList &CmdArgs,
                             types::ID InputType) const {
@@ -601,6 +601,9 @@ void SanitizerArgs::addArgs(const ToolChain &TC, const llvm::opt::ArgList &Args,
   if (CfiCrossDso)
     CmdArgs.push_back(Args.MakeArgString("-fsanitize-cfi-cross-dso"));
 
+  if (Stats)
+    CmdArgs.push_back(Args.MakeArgString("-fsanitize-stats"));
+
   if (AsanFieldPadding)
     CmdArgs.push_back(Args.MakeArgString("-fsanitize-address-field-padding=" +
                                          llvm::utostr(AsanFieldPadding)));
@@ -635,6 +638,18 @@ void SanitizerArgs::addArgs(const ToolChain &TC, const llvm::opt::ArgList &Args,
     if (types::isCXX(InputType))
       CmdArgs.push_back(Args.MakeArgString(
           "--dependent-lib=" + TC.getCompilerRT(Args, "ubsan_standalone_cxx")));
+  }
+  if (TC.getTriple().isOSWindows() && needsStatsRt()) {
+    CmdArgs.push_back(Args.MakeArgString("--dependent-lib=" +
+                                         TC.getCompilerRT(Args, "stats_client")));
+
+    // The main executable must export the stats runtime.
+    // FIXME: Only exporting from the main executable (e.g. based on whether the
+    // translation unit defines main()) would save a little space, but having
+    // multiple copies of the runtime shouldn't hurt.
+    CmdArgs.push_back(Args.MakeArgString("--dependent-lib=" +
+                                         TC.getCompilerRT(Args, "stats")));
+    addIncludeLinkerOption(TC, Args, CmdArgs, "__sanitizer_stats_register");
   }
 }
 

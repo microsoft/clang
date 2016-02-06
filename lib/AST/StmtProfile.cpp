@@ -584,6 +584,26 @@ void StmtProfiler::VisitOMPTargetDataDirective(const OMPTargetDataDirective *S) 
   VisitOMPExecutableDirective(S);
 }
 
+void StmtProfiler::VisitOMPTargetEnterDataDirective(
+    const OMPTargetEnterDataDirective *S) {
+  VisitOMPExecutableDirective(S);
+}
+
+void StmtProfiler::VisitOMPTargetExitDataDirective(
+    const OMPTargetExitDataDirective *S) {
+  VisitOMPExecutableDirective(S);
+}
+
+void StmtProfiler::VisitOMPTargetParallelDirective(
+    const OMPTargetParallelDirective *S) {
+  VisitOMPExecutableDirective(S);
+}
+
+void StmtProfiler::VisitOMPTargetParallelForDirective(
+    const OMPTargetParallelForDirective *S) {
+  VisitOMPExecutableDirective(S);
+}
+
 void StmtProfiler::VisitOMPTeamsDirective(const OMPTeamsDirective *S) {
   VisitOMPExecutableDirective(S);
 }
@@ -610,6 +630,18 @@ void StmtProfiler::VisitOMPDistributeDirective(
     const OMPDistributeDirective *S) {
   VisitOMPLoopDirective(S);
 }
+
+void OMPClauseProfiler::VisitOMPDistScheduleClause(
+    const OMPDistScheduleClause *C) {
+  if (C->getChunkSize()) {
+    Profiler->VisitStmt(C->getChunkSize());
+    if (C->getHelperChunkSize()) {
+      Profiler->VisitStmt(C->getChunkSize());
+    }
+  }
+}
+
+void OMPClauseProfiler::VisitOMPDefaultmapClause(const OMPDefaultmapClause *) {}
 
 void StmtProfiler::VisitExpr(const Expr *S) {
   VisitStmt(S);

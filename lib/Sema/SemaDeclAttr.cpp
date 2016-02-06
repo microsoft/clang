@@ -12,6 +12,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/Sema/SemaInternal.h"
+#include "clang/AST/ASTConsumer.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/CXXInheritance.h"
 #include "clang/AST/DeclCXX.h"
@@ -346,6 +347,25 @@ static void handleSimpleAttribute(Sema &S, Decl *D,
                                   const AttributeList &Attr) {
   D->addAttr(::new (S.Context) AttrType(Attr.getRange(), S.Context,
                                         Attr.getAttributeSpellingListIndex()));
+}
+
+template <typename AttrType>
+static void handleSimpleAttributeWithExclusions(Sema &S, Decl *D,
+                                                const AttributeList &Attr) {
+  handleSimpleAttribute<AttrType>(S, D, Attr);
+}
+
+/// \brief Applies the given attribute to the Decl so long as the Decl doesn't
+/// already have one of the given incompatible attributes.
+template <typename AttrType, typename IncompatibleAttrType,
+          typename... IncompatibleAttrTypes>
+static void handleSimpleAttributeWithExclusions(Sema &S, Decl *D,
+                                                const AttributeList &Attr) {
+  if (checkAttrMutualExclusion<IncompatibleAttrType>(S, D, Attr.getRange(),
+                                                     Attr.getName()))
+    return;
+  handleSimpleAttributeWithExclusions<AttrType, IncompatibleAttrTypes...>(S, D,
+                                                                          Attr);
 }
 
 /// \brief Check if the passed-in expression is of type int or bool.
@@ -1537,6 +1557,9 @@ static void handleAliasAttr(Sema &S, Decl *D, const AttributeList &Attr) {
   if (S.Context.getTargetInfo().getTriple().isOSDarwin()) {
     S.Diag(Attr.getLoc(), diag::err_alias_not_supported_on_darwin);
     return;
+  }
+  if (S.Context.getTargetInfo().getTriple().isNVPTX()) {
+    S.Diag(Attr.getLoc(), diag::err_alias_not_supported_on_nvptx);
   }
 
   // Aliases should be on declarations, not definitions.
@@ -3274,6 +3297,8 @@ bool Sema::checkMSInheritanceAttrOnDefinition(
 /// attribute.
 static void parseModeAttrArg(Sema &S, StringRef Str, unsigned &DestWidth,
                              bool &IntegerMode, bool &ComplexMode) {
+  IntegerMode = true;
+  ComplexMode = false;
   switch (Str.size()) {
   case 2:
     switch (Str[0]) {
@@ -3309,7 +3334,7 @@ static void parseModeAttrArg(Sema &S, StringRef Str, unsigned &DestWidth,
     // FIXME: glibc uses 'word' to define register_t; this is narrower than a
     // pointer on PIC16 and other embedded platforms.
     if (Str == "word")
-      DestWidth = S.Context.getTargetInfo().getPointerWidth(0);
+      DestWidth = S.Context.getTargetInfo().getRegisterWidth();
     else if (Str == "byte")
       DestWidth = S.Context.getTargetInfo().getCharWidth();
     break;
@@ -3340,9 +3365,15 @@ static void handleModeAttr(Sema &S, Decl *D, const AttributeList &Attr) {
   }
 
   IdentifierInfo *Name = Attr.getArgAsIdent(0)->Ident;
-  StringRef Str = Name->getName();
 
+  S.AddModeAttr(Attr.getRange(), D, Name, Attr.getAttributeSpellingListIndex());
+}
+
+void Sema::AddModeAttr(SourceRange AttrRange, Decl *D, IdentifierInfo *Name,
+                       unsigned SpellingListIndex, bool InInstantiation) {
+  StringRef Str = Name->getName();
   normalizeName(Str);
+  SourceLocation AttrLoc = AttrRange.getBegin();
 
   unsigned DestWidth = 0;
   bool IntegerMode = true;
@@ -3358,25 +3389,43 @@ static void handleModeAttr(Sema &S, Decl *D, const AttributeList &Attr) {
     if (VectorStringLength &&
         !Str.substr(1, VectorStringLength).getAsInteger(10, VectorSize) &&
         VectorSize.isPowerOf2()) {
-      parseModeAttrArg(S, Str.substr(VectorStringLength + 1), DestWidth,
+      parseModeAttrArg(*this, Str.substr(VectorStringLength + 1), DestWidth,
                        IntegerMode, ComplexMode);
-      S.Diag(Attr.getLoc(), diag::warn_vector_mode_deprecated);
+      // Avoid duplicate warning from template instantiation.
+      if (!InInstantiation)
+        Diag(AttrLoc, diag::warn_vector_mode_deprecated);
     } else {
       VectorSize = 0;
     }
   }
 
   if (!VectorSize)
-    parseModeAttrArg(S, Str, DestWidth, IntegerMode, ComplexMode);
+    parseModeAttrArg(*this, Str, DestWidth, IntegerMode, ComplexMode);
+
+  // FIXME: Sync this with InitializePredefinedMacros; we need to match int8_t
+  // and friends, at least with glibc.
+  // FIXME: Make sure floating-point mappings are accurate
+  // FIXME: Support XF and TF types
+  if (!DestWidth) {
+    Diag(AttrLoc, diag::err_machine_mode) << 0 /*Unknown*/ << Name;
+    return;
+  }
 
   QualType OldTy;
   if (TypedefNameDecl *TD = dyn_cast<TypedefNameDecl>(D))
     OldTy = TD->getUnderlyingType();
-  else if (ValueDecl *VD = dyn_cast<ValueDecl>(D))
-    OldTy = VD->getType();
-  else {
-    S.Diag(D->getLocation(), diag::err_attr_wrong_decl)
-      << Attr.getName() << Attr.getRange();
+  else if (EnumDecl *ED = dyn_cast<EnumDecl>(D)) {
+    // Something like 'typedef enum { X } __attribute__((mode(XX))) T;'.
+    // Try to get type from enum declaration, default to int.
+    OldTy = ED->getIntegerType();
+    if (OldTy.isNull())
+      OldTy = Context.IntTy;
+  } else
+    OldTy = cast<ValueDecl>(D)->getType();
+
+  if (OldTy->isDependentType()) {
+    D->addAttr(::new (Context)
+               ModeAttr(AttrRange, Context, Name, SpellingListIndex));
     return;
   }
 
@@ -3386,76 +3435,80 @@ static void handleModeAttr(Sema &S, Decl *D, const AttributeList &Attr) {
   if (const VectorType *VT = OldTy->getAs<VectorType>())
     OldElemTy = VT->getElementType();
 
-  if (!OldElemTy->getAs<BuiltinType>() && !OldElemTy->isComplexType())
-    S.Diag(Attr.getLoc(), diag::err_mode_not_primitive);
+  // GCC allows 'mode' attribute on enumeration types (even incomplete), except
+  // for vector modes. So, 'enum X __attribute__((mode(QI)));' forms a complete
+  // type, 'enum { A } __attribute__((mode(V4SI)))' is rejected.
+  if ((isa<EnumDecl>(D) || OldElemTy->getAs<EnumType>()) &&
+      VectorSize.getBoolValue()) {
+    Diag(AttrLoc, diag::err_enum_mode_vector_type) << Name << AttrRange;
+    return;
+  }
+  bool IntegralOrAnyEnumType =
+      OldElemTy->isIntegralOrEnumerationType() || OldElemTy->getAs<EnumType>();
+
+  if (!OldElemTy->getAs<BuiltinType>() && !OldElemTy->isComplexType() &&
+      !IntegralOrAnyEnumType)
+    Diag(AttrLoc, diag::err_mode_not_primitive);
   else if (IntegerMode) {
-    if (!OldElemTy->isIntegralOrEnumerationType())
-      S.Diag(Attr.getLoc(), diag::err_mode_wrong_type);
+    if (!IntegralOrAnyEnumType)
+      Diag(AttrLoc, diag::err_mode_wrong_type);
   } else if (ComplexMode) {
     if (!OldElemTy->isComplexType())
-      S.Diag(Attr.getLoc(), diag::err_mode_wrong_type);
+      Diag(AttrLoc, diag::err_mode_wrong_type);
   } else {
     if (!OldElemTy->isFloatingType())
-      S.Diag(Attr.getLoc(), diag::err_mode_wrong_type);
-  }
-
-  // FIXME: Sync this with InitializePredefinedMacros; we need to match int8_t
-  // and friends, at least with glibc.
-  // FIXME: Make sure floating-point mappings are accurate
-  // FIXME: Support XF and TF types
-  if (!DestWidth) {
-    S.Diag(Attr.getLoc(), diag::err_machine_mode) << 0 /*Unknown*/ << Name;
-    return;
+      Diag(AttrLoc, diag::err_mode_wrong_type);
   }
 
   QualType NewElemTy;
 
   if (IntegerMode)
-    NewElemTy = S.Context.getIntTypeForBitwidth(
-        DestWidth, OldElemTy->isSignedIntegerType());
+    NewElemTy = Context.getIntTypeForBitwidth(DestWidth,
+                                              OldElemTy->isSignedIntegerType());
   else
-    NewElemTy = S.Context.getRealTypeForBitwidth(DestWidth);
+    NewElemTy = Context.getRealTypeForBitwidth(DestWidth);
 
   if (NewElemTy.isNull()) {
-    S.Diag(Attr.getLoc(), diag::err_machine_mode) << 1 /*Unsupported*/ << Name;
+    Diag(AttrLoc, diag::err_machine_mode) << 1 /*Unsupported*/ << Name;
     return;
   }
 
   if (ComplexMode) {
-    NewElemTy = S.Context.getComplexType(NewElemTy);
+    NewElemTy = Context.getComplexType(NewElemTy);
   }
 
   QualType NewTy = NewElemTy;
   if (VectorSize.getBoolValue()) {
-    NewTy = S.Context.getVectorType(NewTy, VectorSize.getZExtValue(),
-                                    VectorType::GenericVector);
+    NewTy = Context.getVectorType(NewTy, VectorSize.getZExtValue(),
+                                  VectorType::GenericVector);
   } else if (const VectorType *OldVT = OldTy->getAs<VectorType>()) {
     // Complex machine mode does not support base vector types.
     if (ComplexMode) {
-      S.Diag(Attr.getLoc(), diag::err_complex_mode_vector_type);
+      Diag(AttrLoc, diag::err_complex_mode_vector_type);
       return;
     }
-    unsigned NumElements = S.Context.getTypeSize(OldElemTy) *
+    unsigned NumElements = Context.getTypeSize(OldElemTy) *
                            OldVT->getNumElements() /
-                           S.Context.getTypeSize(NewElemTy);
+                           Context.getTypeSize(NewElemTy);
     NewTy =
-        S.Context.getVectorType(NewElemTy, NumElements, OldVT->getVectorKind());
+        Context.getVectorType(NewElemTy, NumElements, OldVT->getVectorKind());
   }
 
   if (NewTy.isNull()) {
-    S.Diag(Attr.getLoc(), diag::err_mode_wrong_type);
+    Diag(AttrLoc, diag::err_mode_wrong_type);
     return;
   }
 
   // Install the new type.
   if (TypedefNameDecl *TD = dyn_cast<TypedefNameDecl>(D))
     TD->setModedTypeSourceInfo(TD->getTypeSourceInfo(), NewTy);
+  else if (EnumDecl *ED = dyn_cast<EnumDecl>(D))
+    ED->setIntegerType(NewTy);
   else
     cast<ValueDecl>(D)->setType(NewTy);
 
-  D->addAttr(::new (S.Context)
-             ModeAttr(Attr.getRange(), S.Context, Name,
-                      Attr.getAttributeSpellingListIndex()));
+  D->addAttr(::new (Context)
+             ModeAttr(AttrRange, Context, Name, SpellingListIndex));
 }
 
 static void handleNoDebugAttr(Sema &S, Decl *D, const AttributeList &Attr) {
@@ -3588,6 +3641,12 @@ static void handleOptimizeNoneAttr(Sema &S, Decl *D,
 }
 
 static void handleGlobalAttr(Sema &S, Decl *D, const AttributeList &Attr) {
+  if (checkAttrMutualExclusion<CUDADeviceAttr>(S, D, Attr.getRange(),
+                                               Attr.getName()) ||
+      checkAttrMutualExclusion<CUDAHostAttr>(S, D, Attr.getRange(),
+                                             Attr.getName())) {
+    return;
+  }
   FunctionDecl *FD = cast<FunctionDecl>(D);
   if (!FD->getReturnType()->isVoidType()) {
     SourceRange RTRange = FD->getReturnTypeSourceRange();
@@ -3597,11 +3656,21 @@ static void handleGlobalAttr(Sema &S, Decl *D, const AttributeList &Attr) {
                               : FixItHint());
     return;
   }
+  if (const auto *Method = dyn_cast<CXXMethodDecl>(FD)) {
+    if (Method->isInstance()) {
+      S.Diag(Method->getLocStart(), diag::err_kern_is_nonstatic_method)
+          << Method;
+      return;
+    }
+    S.Diag(Method->getLocStart(), diag::warn_kern_is_method) << Method;
+  }
+  // Only warn for "inline" when compiling for host, to cut down on noise.
+  if (FD->isInlineSpecified() && !S.getLangOpts().CUDAIsDevice)
+    S.Diag(FD->getLocStart(), diag::warn_kern_is_inline) << FD;
 
   D->addAttr(::new (S.Context)
               CUDAGlobalAttr(Attr.getRange(), S.Context,
                              Attr.getAttributeSpellingListIndex()));
-
 }
 
 static void handleGNUInlineAttr(Sema &S, Decl *D, const AttributeList &Attr) {
@@ -4398,8 +4467,10 @@ static void handleMSInheritanceAttr(Sema &S, Decl *D, const AttributeList &Attr)
       D, Attr.getRange(), /*BestCase=*/true,
       Attr.getAttributeSpellingListIndex(),
       (MSInheritanceAttr::Spelling)Attr.getSemanticSpelling());
-  if (IA)
+  if (IA) {
     D->addAttr(IA);
+    S.Consumer.AssignInheritanceModel(cast<CXXRecordDecl>(D));
+  }
 }
 
 static void handleDeclspecThreadAttr(Sema &S, Decl *D,
@@ -4545,25 +4616,90 @@ static void handleMipsInterruptAttr(Sema &S, Decl *D,
       Attr.getLoc(), S.Context, Kind, Attr.getAttributeSpellingListIndex()));
 }
 
-static void handleInterruptAttr(Sema &S, Decl *D, const AttributeList &Attr) {
-  // Dispatch the interrupt attribute based on the current target.
-  if (S.Context.getTargetInfo().getTriple().getArch() == llvm::Triple::msp430)
-    handleMSP430InterruptAttr(S, D, Attr);
-  else if (S.Context.getTargetInfo().getTriple().getArch() ==
-               llvm::Triple::mipsel ||
-           S.Context.getTargetInfo().getTriple().getArch() ==
-               llvm::Triple::mips)
-    handleMipsInterruptAttr(S, D, Attr);
-  else
-    handleARMInterruptAttr(S, D, Attr);
+static void handleAnyX86InterruptAttr(Sema &S, Decl *D,
+                                      const AttributeList &Attr) {
+  // Semantic checks for a function with the 'interrupt' attribute.
+  // a) Must be a function.
+  // b) Must have the 'void' return type.
+  // c) Must take 1 or 2 arguments.
+  // d) The 1st argument must be a pointer.
+  // e) The 2nd argument (if any) must be an unsigned integer.
+  if (!isFunctionOrMethod(D) || !hasFunctionProto(D) || isInstanceMethod(D) ||
+      CXXMethodDecl::isStaticOverloadedOperator(
+          cast<NamedDecl>(D)->getDeclName().getCXXOverloadedOperator())) {
+    S.Diag(Attr.getLoc(), diag::warn_attribute_wrong_decl_type)
+        << Attr.getName() << ExpectedFunctionWithProtoType;
+    return;
+  }
+  // Interrupt handler must have void return type.
+  if (!getFunctionOrMethodResultType(D)->isVoidType()) {
+    S.Diag(getFunctionOrMethodResultSourceRange(D).getBegin(),
+           diag::err_anyx86_interrupt_attribute)
+        << (S.Context.getTargetInfo().getTriple().getArch() == llvm::Triple::x86
+                ? 0
+                : 1)
+        << 0;
+    return;
+  }
+  // Interrupt handler must have 1 or 2 parameters.
+  unsigned NumParams = getFunctionOrMethodNumParams(D);
+  if (NumParams < 1 || NumParams > 2) {
+    S.Diag(D->getLocStart(), diag::err_anyx86_interrupt_attribute)
+        << (S.Context.getTargetInfo().getTriple().getArch() == llvm::Triple::x86
+                ? 0
+                : 1)
+        << 1;
+    return;
+  }
+  // The first argument must be a pointer.
+  if (!getFunctionOrMethodParamType(D, 0)->isPointerType()) {
+    S.Diag(getFunctionOrMethodParamRange(D, 0).getBegin(),
+           diag::err_anyx86_interrupt_attribute)
+        << (S.Context.getTargetInfo().getTriple().getArch() == llvm::Triple::x86
+                ? 0
+                : 1)
+        << 2;
+    return;
+  }
+  // The second argument, if present, must be an unsigned integer.
+  unsigned TypeSize =
+      S.Context.getTargetInfo().getTriple().getArch() == llvm::Triple::x86_64
+          ? 64
+          : 32;
+  if (NumParams == 2 &&
+      (!getFunctionOrMethodParamType(D, 1)->isUnsignedIntegerType() ||
+       S.Context.getTypeSize(getFunctionOrMethodParamType(D, 1)) != TypeSize)) {
+    S.Diag(getFunctionOrMethodParamRange(D, 1).getBegin(),
+           diag::err_anyx86_interrupt_attribute)
+        << (S.Context.getTargetInfo().getTriple().getArch() == llvm::Triple::x86
+                ? 0
+                : 1)
+        << 3 << S.Context.getIntTypeForBitwidth(TypeSize, /*Signed=*/false);
+    return;
+  }
+  D->addAttr(::new (S.Context) AnyX86InterruptAttr(
+      Attr.getLoc(), S.Context, Attr.getAttributeSpellingListIndex()));
+  D->addAttr(UsedAttr::CreateImplicit(S.Context));
 }
 
-static void handleMips16Attribute(Sema &S, Decl *D, const AttributeList &Attr) {
-  if (checkAttrMutualExclusion<MipsInterruptAttr>(S, D, Attr.getRange(),
-                                                  Attr.getName()))
-    return;
-
-  handleSimpleAttribute<Mips16Attr>(S, D, Attr);
+static void handleInterruptAttr(Sema &S, Decl *D, const AttributeList &Attr) {
+  // Dispatch the interrupt attribute based on the current target.
+  switch (S.Context.getTargetInfo().getTriple().getArch()) {
+  case llvm::Triple::msp430:
+    handleMSP430InterruptAttr(S, D, Attr);
+    break;
+  case llvm::Triple::mipsel:
+  case llvm::Triple::mips:
+    handleMipsInterruptAttr(S, D, Attr);
+    break;
+  case llvm::Triple::x86:
+  case llvm::Triple::x86_64:
+    handleAnyX86InterruptAttr(S, D, Attr);
+    break;
+  default:
+    handleARMInterruptAttr(S, D, Attr);
+    break;
+  }
 }
 
 static void handleAMDGPUNumVGPRAttr(Sema &S, Decl *D,
@@ -4955,7 +5091,8 @@ static void ProcessDeclAttribute(Sema &S, Scope *scope, Decl *D,
     handleDLLAttr(S, D, Attr);
     break;
   case AttributeList::AT_Mips16:
-    handleMips16Attribute(S, D, Attr);
+    handleSimpleAttributeWithExclusions<Mips16Attr, MipsInterruptAttr>(S, D,
+                                                                       Attr);
     break;
   case AttributeList::AT_NoMips16:
     handleSimpleAttribute<NoMips16Attr>(S, D, Attr);
@@ -5006,7 +5143,8 @@ static void ProcessDeclAttribute(Sema &S, Scope *scope, Decl *D,
     handleCommonAttr(S, D, Attr);
     break;
   case AttributeList::AT_CUDAConstant:
-    handleSimpleAttribute<CUDAConstantAttr>(S, D, Attr);
+    handleSimpleAttributeWithExclusions<CUDAConstantAttr, CUDASharedAttr>(S, D,
+                                                                          Attr);
     break;
   case AttributeList::AT_PassObjectSize:
     handlePassObjectSizeAttr(S, D, Attr);
@@ -5051,10 +5189,12 @@ static void ProcessDeclAttribute(Sema &S, Scope *scope, Decl *D,
     handleGlobalAttr(S, D, Attr);
     break;
   case AttributeList::AT_CUDADevice:
-    handleSimpleAttribute<CUDADeviceAttr>(S, D, Attr);
+    handleSimpleAttributeWithExclusions<CUDADeviceAttr, CUDAGlobalAttr>(S, D,
+                                                                        Attr);
     break;
   case AttributeList::AT_CUDAHost:
-    handleSimpleAttribute<CUDAHostAttr>(S, D, Attr);
+    handleSimpleAttributeWithExclusions<CUDAHostAttr, CUDAGlobalAttr>(S, D,
+                                                                      Attr);
     break;
   case AttributeList::AT_GNUInline:
     handleGNUInlineAttr(S, D, Attr);
@@ -5114,7 +5254,8 @@ static void ProcessDeclAttribute(Sema &S, Scope *scope, Decl *D,
     handleSimpleAttribute<NoThrowAttr>(S, D, Attr);
     break;
   case AttributeList::AT_CUDAShared:
-    handleSimpleAttribute<CUDASharedAttr>(S, D, Attr);
+    handleSimpleAttributeWithExclusions<CUDASharedAttr, CUDAConstantAttr>(S, D,
+                                                                          Attr);
     break;
   case AttributeList::AT_VecReturn:
     handleVecReturnAttr(S, D, Attr);

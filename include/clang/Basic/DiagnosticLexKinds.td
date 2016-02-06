@@ -490,6 +490,8 @@ def warn_pragma_diagnostic_unknown_warning :
 // - #pragma __debug
 def warn_pragma_debug_unexpected_command : Warning<
   "unexpected debug command '%0'">, InGroup<IgnoredPragmas>;
+def warn_pragma_debug_missing_argument : Warning<
+  "missing argument to debug command '%0'">, InGroup<IgnoredPragmas>;
 
 def err_defined_macro_name : Error<"'defined' cannot be used as a macro name">;
 def err_paste_at_start : Error<
@@ -655,6 +657,13 @@ def warn_header_guard : Warning<
   InGroup<DiagGroup<"header-guard">>;
 def note_header_guard : Note<
   "%0 is defined here; did you mean %1?">;
+
+def warn_defined_in_object_type_macro : Warning<
+  "macro expansion producing 'defined' has undefined behavior">,
+  InGroup<ExpansionToDefined>;
+def warn_defined_in_function_type_macro : Extension<
+  "macro expansion producing 'defined' has undefined behavior">,
+  InGroup<ExpansionToDefined>;
 
 let CategoryName = "Nullability Issue" in {
 

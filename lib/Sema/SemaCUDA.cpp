@@ -14,6 +14,7 @@
 #include "clang/Sema/Sema.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/Decl.h"
+#include "clang/AST/ExprCXX.h"
 #include "clang/Lex/Preprocessor.h"
 #include "clang/Sema/SemaDiagnostic.h"
 #include "llvm/ADT/Optional.h"
@@ -273,12 +274,9 @@ static bool
 resolveCalleeCUDATargetConflict(Sema::CUDAFunctionTarget Target1,
                                 Sema::CUDAFunctionTarget Target2,
                                 Sema::CUDAFunctionTarget *ResolvedTarget) {
-  if (Target1 == Sema::CFT_Global && Target2 == Sema::CFT_Global) {
-    // TODO: this shouldn't happen, really. Methods cannot be marked __global__.
-    // Clang should detect this earlier and produce an error. Then this
-    // condition can be changed to an assertion.
-    return true;
-  }
+  // Only free functions and static member functions may be global.
+  assert(Target1 != Sema::CFT_Global);
+  assert(Target2 != Sema::CFT_Global);
 
   if (Target1 == Sema::CFT_HostDevice) {
     *ResolvedTarget = Target2;
@@ -421,4 +419,38 @@ bool Sema::inferCUDATargetForImplicitSpecialMember(CXXRecordDecl *ClassDecl,
   }
 
   return false;
+}
+
+bool Sema::isEmptyCudaConstructor(SourceLocation Loc, CXXConstructorDecl *CD) {
+  if (!CD->isDefined() && CD->isTemplateInstantiation())
+    InstantiateFunctionDefinition(Loc, CD->getFirstDecl());
+
+  // (E.2.3.1, CUDA 7.5) A constructor for a class type is considered
+  // empty at a point in the translation unit, if it is either a
+  // trivial constructor
+  if (CD->isTrivial())
+    return true;
+
+  // ... or it satisfies all of the following conditions:
+  // The constructor function has been defined.
+  // The constructor function has no parameters,
+  // and the function body is an empty compound statement.
+  if (!(CD->hasTrivialBody() && CD->getNumParams() == 0))
+    return false;
+
+  // Its class has no virtual functions and no virtual base classes.
+  if (CD->getParent()->isDynamicClass())
+    return false;
+
+  // The only form of initializer allowed is an empty constructor.
+  // This will recursively checks all base classes and member initializers
+  if (!llvm::all_of(CD->inits(), [&](const CXXCtorInitializer *CI) {
+        if (const CXXConstructExpr *CE =
+                dyn_cast<CXXConstructExpr>(CI->getInit()))
+          return isEmptyCudaConstructor(Loc, CE->getConstructor());
+        return false;
+      }))
+    return false;
+
+  return true;
 }

@@ -606,6 +606,10 @@ public:
     this->MaxTLSAlign = 256;
     this->UserLabelPrefix = "";
 
+    // On PS4, do not honor explicit bit field alignment,
+    // as in "__attribute__((aligned(2))) int b : 1;".
+    this->UseExplicitBitFieldAlignment = false;
+
     switch (Triple.getArch()) {
     default:
     case llvm::Triple::x86_64:
@@ -2047,6 +2051,14 @@ static const char* const GCCRegNames[] = {
   "xmm8", "xmm9", "xmm10", "xmm11", "xmm12", "xmm13", "xmm14", "xmm15",
   "ymm0", "ymm1", "ymm2", "ymm3", "ymm4", "ymm5", "ymm6", "ymm7",
   "ymm8", "ymm9", "ymm10", "ymm11", "ymm12", "ymm13", "ymm14", "ymm15",
+  "xmm16", "xmm17", "xmm18", "xmm19", "xmm20", "xmm21", "xmm22", "xmm23",
+  "xmm24", "xmm25", "xmm26", "xmm27", "xmm28", "xmm29", "xmm30", "xmm31",
+  "ymm16", "ymm17", "ymm18", "ymm19", "ymm20", "ymm21", "ymm22", "ymm23",
+  "ymm24", "ymm25", "ymm26", "ymm27", "ymm28", "ymm29", "ymm30", "ymm31",
+  "zmm0", "zmm1", "zmm2", "zmm3", "zmm4", "zmm5", "zmm6", "zmm7",
+  "zmm8", "zmm9", "zmm10", "zmm11", "zmm12", "zmm13", "zmm14", "zmm15",
+  "zmm16", "zmm17", "zmm18", "zmm19", "zmm20", "zmm21", "zmm22", "zmm23",
+  "zmm24", "zmm25", "zmm26", "zmm27", "zmm28", "zmm29", "zmm30", "zmm31",
 };
 
 const TargetInfo::AddlRegName AddlRegNames[] = {
@@ -3899,6 +3911,8 @@ public:
   MCUX86_32TargetInfo(const llvm::Triple &Triple) : X86_32TargetInfo(Triple) {
     LongDoubleWidth = 64;
     LongDoubleFormat = &llvm::APFloat::IEEEdouble;
+    UserLabelPrefix = "";
+    WIntType = UnsignedInt;
   }
 
   CallingConvCheckResult checkCallingConvention(CallingConv CC) const override {
@@ -4028,6 +4042,8 @@ public:
 
   // for x32 we need it here explicitly
   bool hasInt128Type() const override { return true; }
+  unsigned getUnwindWordWidth() const override { return 64; }
+  unsigned getRegisterWidth() const override { return 64; }
 
   bool validateGlobalRegisterVariable(StringRef RegName,
                                       unsigned RegSize,
@@ -4499,7 +4515,7 @@ public:
           Triple.getOS() == llvm::Triple::UnknownOS ||
           StringRef(CPU).startswith("cortex-m")) {
         setABI("aapcs");
-      } else if (Triple.isWatchOS()) {
+      } else if (Triple.isWatchABI()) {
         setABI("aapcs16");
       } else {
         setABI("apcs-gnu");
@@ -4715,7 +4731,7 @@ public:
 
     // Unfortunately, __ARM_ARCH_7K__ is now more of an ABI descriptor. The CPU
     // happens to be Cortex-A7 though, so it should still get __ARM_ARCH_7A__.
-    if (getTriple().isWatchOS())
+    if (getTriple().isWatchABI())
       Builder.defineMacro("__ARM_ARCH_7K__", "2");
 
     if (!CPUAttr.empty())
@@ -4904,8 +4920,8 @@ public:
   BuiltinVaListKind getBuiltinVaListKind() const override {
     return IsAAPCS
                ? AAPCSABIBuiltinVaList
-               : (getTriple().isWatchOS() ? TargetInfo::CharPtrBuiltinVaList
-                                          : TargetInfo::VoidPtrBuiltinVaList);
+               : (getTriple().isWatchABI() ? TargetInfo::CharPtrBuiltinVaList
+                                           : TargetInfo::VoidPtrBuiltinVaList);
   }
   ArrayRef<const char *> getGCCRegNames() const override;
   ArrayRef<TargetInfo::GCCRegAlias> getGCCRegAliases() const override;
@@ -5116,7 +5132,6 @@ class WindowsARMTargetInfo : public WindowsTargetInfo<ARMleTargetInfo> {
 public:
   WindowsARMTargetInfo(const llvm::Triple &Triple)
     : WindowsTargetInfo<ARMleTargetInfo>(Triple), Triple(Triple) {
-    TLSSupported = false;
     WCharType = UnsignedShort;
     SizeType = UnsignedInt;
     UserLabelPrefix = "";
@@ -5246,7 +5261,7 @@ public:
     // ARMleTargetInfo.
     MaxAtomicInlineWidth = 64;
 
-    if (Triple.isWatchOS()) {
+    if (Triple.isWatchABI()) {
       // Darwin on iOS uses a variant of the ARM C++ ABI.
       TheCXXABI.set(TargetCXXABI::WatchOS);
 
@@ -6151,6 +6166,12 @@ public:
     Builder.defineMacro("__s390x__");
     Builder.defineMacro("__zarch__");
     Builder.defineMacro("__LONG_DOUBLE_128__");
+
+    Builder.defineMacro("__GCC_HAVE_SYNC_COMPARE_AND_SWAP_1");
+    Builder.defineMacro("__GCC_HAVE_SYNC_COMPARE_AND_SWAP_2");
+    Builder.defineMacro("__GCC_HAVE_SYNC_COMPARE_AND_SWAP_4");
+    Builder.defineMacro("__GCC_HAVE_SYNC_COMPARE_AND_SWAP_8");
+
     if (HasTransactionalExecution)
       Builder.defineMacro("__HTM__");
     if (Opts.ZVector)

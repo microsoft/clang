@@ -103,8 +103,10 @@ namespace {
                                                PreprocessorOpts, CodeGenOpts,
                                                *M, Diags, CoverageInfo));
 
-      for (size_t i = 0, e = CodeGenOpts.DependentLibraries.size(); i < e; ++i)
-        HandleDependentLibrary(CodeGenOpts.DependentLibraries[i]);
+      for (auto &&Lib : CodeGenOpts.DependentLibraries)
+        HandleDependentLibrary(Lib);
+      for (auto &&Opt : CodeGenOpts.LinkerOptions)
+        HandleLinkerOption(Opt);
     }
 
     void HandleCXXStaticMemberVarInstantiation(VarDecl *VD) override {
@@ -197,15 +199,25 @@ namespace {
     }
 
     void HandleTranslationUnit(ASTContext &Ctx) override {
+      // Release the Builder when there is no error.
+      if (!Diags.hasErrorOccurred() && Builder)
+        Builder->Release();
+
+      // If there are errors before or when releasing the Builder, reset
+      // the module to stop here before invoking the backend.
       if (Diags.hasErrorOccurred()) {
         if (Builder)
           Builder->clear();
         M.reset();
         return;
       }
+    }
 
-      if (Builder)
-        Builder->Release();
+    void AssignInheritanceModel(CXXRecordDecl *RD) override {
+      if (Diags.hasErrorOccurred())
+        return;
+
+      Builder->RefreshTypeCacheForClass(RD);
     }
 
     void CompleteTentativeDefinition(VarDecl *D) override {
@@ -222,7 +234,7 @@ namespace {
       Builder->EmitVTable(RD);
     }
 
-    void HandleLinkerOptionPragma(llvm::StringRef Opts) override {
+    void HandleLinkerOption(llvm::StringRef Opts) override {
       Builder->AppendLinkerOptions(Opts);
     }
 

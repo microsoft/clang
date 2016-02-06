@@ -56,3 +56,19 @@ class FwdVirtual;
 class FwdVirtual {
   virtual ~FwdVirtual() {}
 };
+
+struct PureForwardDecl;
+
+typedef union { int i; } TypedefUnion;
+typedef enum { e0 = 0 } TypedefEnum;
+typedef struct { int i; } TypedefStruct;
+
+union { int i; } GlobalUnion;
+struct { int i; } GlobalStruct;
+enum { e5 = 5 } GlobalEnum;
+
+namespace {
+  namespace {
+    struct InAnonymousNamespace { int i; };
+  }
+}

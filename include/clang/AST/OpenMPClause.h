@@ -2741,6 +2741,8 @@ class OMPMapClause final : public OMPVarListClause<OMPMapClause>,
   OpenMPMapClauseKind MapTypeModifier;
   /// \brief Map type for the 'map' clause.
   OpenMPMapClauseKind MapType;
+  /// \brief Is this an implicit map type or not.
+  bool MapTypeIsImplicit;
   /// \brief Location of the map type.
   SourceLocation MapLoc;
   /// \brief Colon location.
@@ -2771,17 +2773,21 @@ class OMPMapClause final : public OMPVarListClause<OMPMapClause>,
   ///
   /// \param MapTypeModifier Map type modifier.
   /// \param MapType Map type.
+  /// \param MapTypeIsImplicit Map type is inferred implicitly.
   /// \param MapLoc Location of the map type.
   /// \param StartLoc Starting location of the clause.
   /// \param EndLoc Ending location of the clause.
   /// \param N Number of the variables in the clause.
   ///
   explicit OMPMapClause(OpenMPMapClauseKind MapTypeModifier,
-                        OpenMPMapClauseKind MapType, SourceLocation MapLoc,
-                        SourceLocation StartLoc, SourceLocation LParenLoc,
-                        SourceLocation EndLoc, unsigned N)
-    : OMPVarListClause<OMPMapClause>(OMPC_map, StartLoc, LParenLoc, EndLoc, N),
-      MapTypeModifier(MapTypeModifier), MapType(MapType), MapLoc(MapLoc) {}
+                        OpenMPMapClauseKind MapType, bool MapTypeIsImplicit,
+                        SourceLocation MapLoc, SourceLocation StartLoc,
+                        SourceLocation LParenLoc, SourceLocation EndLoc,
+                        unsigned N)
+      : OMPVarListClause<OMPMapClause>(OMPC_map, StartLoc, LParenLoc, EndLoc,
+                                       N),
+        MapTypeModifier(MapTypeModifier), MapType(MapType),
+        MapTypeIsImplicit(MapTypeIsImplicit), MapLoc(MapLoc) {}
 
   /// \brief Build an empty clause.
   ///
@@ -2790,7 +2796,8 @@ class OMPMapClause final : public OMPVarListClause<OMPMapClause>,
   explicit OMPMapClause(unsigned N)
       : OMPVarListClause<OMPMapClause>(OMPC_map, SourceLocation(),
                                        SourceLocation(), SourceLocation(), N),
-        MapTypeModifier(OMPC_MAP_unknown), MapType(OMPC_MAP_unknown), MapLoc() {}
+        MapTypeModifier(OMPC_MAP_unknown), MapType(OMPC_MAP_unknown),
+        MapTypeIsImplicit(false), MapLoc() {}
 
 public:
   /// \brief Creates clause with a list of variables \a VL.
@@ -2801,13 +2808,15 @@ public:
   /// \param VL List of references to the variables.
   /// \param TypeModifier Map type modifier.
   /// \param Type Map type.
+  /// \param TypeIsImplicit Map type is inferred implicitly.
   /// \param TypeLoc Location of the map type.
   ///
   static OMPMapClause *Create(const ASTContext &C, SourceLocation StartLoc,
-                              SourceLocation LParenLoc,
-                              SourceLocation EndLoc, ArrayRef<Expr *> VL,
+                              SourceLocation LParenLoc, SourceLocation EndLoc,
+                              ArrayRef<Expr *> VL,
                               OpenMPMapClauseKind TypeModifier,
-                              OpenMPMapClauseKind Type, SourceLocation TypeLoc);
+                              OpenMPMapClauseKind Type, bool TypeIsImplicit,
+                              SourceLocation TypeLoc);
   /// \brief Creates an empty clause with the place for \a N variables.
   ///
   /// \param C AST context.
@@ -2817,6 +2826,13 @@ public:
 
   /// \brief Fetches mapping kind for the clause.
   OpenMPMapClauseKind getMapType() const LLVM_READONLY { return MapType; }
+
+  /// \brief Is this an implicit map type?
+  /// We have to capture 'IsMapTypeImplicit' from the parser for more
+  /// informative error messages.  It helps distinguish map(r) from
+  /// map(tofrom: r), which is important to print more helpful error
+  /// messages for some target directives.
+  bool isImplicitMapType() const LLVM_READONLY { return MapTypeIsImplicit; }
 
   /// \brief Fetches the map type modifier for the clause.
   OpenMPMapClauseKind getMapTypeModifier() const LLVM_READONLY {
@@ -3193,6 +3209,238 @@ public:
   child_range children() { return child_range(&Hint, &Hint + 1); }
 };
 
+/// \brief This represents 'dist_schedule' clause in the '#pragma omp ...'
+/// directive.
+///
+/// \code
+/// #pragma omp distribute dist_schedule(static, 3)
+/// \endcode
+/// In this example directive '#pragma omp distribute' has 'dist_schedule'
+/// clause with arguments 'static' and '3'.
+///
+class OMPDistScheduleClause : public OMPClause {
+  friend class OMPClauseReader;
+  /// \brief Location of '('.
+  SourceLocation LParenLoc;
+  /// \brief A kind of the 'schedule' clause.
+  OpenMPDistScheduleClauseKind Kind;
+  /// \brief Start location of the schedule kind in source code.
+  SourceLocation KindLoc;
+  /// \brief Location of ',' (if any).
+  SourceLocation CommaLoc;
+  /// \brief Chunk size and a reference to pseudo variable for combined
+  /// directives.
+  enum { CHUNK_SIZE, HELPER_CHUNK_SIZE, NUM_EXPRS };
+  Stmt *ChunkSizes[NUM_EXPRS];
+
+  /// \brief Set schedule kind.
+  ///
+  /// \param K Schedule kind.
+  ///
+  void setDistScheduleKind(OpenMPDistScheduleClauseKind K) { Kind = K; }
+  /// \brief Sets the location of '('.
+  ///
+  /// \param Loc Location of '('.
+  ///
+  void setLParenLoc(SourceLocation Loc) { LParenLoc = Loc; }
+  /// \brief Set schedule kind start location.
+  ///
+  /// \param KLoc Schedule kind location.
+  ///
+  void setDistScheduleKindLoc(SourceLocation KLoc) { KindLoc = KLoc; }
+  /// \brief Set location of ','.
+  ///
+  /// \param Loc Location of ','.
+  ///
+  void setCommaLoc(SourceLocation Loc) { CommaLoc = Loc; }
+  /// \brief Set chunk size.
+  ///
+  /// \param E Chunk size.
+  ///
+  void setChunkSize(Expr *E) { ChunkSizes[CHUNK_SIZE] = E; }
+  /// \brief Set helper chunk size.
+  ///
+  /// \param E Helper chunk size.
+  ///
+  void setHelperChunkSize(Expr *E) { ChunkSizes[HELPER_CHUNK_SIZE] = E; }
+
+public:
+  /// \brief Build 'dist_schedule' clause with schedule kind \a Kind and chunk
+  /// size expression \a ChunkSize.
+  ///
+  /// \param StartLoc Starting location of the clause.
+  /// \param LParenLoc Location of '('.
+  /// \param KLoc Starting location of the argument.
+  /// \param CommaLoc Location of ','.
+  /// \param EndLoc Ending location of the clause.
+  /// \param Kind DistSchedule kind.
+  /// \param ChunkSize Chunk size.
+  /// \param HelperChunkSize Helper chunk size for combined directives.
+  ///
+  OMPDistScheduleClause(SourceLocation StartLoc, SourceLocation LParenLoc,
+                        SourceLocation KLoc, SourceLocation CommaLoc,
+                        SourceLocation EndLoc,
+                        OpenMPDistScheduleClauseKind Kind, Expr *ChunkSize,
+                        Expr *HelperChunkSize)
+      : OMPClause(OMPC_dist_schedule, StartLoc, EndLoc), LParenLoc(LParenLoc),
+        Kind(Kind), KindLoc(KLoc), CommaLoc(CommaLoc) {
+    ChunkSizes[CHUNK_SIZE] = ChunkSize;
+    ChunkSizes[HELPER_CHUNK_SIZE] = HelperChunkSize;
+  }
+
+  /// \brief Build an empty clause.
+  ///
+  explicit OMPDistScheduleClause()
+      : OMPClause(OMPC_dist_schedule, SourceLocation(), SourceLocation()),
+        Kind(OMPC_DIST_SCHEDULE_unknown) {
+    ChunkSizes[CHUNK_SIZE] = nullptr;
+    ChunkSizes[HELPER_CHUNK_SIZE] = nullptr;
+  }
+
+  /// \brief Get kind of the clause.
+  ///
+  OpenMPDistScheduleClauseKind getDistScheduleKind() const { return Kind; }
+  /// \brief Get location of '('.
+  ///
+  SourceLocation getLParenLoc() { return LParenLoc; }
+  /// \brief Get kind location.
+  ///
+  SourceLocation getDistScheduleKindLoc() { return KindLoc; }
+  /// \brief Get location of ','.
+  ///
+  SourceLocation getCommaLoc() { return CommaLoc; }
+  /// \brief Get chunk size.
+  ///
+  Expr *getChunkSize() {
+    return dyn_cast_or_null<Expr>(ChunkSizes[CHUNK_SIZE]);
+  }
+  /// \brief Get chunk size.
+  ///
+  Expr *getChunkSize() const {
+    return dyn_cast_or_null<Expr>(ChunkSizes[CHUNK_SIZE]);
+  }
+  /// \brief Get helper chunk size.
+  ///
+  Expr *getHelperChunkSize() {
+    return dyn_cast_or_null<Expr>(ChunkSizes[HELPER_CHUNK_SIZE]);
+  }
+  /// \brief Get helper chunk size.
+  ///
+  Expr *getHelperChunkSize() const {
+    return dyn_cast_or_null<Expr>(ChunkSizes[HELPER_CHUNK_SIZE]);
+  }
+
+  static bool classof(const OMPClause *T) {
+    return T->getClauseKind() == OMPC_dist_schedule;
+  }
+
+  child_range children() {
+    return child_range(&ChunkSizes[CHUNK_SIZE], &ChunkSizes[CHUNK_SIZE] + 1);
+  }
+};
+
+/// \brief This represents 'defaultmap' clause in the '#pragma omp ...' directive.
+///
+/// \code
+/// #pragma omp target defaultmap(tofrom: scalar)
+/// \endcode
+/// In this example directive '#pragma omp target' has 'defaultmap' clause of kind
+/// 'scalar' with modifier 'tofrom'.
+///
+class OMPDefaultmapClause : public OMPClause {
+  friend class OMPClauseReader;
+  /// \brief Location of '('.
+  SourceLocation LParenLoc;
+  /// \brief Modifiers for 'defaultmap' clause.
+  OpenMPDefaultmapClauseModifier Modifier;
+  /// \brief Locations of modifiers.
+  SourceLocation ModifierLoc;
+  /// \brief A kind of the 'defaultmap' clause.
+  OpenMPDefaultmapClauseKind Kind;
+  /// \brief Start location of the defaultmap kind in source code.
+  SourceLocation KindLoc;
+
+  /// \brief Set defaultmap kind.
+  ///
+  /// \param K Defaultmap kind.
+  ///
+  void setDefaultmapKind(OpenMPDefaultmapClauseKind K) { Kind = K; }
+  /// \brief Set the defaultmap modifier.
+  ///
+  /// \param M Defaultmap modifier.
+  ///
+  void setDefaultmapModifier(OpenMPDefaultmapClauseModifier M) {
+    Modifier = M;
+  }
+  /// \brief Set location of the defaultmap modifier.
+  ///
+  void setDefaultmapModifierLoc(SourceLocation Loc) {
+    ModifierLoc = Loc;
+  }
+  /// \brief Sets the location of '('.
+  ///
+  /// \param Loc Location of '('.
+  ///
+  void setLParenLoc(SourceLocation Loc) { LParenLoc = Loc; }
+  /// \brief Set defaultmap kind start location.
+  ///
+  /// \param KLoc Defaultmap kind location.
+  ///
+  void setDefaultmapKindLoc(SourceLocation KLoc) { KindLoc = KLoc; }
+
+public:
+  /// \brief Build 'defaultmap' clause with defaultmap kind \a Kind
+  ///
+  /// \param StartLoc Starting location of the clause.
+  /// \param LParenLoc Location of '('.
+  /// \param KLoc Starting location of the argument.
+  /// \param EndLoc Ending location of the clause.
+  /// \param Kind Defaultmap kind.
+  /// \param M The modifier applied to 'defaultmap' clause.
+  /// \param MLoc Location of the modifier
+  ///
+  OMPDefaultmapClause(SourceLocation StartLoc, SourceLocation LParenLoc,
+                      SourceLocation MLoc, SourceLocation KLoc,
+                      SourceLocation EndLoc, OpenMPDefaultmapClauseKind Kind,
+                      OpenMPDefaultmapClauseModifier M)
+      : OMPClause(OMPC_defaultmap, StartLoc, EndLoc), LParenLoc(LParenLoc),
+        Modifier(M), ModifierLoc(MLoc), Kind(Kind), KindLoc(KLoc) {}
+
+  /// \brief Build an empty clause.
+  ///
+  explicit OMPDefaultmapClause()
+      : OMPClause(OMPC_defaultmap, SourceLocation(), SourceLocation()),
+        Modifier(OMPC_DEFAULTMAP_MODIFIER_unknown),
+        Kind(OMPC_DEFAULTMAP_unknown) {}
+
+  /// \brief Get kind of the clause.
+  ///
+  OpenMPDefaultmapClauseKind getDefaultmapKind() const { return Kind; }
+  /// \brief Get the modifier of the clause.
+  ///
+  OpenMPDefaultmapClauseModifier getDefaultmapModifier() const {
+    return Modifier;
+  }
+  /// \brief Get location of '('.
+  ///
+  SourceLocation getLParenLoc() { return LParenLoc; }
+  /// \brief Get kind location.
+  ///
+  SourceLocation getDefaultmapKindLoc() { return KindLoc; }
+  /// \brief Get the modifier location.
+  ///
+  SourceLocation getDefaultmapModifierLoc() const {
+    return ModifierLoc;
+  }
+
+  static bool classof(const OMPClause *T) {
+    return T->getClauseKind() == OMPC_defaultmap;
+  }
+
+  child_range children() {
+    return child_range(child_iterator(), child_iterator());
+  }
+};
 } // end namespace clang
 
 #endif // LLVM_CLANG_AST_OPENMPCLAUSE_H

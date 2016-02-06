@@ -18,14 +18,14 @@
 #include "clang/Basic/OpenMPKinds.h"
 #include "clang/Basic/SourceLocation.h"
 #include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/StringMap.h"
+#include "llvm/IR/Function.h"
 #include "llvm/IR/ValueHandle.h"
 
 namespace llvm {
 class ArrayType;
 class Constant;
-class Function;
 class FunctionType;
 class GlobalVariable;
 class StructType;
@@ -335,7 +335,7 @@ private:
     public:
       /// \brief Kind of a given entry. Currently, only target regions are
       /// supported.
-      enum OffloadingEntryInfoKinds {
+      enum OffloadingEntryInfoKinds : unsigned {
         // Entry is a target region.
         OFFLOAD_ENTRY_INFO_TARGET_REGION = 0,
         // Invalid entry info.
@@ -530,7 +530,7 @@ private:
                                               const llvm::Twine &Name);
 
   /// \brief Set of threadprivate variables with the generated initializer.
-  llvm::DenseSet<const VarDecl *> ThreadPrivateWithDefinition;
+  llvm::SmallPtrSet<const VarDecl *, 4> ThreadPrivateWithDefinition;
 
   /// \brief Emits initialization code for the threadprivate variables.
   /// \param VDAddr Address of the global variable \a VD.

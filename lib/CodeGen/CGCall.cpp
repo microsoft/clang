@@ -3046,8 +3046,7 @@ CodeGenFunction::EmitRuntimeCall(llvm::Value *callee,
   return EmitRuntimeCall(callee, None, name);
 }
 
-/// Emits a simple call (never an invoke) to the given runtime
-/// function.
+/// Emits a simple call (never an invoke) to the given runtime function.
 llvm::CallInst *
 CodeGenFunction::EmitRuntimeCall(llvm::Value *callee,
                                  ArrayRef<llvm::Value*> args,
@@ -3060,10 +3059,10 @@ CodeGenFunction::EmitRuntimeCall(llvm::Value *callee,
 // Calls which may throw must have operand bundles indicating which funclet
 // they are nested within.
 static void
-getBundlesForFunclet(llvm::Value *Callee,
-                     llvm::Instruction *CurrentFuncletPad,
+getBundlesForFunclet(llvm::Value *Callee, llvm::Instruction *CurrentFuncletPad,
                      SmallVectorImpl<llvm::OperandBundleDef> &BundleList) {
-  // There is no need for a funclet operand bundle if we aren't inside a funclet.
+  // There is no need for a funclet operand bundle if we aren't inside a
+  // funclet.
   if (!CurrentFuncletPad)
     return;
 
@@ -3098,8 +3097,7 @@ void CodeGenFunction::EmitNoreturnRuntimeCallOrInvoke(llvm::Value *callee,
   }
 }
 
-/// Emits a call or invoke instruction to the given nullary runtime
-/// function.
+/// Emits a call or invoke instruction to the given nullary runtime function.
 llvm::CallSite
 CodeGenFunction::EmitRuntimeCallOrInvoke(llvm::Value *callee,
                                          const Twine &name) {
@@ -3123,13 +3121,16 @@ CodeGenFunction::EmitCallOrInvoke(llvm::Value *Callee,
                                   ArrayRef<llvm::Value *> Args,
                                   const Twine &Name) {
   llvm::BasicBlock *InvokeDest = getInvokeDest();
+  SmallVector<llvm::OperandBundleDef, 1> BundleList;
+  getBundlesForFunclet(Callee, CurrentFuncletPad, BundleList);
 
   llvm::Instruction *Inst;
   if (!InvokeDest)
-    Inst = Builder.CreateCall(Callee, Args, Name);
+    Inst = Builder.CreateCall(Callee, Args, BundleList, Name);
   else {
     llvm::BasicBlock *ContBB = createBasicBlock("invoke.cont");
-    Inst = Builder.CreateInvoke(Callee, ContBB, InvokeDest, Args, Name);
+    Inst = Builder.CreateInvoke(Callee, ContBB, InvokeDest, Args, BundleList,
+                                Name);
     EmitBlock(ContBB);
   }
 
@@ -3540,6 +3541,11 @@ RValue CodeGenFunction::EmitCall(const CGFunctionInfo &CallInfo,
 
   CS.setAttributes(Attrs);
   CS.setCallingConv(static_cast<llvm::CallingConv::ID>(CallingConv));
+
+  // Insert instrumentation or attach profile metadata at indirect call sites
+  if (!CS.getCalledFunction())
+    PGO.valueProfile(Builder, llvm::IPVK_IndirectCallTarget,
+                     CS.getInstruction(), Callee);
 
   // In ObjC ARC mode with no ObjC ARC exception safety, tell the ARC
   // optimizer it can aggressively ignore unwind edges.

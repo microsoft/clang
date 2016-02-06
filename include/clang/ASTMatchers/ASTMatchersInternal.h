@@ -60,6 +60,17 @@ class BoundNodes;
 
 namespace internal {
 
+/// \brief Unifies obtaining the underlying type of a regular node through
+/// `getType` and a TypedefNameDecl node through `getUnderlyingType`.
+template <typename NodeType>
+inline QualType getUnderlyingType(const NodeType &Node) {
+  return Node.getType();
+}
+
+template <> inline QualType getUnderlyingType(const TypedefDecl &Node) {
+  return Node.getUnderlyingType();
+}
+
 /// \brief Internal version of BoundNodes. Holds all the bound nodes.
 class BoundNodesMap {
 public:
@@ -420,7 +431,7 @@ public:
   template <typename From>
   Matcher(const Matcher<From> &Other,
           typename std::enable_if<std::is_base_of<From, T>::value &&
-                                  !std::is_same<From, T>::value>::type * = 0)
+                               !std::is_same<From, T>::value>::type * = nullptr)
       : Implementation(restrictMatcher(Other.Implementation)) {
     assert(Implementation.getSupportedKind().isSame(
         ast_type_traits::ASTNodeKind::getFromNodeKind<T>()));
@@ -433,7 +444,7 @@ public:
   Matcher(const Matcher<TypeT> &Other,
           typename std::enable_if<
             std::is_same<T, QualType>::value &&
-            std::is_same<TypeT, Type>::value>::type* = 0)
+            std::is_same<TypeT, Type>::value>::type* = nullptr)
       : Implementation(new TypeToQualType<TypeT>(Other)) {}
 
   /// \brief Convert \c this into a \c Matcher<T> by applying dyn_cast<> to the
@@ -560,10 +571,10 @@ bool matchesFirstInPointerRange(const MatcherT &Matcher, IteratorT Start,
 
 // Metafunction to determine if type T has a member called
 // getDecl.
-#if defined(_MSC_VER) && (_MSC_VER < 1900) && !defined(__clang__)
-// For old versions of MSVC, we use a weird nonstandard __if_exists
-// statement, since before MSVC2015, it was not standards-conformant
-// enough to compile the usual code below.
+#if defined(_MSC_VER) && !defined(__clang__)
+// For MSVC, we use a weird nonstandard __if_exists statement, as it
+// is not standards-conformant enough to properly compile the standard
+// code below. (At least up through MSVC 2015 require this workaround)
 template <typename T> struct has_getDecl {
   __if_exists(T::getDecl) {
     enum { value = 1 };
@@ -642,10 +653,18 @@ class HasNameMatcher : public SingleNodeMatcherInterface<NamedDecl> {
 
   /// \brief Full match routine
   ///
+  /// Fast implementation for the simple case of a named declaration at
+  /// namespace or RecordDecl scope.
+  /// It is slower than matchesNodeUnqualified, but faster than
+  /// matchesNodeFullSlow.
+  bool matchesNodeFullFast(const NamedDecl &Node) const;
+
+  /// \brief Full match routine
+  ///
   /// It generates the fully qualified name of the declaration (which is
   /// expensive) before trying to match.
   /// It is slower but simple and works on all cases.
-  bool matchesNodeFull(const NamedDecl &Node) const;
+  bool matchesNodeFullSlow(const NamedDecl &Node) const;
 
   const bool UseUnqualifiedMatch;
   const std::string Name;
@@ -1584,8 +1603,20 @@ struct NotEqualsBoundNodePredicate {
   ast_type_traits::DynTypedNode Node;
 };
 
+template <typename Ty>
+struct GetBodyMatcher {
+  static const Stmt *get(const Ty &Node) {
+    return Node.getBody();
+  }
+};
+
+template <>
+inline const Stmt *GetBodyMatcher<FunctionDecl>::get(const FunctionDecl &Node) {
+  return Node.doesThisDeclarationHaveABody() ? Node.getBody() : nullptr;
+}
+
 } // end namespace internal
 } // end namespace ast_matchers
 } // end namespace clang
 
-#endif
+#endif // LLVM_CLANG_ASTMATCHERS_ASTMATCHERSINTERNAL_H

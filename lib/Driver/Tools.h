@@ -10,11 +10,11 @@
 #ifndef LLVM_CLANG_LIB_DRIVER_TOOLS_H
 #define LLVM_CLANG_LIB_DRIVER_TOOLS_H
 
+#include "clang/Basic/DebugInfoOptions.h"
 #include "clang/Basic/VersionTuple.h"
 #include "clang/Driver/Tool.h"
 #include "clang/Driver/Types.h"
 #include "clang/Driver/Util.h"
-#include "clang/Frontend/CodeGenOptions.h"
 #include "llvm/ADT/Triple.h"
 #include "llvm/Option/Option.h"
 #include "llvm/Support/Compiler.h"
@@ -93,7 +93,7 @@ private:
 
   void AddClangCLArgs(const llvm::opt::ArgList &Args,
                       llvm::opt::ArgStringList &CmdArgs,
-                      enum CodeGenOptions::DebugInfoKind *DebugInfoKind,
+                      codegenoptions::DebugInfoKind *DebugInfoKind,
                       bool *EmitCodeView) const;
 
   visualstudio::Compiler *getCLFallback() const;
@@ -240,7 +240,7 @@ namespace amdgpu {
 
 class LLVM_LIBRARY_VISIBILITY Linker : public GnuTool {
 public:
-  Linker(const ToolChain &TC) : GnuTool("amdgpu::Linker", "lld", TC) {}
+  Linker(const ToolChain &TC) : GnuTool("amdgpu::Linker", "ld.lld", TC) {}
   bool isLinkJob() const override { return true; }
   bool hasIntegratedCPP() const override { return false; }
   void ConstructJob(Compilation &C, const JobAction &JA,
@@ -902,6 +902,41 @@ public:
                     const char *LinkingOutput) const override;
 };
 } // end namespace PS4cpu
+
+namespace NVPTX {
+
+// Run ptxas, the NVPTX assembler.
+class LLVM_LIBRARY_VISIBILITY Assembler : public Tool {
+ public:
+   Assembler(const ToolChain &TC)
+       : Tool("NVPTX::Assembler", "ptxas", TC, RF_Full, llvm::sys::WEM_UTF8,
+              "--options-file") {}
+
+   bool hasIntegratedCPP() const override { return false; }
+
+   void ConstructJob(Compilation &C, const JobAction &JA,
+                     const InputInfo &Output, const InputInfoList &Inputs,
+                     const llvm::opt::ArgList &TCArgs,
+                     const char *LinkingOutput) const override;
+};
+
+// Runs fatbinary, which combines GPU object files ("cubin" files) and/or PTX
+// assembly into a single output file.
+class LLVM_LIBRARY_VISIBILITY Linker : public Tool {
+ public:
+   Linker(const ToolChain &TC)
+       : Tool("NVPTX::Linker", "fatbinary", TC, RF_Full, llvm::sys::WEM_UTF8,
+              "--options-file") {}
+
+   bool hasIntegratedCPP() const override { return false; }
+
+   void ConstructJob(Compilation &C, const JobAction &JA,
+                     const InputInfo &Output, const InputInfoList &Inputs,
+                     const llvm::opt::ArgList &TCArgs,
+                     const char *LinkingOutput) const override;
+};
+
+}  // end namespace NVPTX
 
 } // end namespace tools
 } // end namespace driver

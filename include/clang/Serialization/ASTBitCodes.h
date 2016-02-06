@@ -591,9 +591,12 @@ namespace clang {
       /// SM_SLOC_BUFFER_ENTRY record or a SM_SLOC_FILE_ENTRY with an
       /// overridden buffer.
       SM_SLOC_BUFFER_BLOB = 3,
+      /// \brief Describes a zlib-compressed blob that contains the data for
+      /// a buffer entry.
+      SM_SLOC_BUFFER_BLOB_COMPRESSED = 4,
       /// \brief Describes a source location entry (SLocEntry) for a
       /// macro expansion.
-      SM_SLOC_EXPANSION_ENTRY = 4
+      SM_SLOC_EXPANSION_ENTRY = 5
     };
 
     /// \brief Record types used within a preprocessor block.
@@ -907,7 +910,9 @@ namespace clang {
       /// \brief A DecayedType record.
       TYPE_DECAYED               = 41,
       /// \brief An AdjustedType record.
-      TYPE_ADJUSTED              = 42
+      TYPE_ADJUSTED              = 42,
+      /// \brief A PipeType record.
+      TYPE_PIPE                  = 43
     };
 
     /// \brief The type IDs for special types constructed by semantic
@@ -985,13 +990,19 @@ namespace clang {
 
       /// \brief The internal '__make_integer_seq' template.
       PREDEF_DECL_MAKE_INTEGER_SEQ_ID = 13,
+
+      /// \brief The internal '__NSConstantString' typedef.
+      PREDEF_DECL_CF_CONSTANT_STRING_ID = 14,
+
+      /// \brief The internal '__NSConstantString' tag type.
+      PREDEF_DECL_CF_CONSTANT_STRING_TAG_ID = 15,
     };
 
     /// \brief The number of declaration IDs that are predefined.
     ///
     /// For more information about predefined declarations, see the
     /// \c PredefinedDeclIDs type and the PREDEF_DECL_*_ID constants.
-    const unsigned int NUM_PREDEF_DECL_IDS = 14;
+    const unsigned int NUM_PREDEF_DECL_IDS = 16;
 
     /// \brief Record code for a list of local redeclarations of a declaration.
     const unsigned int LOCAL_REDECLARATIONS = 50;
@@ -1443,6 +1454,10 @@ namespace clang {
       STMT_OMP_ATOMIC_DIRECTIVE,
       STMT_OMP_TARGET_DIRECTIVE,
       STMT_OMP_TARGET_DATA_DIRECTIVE,
+      STMT_OMP_TARGET_ENTER_DATA_DIRECTIVE,
+      STMT_OMP_TARGET_EXIT_DATA_DIRECTIVE,
+      STMT_OMP_TARGET_PARALLEL_DIRECTIVE,
+      STMT_OMP_TARGET_PARALLEL_FOR_DIRECTIVE,
       STMT_OMP_TEAMS_DIRECTIVE,
       STMT_OMP_TASKGROUP_DIRECTIVE,
       STMT_OMP_CANCELLATION_POINT_DIRECTIVE,
