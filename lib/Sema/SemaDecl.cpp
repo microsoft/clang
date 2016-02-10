@@ -5983,7 +5983,8 @@ Sema::ActOnVariableDeclarator(Scope *S, Declarator &D, DeclContext *DC,
       NewVD->setConstexpr(true);
 
     if (D.getDeclSpec().isConceptSpecified()) {
-      NewVD->setConcept(true);
+      if (VarTemplateDecl *VTD = NewVD->getDescribedVarTemplate())
+        VTD->setConcept();
 
       // C++ Concepts TS [dcl.spec.concept]p2: A concept definition shall not
       // be declared with the thread_local, inline, friend, or constexpr
@@ -6000,6 +6001,15 @@ Sema::ActOnVariableDeclarator(Scope *S, Declarator &D, DeclContext *DC,
              diag::err_concept_decl_invalid_specifiers)
             << 0 << 3;
         NewVD->setInvalidDecl(true);
+      }
+
+      // C++ Concepts TS [dcl.spec.concept]p1: The concept specifier shall be
+      // applied only to the definition of a function template or variable
+      // template, declared in namespace scope.
+      if (IsVariableTemplateSpecialization) {
+        Diag(D.getDeclSpec().getConceptSpecLoc(),
+             diag::err_concept_specified_specialization)
+            << (IsPartialSpecialization ? 2 : 1);
       }
 
       // C++ Concepts TS [dcl.spec.concept]p6: A variable concept has the
@@ -7667,6 +7677,10 @@ Sema::ActOnFunctionDeclarator(Scope *S, Declarator &D, DeclContext *DC,
     }
 
     if (isConcept) {
+      // This is a function concept.
+      if (FunctionTemplateDecl *FTD = NewFD->getDescribedFunctionTemplate())
+        FTD->setConcept();
+
       // C++ Concepts TS [dcl.spec.concept]p1: The concept specifier shall be
       // applied only to the definition of a function template [...]
       if (!D.isFunctionDefinition()) {
@@ -7732,6 +7746,14 @@ Sema::ActOnFunctionDeclarator(Scope *S, Declarator &D, DeclContext *DC,
              diag::err_concept_decl_invalid_specifiers)
             << 1 << 3;
         NewFD->setInvalidDecl(true);
+      }
+
+      // C++ Concepts TS [dcl.spec.concept]p1: The concept specifier shall be
+      // applied only to the definition of a function template or variable
+      // template, declared in namespace scope.
+      if (isFunctionTemplateSpecialization) {
+        Diag(D.getDeclSpec().getConceptSpecLoc(),
+             diag::err_concept_specified_specialization) << 1;
       }
     }
 
@@ -7994,9 +8016,9 @@ Sema::ActOnFunctionDeclarator(Scope *S, Declarator &D, DeclContext *DC,
                                          TemplateId->NumArgs);
       translateTemplateArguments(TemplateArgsPtr,
                                  TemplateArgs);
-    
+
       HasExplicitTemplateArgs = true;
-    
+
       if (NewFD->isInvalidDecl()) {
         HasExplicitTemplateArgs = false;
       } else if (FunctionTemplate) {
@@ -9739,10 +9761,12 @@ void Sema::ActOnUninitializedDecl(Decl *RealDecl,
     // C++ Concepts TS [dcl.spec.concept]p1: [...]  A variable template
     // definition having the concept specifier is called a variable concept. A
     // concept definition refers to [...] a variable concept and its initializer.
-    if (Var->isConcept()) {
-      Diag(Var->getLocation(), diag::err_var_concept_not_initialized);
-      Var->setInvalidDecl();
-      return;
+    if (VarTemplateDecl *VTD = Var->getDescribedVarTemplate()) {
+      if (VTD->isConcept()) {
+        Diag(Var->getLocation(), diag::err_var_concept_not_initialized);
+        Var->setInvalidDecl();
+        return;
+      }
     }
 
     // OpenCL v1.1 s6.5.3: variables declared in the constant address space must
